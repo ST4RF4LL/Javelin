@@ -7,6 +7,15 @@ import { objectDigest as planDigest } from "../../skills/common-subagent/audit-c
 export const BAC_CONTRACT = "bac-analysis.v1";
 export const BAC_AGENTS = new Set(["java-source-auditor", "python-source-auditor", "web-source-auditor"]);
 export const BAC_TYPES = new Set(["JW-ACCESS-01", "JW-ACCESS-02", "JAVA-ACCESS-01"]);
+export const TASK_PLAN = "bac-task-plan.v1";
+export const BAC_EVIDENCE_STRUCTURE_ERROR = "bac-evidence-structure-invalid";
+export class BacEvidenceStructureError extends Error {
+  constructor() {
+    super("越权专项：BAC 证据须有中文说明、类型与结构化 locator。");
+    this.name = "BacEvidenceStructureError"; this.code = BAC_EVIDENCE_STRUCTURE_ERROR;
+  }
+}
+export const isTaskPlan = plan => plan?.protocol === "task-board.v1" && plan?.artifact_type === TASK_PLAN;
 export const sha256 = value => createHash("sha256").update(value).digest("hex");
 export const isDigest = value => typeof value === "string" && /^[a-f0-9]{64}$/.test(value);
 export const nonempty = value => typeof value === "string" && value.trim().length > 0;
@@ -44,20 +53,32 @@ export function bacForUnit(plan, unit) {
   bacSelection(plan.bac_analysis.mode);
   requireBac(plan.bac_analysis.contract_version === BAC_CONTRACT, "Plan 的专项版本不受支持。");
   if (plan.bac_analysis.mode === "off" || !BAC_AGENTS.has(unit.agent_name)) return null;
-  requireBac(plan.packet_report_contract === "tri-lens-v2" && plan.finding_detail_contract === "finding-details.v1", "越权专项需要当前三视角与 Finding 详细证据契约。");
+  requireBac(isTaskPlan(plan) || plan.packet_report_contract === "tri-lens-v2" && plan.finding_detail_contract === "finding-details.v1", "越权专项需要当前任务计划或三视角与 Finding 详细证据契约。");
   return { contract_version: BAC_CONTRACT, required: true,
-    plan_manifest_digest: plan.manifest_digest,
+    plan_manifest_digest: isTaskPlan(plan) ? plan.artifact_digest : plan.manifest_digest,
     plan_binding_digest: objectDigest(planBinding(plan, unit)),
     source_index_digest: objectDigest(plan.source_index ?? []) };
 }
 export function planBinding(plan, unit) {
+  if (isTaskPlan(plan)) return { protocol: plan.protocol, artifact_type: TASK_PLAN, audit_id: plan.audit_id,
+    scope_digest: plan.scope_digest, task: unit, attempt_id: plan.attempt_id };
   return { audit_id: plan.audit_id, scope_digest: plan.scope_digest, coverage_units: [unit],
     checks: (plan.checks ?? []).filter(check => unit.check_ids.includes(check.check_id)) };
+}
+export function unitForPlan(plan, identity) {
+  return isTaskPlan(plan)
+    ? plan.task?.task_id === identity.task_id && plan.attempt_id === identity.attempt_id ? plan.task : null
+    : plan.coverage_units?.find(row => row.focus_area_id === identity.focus_area_id && row.assignment_id === identity.assignment_id);
+}
+export function interfacesForUnit(plan, unit) {
+  if (isTaskPlan(plan)) return plan.entry_points;
+  const ids = new Set(plan.checks.filter(row => unit.check_ids.includes(row.check_id)).flatMap(row => row.required_interface_ids ?? []));
+  return (plan.interface_index ?? []).filter(row => ids.has(row.interface_id) && row.direction !== "egress");
 }
 export function unitForRequest(plan, request) {
   requireBac(request.contract_version === BAC_CONTRACT, "请求版本无效。");
   requireBac(request.audit_id === plan.audit_id && request.scope_digest === plan.scope_digest, "请求与冻结范围不一致。");
-  const unit = plan.coverage_units?.find(row => row.focus_area_id === request.focus_area_id && row.assignment_id === request.assignment_id);
+  const unit = unitForPlan(plan, request);
   requireBac(unit && unit.agent_name === request.producer?.agent_name && BAC_AGENTS.has(unit.agent_name), "请求不属于当前源码工作包。");
   requireBac(nonempty(request.producer?.agent_session_id), "缺少真实源码会话 ID。");
   return unit;
@@ -65,12 +86,23 @@ export function unitForRequest(plan, request) {
 export async function verifiedPlan(path) {
   requireBac(nonempty(path), "缺少冻结 Plan 路径。");
   const value = JSON.parse(await readFile(resolve(path), "utf8"));
+  if (isTaskPlan(value)) {
+    verifySeal(value);
+    requireBac(value.task?.scope_digest === value.scope_digest && nonempty(value.task.task_id) && nonempty(value.attempt_id)
+      && Array.isArray(value.source_index) && Array.isArray(value.entry_points), "任务计划范围或执行绑定无效。");
+    const { value: baseline } = await boundFile(value.reports_root, value.source_baseline);
+    requireBac(baseline.audit_id === value.audit_id && baseline.scope_digest === value.scope_digest
+      && baseline.manifest_digest === planDigest(baseline) && await realpath(baseline.root) === await realpath(value.source_root), "任务计划的冻结源码基线无效。");
+    requireBac(objectDigest(value.source_index) === objectDigest(baseline.files.filter(row => row.type === "file").map(row => ({ path: row.path, sha256: row.sha256 }))), "任务计划源码索引不匹配。");
+    return value;
+  }
+  requireBac(value.protocol !== "task-board.v1", "新版任务请使用执行附件中的 bac_plan.path，不得将 Focus Area 描述当作旧 Coverage Plan。");
   requireBac(isDigest(value.manifest_digest) && value.manifest_digest === planDigest(value), "Coverage Plan 摘要无效。");
   return value;
 }
 async function planForAttachment(path, item, auditId) {
   const plan = await verifiedPlan(path);
-  const unit = plan.coverage_units?.find(row => row.focus_area_id === item.focus_area_id && row.assignment_id === item.assignment_id);
+  const unit = unitForPlan(plan, item);
   requireBac(plan.audit_id === auditId && plan.scope_digest === item.scope_digest && unit?.agent_name === item.agent_name
     && objectDigest(bacForUnit(plan, unit)) === objectDigest(item.bac_analysis), "专项引用了未分派的 Plan 或源码快照。");
   return plan;
@@ -126,7 +158,8 @@ export function validateRun(run) {
   requireBac(run.artifact_type === "bac-run" && run.engine_version === "bac-comparison.v1" && isDigest(run.engine_sha256), "差分运行来源无效。");
   requireBac(run.input && run.input_digest === objectDigest(run.input), "专项输入摘要无效。");
   const unit = unitForRequest(run.plan_binding, run.input);
-  requireBac(["audit_id", "scope_digest", "focus_area_id", "assignment_id", "run_id"].every(key => run[key] === run.input[key])
+  const identity = isTaskPlan(run.plan_binding) ? ["task_id", "attempt_id"] : ["focus_area_id", "assignment_id"];
+  requireBac(["audit_id", "scope_digest", ...identity, "run_id"].every(key => run[key] === run.input[key])
     && objectDigest(run.producer) === objectDigest(run.input.producer) && unit.agent_name === run.producer.agent_name, "差分运行与输入身份不一致。");
   requireBac(run.input.acp?.producer?.agent_name === "security-threat-modeler" && nonempty(run.input.acp.producer.agent_session_id)
     && run.input.acp.producer.agent_session_id !== run.producer.agent_session_id
@@ -142,6 +175,7 @@ export async function verifyEvidenceSources(plan, sourceRoot, objects) {
   const root = await realpath(sourceRoot);
   const index = new Map((plan.source_index ?? []).map(row => [row.path, row]));
   const cache = new Map();
+  let malformedEvidence = false;
   async function locator(value) {
     requireBac(value && nonempty(value.file) && !isAbsolute(value.file) && Number.isInteger(value.line_start) && value.line_start > 0 && isDigest(value.source_digest), "证据定位字段无效。");
     const row = index.get(value.file);
@@ -163,14 +197,16 @@ export async function verifyEvidenceSources(plan, sourceRoot, objects) {
     for (const [key, child] of Object.entries(value)) {
       if (["evidence", "policy_binding_evidence"].includes(key) && Array.isArray(child)) {
         for (const fact of child) {
-          requireBac(fact && nonempty(fact.claim) && nonempty(fact.kind) && fact.locator, "BAC 证据须有中文说明、类型与结构化 locator。");
-          await locator(fact.locator);
+          if (!(fact && nonempty(fact.claim) && nonempty(fact.kind) && fact.locator)) malformedEvidence = true;
+          // A malformed fact must not hide another fact's invalid source or path.
+          if (fact?.locator != null) await locator(fact.locator);
         }
       }
       await walk(child);
     }
   }
   await walk(objects);
+  if (malformedEvidence) throw new BacEvidenceStructureError();
   return [...cache.keys()].sort();
 }
 
@@ -187,11 +223,18 @@ export function validateReview(review, run, plan) {
     requireBac(nonempty(decision.reason) && ["ACCEPTED", "INCONCLUSIVE", "REJECTED", "DUPLICATE"].includes(decision.disposition), "复查缺少处置或理由。");
     if (decision.disposition === "ACCEPTED") {
       const finding = decision.finding;
-      const check = plan.checks?.find(row => row.check_id === finding?.routing?.primary_check_id);
-      const unit = plan.coverage_units.find(row => row.assignment_id === run.assignment_id && row.focus_area_id === run.focus_area_id);
-      requireBac(check && unit?.check_ids.includes(check.check_id) && check.focus_area_id === run.focus_area_id && check.lens === "control-driven" && BAC_TYPES.has(check.vulnerability_type_id), "候选主 check 不属于当前权限工作包。");
-      requireBac(check.domain === unit.domain, "候选跨责任域。");
-      const errors = validateFinding(finding, { check, auditId: run.audit_id, scopeDigest: run.scope_digest, requireReportDetails: true });
+      const unit = unitForPlan(plan, run);
+      let context;
+      if (isTaskPlan(plan)) {
+        requireBac(BAC_TYPES.has(finding?.classification?.vulnerability_type_id), "候选必须属于权限控制分析。");
+        context = { task: { ...unit, attempt_id: run.attempt_id } };
+      } else {
+        const check = plan.checks?.find(row => row.check_id === finding?.routing?.primary_check_id);
+        requireBac(check && unit?.check_ids.includes(check.check_id) && check.focus_area_id === run.focus_area_id && check.lens === "control-driven" && BAC_TYPES.has(check.vulnerability_type_id), "候选主 check 不属于当前权限工作包。");
+        requireBac(check.domain === unit.domain, "候选跨责任域。");
+        context = { check };
+      }
+      const errors = validateFinding(finding, { ...context, auditId: run.audit_id, scopeDigest: run.scope_digest, requireReportDetails: true });
       requireBac(!errors.length && finding.state === "CANDIDATE", `Finding v2 未通过：${errors.join("、")}`);
       requireBac(finding.bac_source?.run_digest === run.artifact_digest && finding.bac_source?.candidate_id === candidate.finding_id, "Finding 缺少 BAC 来源绑定。");
       requireBac(!platformIds.has(finding.finding_id), "平台 Finding ID 重复。"); platformIds.add(finding.finding_id);
@@ -212,6 +255,7 @@ export async function validateBacAttachment({ reportsRoot, attachment, item, aud
     if (attachment.status === "NOT_APPLICABLE") {
       requireBac(Array.isArray(attachment.evidence) && attachment.evidence.length > 0 && nonempty(attachment.source_root), "不适用必须有审查依据及源码根目录。");
       const plan = await planForAttachment(attachment.plan_path, item, auditId);
+      if (isTaskPlan(plan)) requireBac(await realpath(attachment.source_root) === plan.source_root, "不适用证据与任务源码根目录不同。");
       await verifyEvidenceSources(plan, attachment.source_root, { evidence: attachment.evidence });
     }
     return { status: attachment.status, reason: attachment.reason, candidates: 0, accepted: 0, gaps: attachment.status === "GAP" ? [attachment.reason] : [] };
@@ -222,13 +266,13 @@ export async function validateBacAttachment({ reportsRoot, attachment, item, aud
   validateRun(run); verifySeal(review);
   const plan = await planForAttachment(run.input.plan_path, item, auditId);
   requireBac(run.artifact_type === "bac-run" && review.artifact_type === "bac-review", "专项制品类型无效。");
-  requireBac(run.audit_id === auditId && run.scope_digest === item.scope_digest && run.focus_area_id === item.focus_area_id
-    && run.assignment_id === item.assignment_id && run.producer.agent_session_id === sessionId && run.producer.agent_name === item.agent_name, "专项来源与工作包不匹配。");
+  const identity = isTaskPlan(plan) ? ["task_id", "attempt_id"] : ["focus_area_id", "assignment_id"];
+  requireBac(run.audit_id === auditId && run.scope_digest === item.scope_digest && identity.every(key => run[key] === item[key])
+    && run.producer.agent_session_id === sessionId && run.producer.agent_name === item.agent_name, "专项来源与工作包不匹配。");
   requireBac(review.run_digest === run.artifact_digest, "专项复查绑定失效。");
   requireBac(objectDigest(run.plan_binding) === item.bac_analysis?.plan_binding_digest
     && run.source_index_digest === item.bac_analysis?.source_index_digest, "专项引用了未分派的 Plan 或源码快照。");
   validateReview(review, run, run.plan_binding);
-  await verifyEvidenceSources(plan, run.input.source_root, [run.input.acp, run.input.paths, run.input.api_catalog, run.input.resource_role_catalog, review]);
   const accepted = review.decisions.filter(row => row.disposition === "ACCEPTED");
   for (const decision of accepted) {
     const finding = findings.find(row => row.finding_id === decision.finding.finding_id);
@@ -242,6 +286,8 @@ export async function validateBacAttachment({ reportsRoot, attachment, item, aud
   if (run.result.out_of_model.length) gaps.push("存在模型外权限控制，须由原授权审计继续核对。");
   const status = gaps.length ? "PARTIAL" : "COMPLETE";
   requireBac(attachment.status === status, "专项状态隐藏了覆盖或复查缺口。");
+  // Preserve every binding/accepted-finding check before a recoverable shape error.
+  await verifyEvidenceSources(plan, run.input.source_root, [run.input.acp, run.input.paths, run.input.api_catalog, run.input.resource_role_catalog, review]);
   return { status, candidates: run.result.findings.length, accepted: accepted.length,
     paths: run.result.path_results.length, policies: run.result.summary.acp_quadruples,
     policy_bindings: run.input.acp.quadruples.map(row => row.tuple),

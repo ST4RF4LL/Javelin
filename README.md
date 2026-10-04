@@ -1,8 +1,20 @@
 # OpenCode Multi-Agent Source Security Audit
 
-这是一套项目级 OpenCode 配置，用于对源码、平台配置以及 AI/LLM/Agent/RAG/MCP 系统做多 agent 安全审计。系统先从代码、文档、历史漏洞和 Owner 知识构建可追溯威胁模型，再按入口点、信任边界、资产和业务/AI 工作流划分 Focus Area。每个 Focus Area 的适用 D1-D10 维度都经过 `sink-driven`、`control-driven`、`config-driven` 三个视角，并补充 checklist-light Blind、历史/案例驱动的 Seeded Variant 和独立系统攻击链发现。可信结构 verifier 对文件/函数做精确差分；Coverage Telemetry 以 Assignment Unit 接收 exception-first 证明，在 Ledger 内部保留精确 check 状态和认证哈希链；语义 verifier 对入口点/威胁/Focus/发现轨道/攻击链面做精确差分。
+这是一套项目级 OpenCode 配置，用于对源码、平台配置以及 AI/LLM/Agent/RAG/MCP 系统做多 agent 安全审计。新建工作台任务通过通用面板管理高风险 Focus Area 与逐接口 API 审查，由程序按专业领域分派，接收报告后继续执行，最后统一开展内容复核和漏洞验证。历史任务保留原有 Tri-Lens、Coverage Ledger 和阶段交付协议。
 
 首次使用请先完成[初始化与安装](docs/installation.md)，生成仅保存在本机的 `.opencode/opencode.json`。
+
+## 通用审计任务面板
+
+新建工作台审计默认使用 `task-board.v1`。创建表单提供“高风险 Focus Area / 逐接口 API 审查”策略切换，默认选择 Focus Area。前者由威胁建模提炼高风险主题，后者要求提供 API 清单并逐项定位代码。每轮审计只生成所选粒度的任务，统一保存任务名称、领域、来源、代码引用及自然语言 prompt。
+
+平台 monitor 按领域派发任务，每个领域同时执行一项，总并发上限为四个领域。专业 worker 复用原 Agent 的领域知识和技能，每项使用独立会话。收到任务绑定正确、已完整写入的报告后立即继续派发；内容判断由后续验证 Agent 完成，零发现报告同样进入质量复核。面板展示分类、执行状态、报告位置、具体任务描述和独立复核状态。
+
+API 输入支持每行一个接口的文本或 JSON 数组。策略随任务保存，恢复沿用，重试时回填；服务拒绝发布与本轮策略不符的任务。未定位清楚的 API 条目仍保留任务和缺口；发布封存会拒绝遗漏任何导入条目。交付率的分母是已发布任务及 API 模式下用户提供的清单，不能解释为应用全部接口或全部漏洞的覆盖率。
+
+旧审计继续按其原协议恢复。程序调用如需创建兼容任务，可显式传入 `task_protocol: "local-todo.v1"`，此模式不接受 API 清单。下文有关旧 TODO、全范围 Focus 分区与三视角分文件的说明仅适用于兼容流程。
+
+详细状态、命令、恢复和验证边界见[通用任务面板](docs/task-board.md)。
 
 ## Agent topology
 
@@ -175,6 +187,18 @@ npm --prefix .opencode run start:audit-workbench
 
 默认监听 `http://127.0.0.1:4173`。页面统一展示仓库 Git/配置就绪度、审计任务、8 阶段流水线、带人工处理 companion 状态的漏洞台账、报告记录、运行环境组件与能力快照，以及动态验证的授权 loopback 环境、隔离浏览器上下文和 extension-v2 脱敏 HTTP 请求/响应证据链。安装 tmux（macOS/Linux/WSL）或 psmux（Windows）后，新建静态审计还会得到一个只读 OpenCode 实时窗口；网页按精确 multiplexer target 刷新画面，也会给出可在工作台主机执行的直接 attach 命令。Windows 环境探针只检查 Chrome 可执行文件是否存在，不会为了读取版本而启动空白浏览器。历史 v1 验证结果没有持久化 HTTP exchange 时会明确标记为“未捕获”。人工处理状态使用独立版本和幂等事件记录，不覆盖 canonical finding；Windows 验证结果同步到工作台的 `reports/repositories/<repository-id>/validation-handoff/runtime/` 后也会被统一读取。
 
+新版 React / NestJS 工作台已支持真实任务：`npm --prefix .opencode run start:audit-workbench:platform`（首次需安装 `apps/workbench` 依赖并运行 `build:audit-workbench:modern`），默认入口 `http://127.0.0.1:4181`。可选择产品、源码、模型和策略，创建任务并执行调度、暂停、恢复、取消或断点恢复；复用原平台 Runner 与业务数据。上一阶段只读入口 `start:audit-workbench:modern`、4173 原平台及 4180 首版封存预览继续保留。启动、任务操作、诊断和回退方法见 [新版工作台说明](apps/workbench/README.md)。
+
+动态验证默认展示“验证动作”：按产品、审计和漏洞归集浏览器操作与 HTTP 请求/响应；没有绑定漏洞的环境接触和探索单独显示，受阻、缺失正文与证据校验失败保留具体缺口。贯穿式 `runtime-testing.v1` 与历史人工补充验证共用该视图；旧文本不能可靠还原时只展示脱敏原文，不猜测 HTTP 请求。读取页面和导出不会启动验证。
+
+“导出 Bruno 集合（JSON）”下载 `*.bruno.json`，在 Bruno 中选择 **Import Collection** 并选择该 JSON 文件（如有格式选项，选择 **Bruno Collection**），再选择 `local` 环境。请求的 Examples 保存历史响应，Docs 保存审计、漏洞、工作包和捕获摘要；敏感字段替换为空白凭据变量。缺失、截断、二进制或 multipart 请求正文只保留证据说明，不生成可发送请求。HAR 同时保留捕获缺口和未知耗时标记。导出接口默认 JSON，显式 `format: "opencollection"` 保留旧 ZIP；后者拒绝不完整请求。
+
+来源筛选选项与验证记录独立加载；筛选接口超时或失败会单独提示，已返回的验证动作仍可查看。切换任务会清除旧结果详情，迟到的刷新响应不能覆盖较新的记录。单次 Bruno/HAR 导出最多 100 条，超过上限时页面禁用导出并提示减少选择。JSON 正文脱敏保留未修改的数字字面量、重复字段和空白，避免大整数对象 ID 在封存、展示或导出过程中被舍入。
+
+本次选用 Bruno 的官方导入格式与解析器。官方 [Bruno MCP](https://github.com/usebruno/bruno-mcp) 提供集合读取及 CLI 执行，可作为以后明确授权后的执行适配器；本平台当前仍使用 Chrome DevTools MCP，不会因浏览或导出记录自动安装、启动 Bruno MCP 或重放请求。官方目前没有经确认的通用本地集合打开链接，因此界面提供下载和[导入步骤](https://docs.usebruno.com/get-started/import-export-data/import-collections)。
+
+离线回归：`npm --prefix .opencode run test:validation-evidence`。官方兼容性检查使用本机已安装的 `@usebruno/schema`、`@usebruno/filestore`，或 `BRUNO_APP_ASAR` 指定的 Bruno 桌面包（macOS 默认查找 `/Applications/Bruno.app/Contents/Resources/app.asar`），只读取应用代码，不读取用户集合、偏好或凭据。缺少官方包时该兼容性检查会明确跳过，不能把其他测试通过当作导入已验收。此次在 Bruno 4.1.0 上完成 schema 严格校验和 BRU/YAML 解析往返；没有执行 `bru run`。
+
 需要由 Web 端启动 OpenCode 时，必须显式开启 Runner。工作台启动后不会默认把自身源码当成审计项目；在“审计项目”页面点击“指定目录”，填写工作台所在机器可访问的源码绝对路径。目标目录需要是已 checkout 的 Git 工作树，但不需要复制工作台的 `.opencode/`；Agent、Skill 和 MCP 使用本工作台自己的受控配置。
 
 在“设置”的“使用模型”中可为 Web 任务选择 `默认` 或已配置的 `provider/model`。清单从工作台的 `.opencode/opencode.json(c)`、兼容路径 `~/.config/opencode.json(c)` 及 OpenCode 标准全局配置 `~/.config/opencode/opencode.json(c)` 读取，并兼容 UTF-8 BOM、注释和尾逗号；未开始的审计、重试和断点恢复会在实际启动时读取当前选择，并以 `opencode run --model provider/model` 启动。已经运行的进程不受设置变更影响；选择“默认”时不传递 `--model`。
@@ -237,6 +261,8 @@ Joern 不再注册为 MCP。函数清单构建器和深度审计命令可直接�
 
 占位 MCP 需要替换为你本机实际可运行的 `type/command` 或 `type/url` 后再启用。
 
+Agent 工具与框架静态挖掘：新增 `agent-tool-boundaries.v1`，覆盖 API/function/skill/MCP 导致的 RCE、未授权工具调用和框架权限绕过。通过任务面板的 `ai` 任务显式选择，参考本地知识库案例，输出源码摘要绑定的候选与缺口；攻击 prompt 和动态验证暂不纳入。设计、证据要求和使用入口见 [Agent 漏洞挖掘](docs/agent-vulnerability-mining.md)。
+
 ## Permission defaults
 
 默认配置已放开编辑和外部访问权限，便于开发和调试：
@@ -249,3 +275,7 @@ Joern 不再注册为 MCP。函数清单构建器和深度审计命令可直接�
 - `skill: "*": allow` — 所有 agent 可使用任意发现的 skill，skill 通过目录约定自动映射。
 - `pwd`、`ls`、`find`、`rg`、`git status/log/grep/ls-files`、`mkdir` 等既有细粒度规则继续保留，便于描述各角色的常规命令集；未命中的 Bash 命令也自动允许。
 - 新流程由控制器管理环境租约、预算和 Chrome DevTools MCP，worker 只能使用受控工具。无环境不启动浏览器；超时、清理失败或未知状态停止复用。旧 quick 和人工验证维持原授权范围。禁止远程目标、全局 Chrome 进程终止、凭证外泄、持久化后门和破坏性操作。
+
+### 产品多 Repo 审计与长期记忆
+
+产品可绑定目录并发现多级模块、Git 或无 Git Repo；工作台提供产品/模块联合静态审计、源码与接口差异、人工反馈时间线、跨 Repo 关联及长期待办。单 Repo 审计也能复用历史事实和判断理由。使用方法、迁移规则、当前边界及验证记录见 [实现说明](docs/product-memory-implementation.md)，架构目标见 [设计方案](docs/product-multi-repo-memory-design.md)。新增模块回归：在 `.opencode` 目录运行 `npm run test:product-memory`。

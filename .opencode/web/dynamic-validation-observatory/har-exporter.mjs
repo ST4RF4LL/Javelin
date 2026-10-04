@@ -30,6 +30,7 @@ function safeHeaders(headers) {
 
 function safeUrl(value) {
   const url = new URL(value);
+  url.username = ""; url.password = "";
   const query = [];
   for (const [name, item] of url.searchParams) query.push({ name, value: secretName(name) ? REDACTED : redactText(item) });
   url.search = new URLSearchParams(query.map(item => [item.name, item.value])).toString();
@@ -37,12 +38,17 @@ function safeUrl(value) {
 }
 
 function entry(exchange) {
+  if (typeof exchange.started_at !== "string" || !Number.isFinite(Date.parse(exchange.started_at))) {
+    throw Object.assign(new Error("该记录没有 HAR 必需的有效时间戳，请使用 Bruno JSON 导出保留证据缺口。"), { statusCode: 422, code: "har-export-timestamp-missing" });
+  }
   const requestUrl = safeUrl(exchange.request.url);
   const requestHeaders = safeHeaders(exchange.request.headers);
   const responseHeaders = safeHeaders(exchange.response?.headers);
   const requestBody = exchange.request.body;
   const responseBody = exchange.response?.body;
-  const duration = Math.max(0, Number(exchange.duration_ms) || 0);
+  const durationKnown = typeof exchange.duration_ms === "number" && Number.isFinite(exchange.duration_ms) && exchange.duration_ms >= 0;
+  const duration = durationKnown ? exchange.duration_ms : 0;
+  const available = body => body && body.available !== false && !body.omitted && body.capture_status !== "missing" && typeof body.text === "string";
   return {
     startedDateTime: exchange.started_at,
     time: duration,
@@ -54,8 +60,8 @@ function entry(exchange) {
       queryString: requestUrl.query,
       cookies: [],
       headersSize: -1,
-      bodySize: requestBody?.size ?? (requestBody?.text ? Buffer.byteLength(requestBody.text) : 0),
-      ...(requestBody ? { postData: { mimeType: requestBody.media_type, text: redactText(requestBody.text) } } : {}),
+      bodySize: available(requestBody) ? requestBody.size ?? Buffer.byteLength(requestBody.text) : -1,
+      ...(available(requestBody) ? { postData: { mimeType: requestBody.media_type, text: redactText(requestBody.text) } } : {}),
     },
     response: {
       status: exchange.response?.status ?? 0,
@@ -64,18 +70,23 @@ function entry(exchange) {
       headers: responseHeaders,
       cookies: [],
       content: {
-        size: responseBody?.size ?? (responseBody?.text ? Buffer.byteLength(responseBody.text) : 0),
+        size: available(responseBody) ? responseBody.size ?? Buffer.byteLength(responseBody.text) : 0,
         mimeType: responseBody?.media_type ?? "application/octet-stream",
-        text: redactText(responseBody?.text ?? ""),
+        ...(available(responseBody) ? { text: redactText(responseBody.text), ...(responseBody.encoding === "base64" ? { encoding: "base64" } : {}) } : {}),
       },
       redirectURL: exchange.redirect_chain?.at(-1)?.to ?? "",
       headersSize: -1,
-      bodySize: responseBody?.size ?? -1,
+      bodySize: available(responseBody) ? responseBody.size ?? -1 : -1,
     },
     cache: {},
-    timings: { send: 0, wait: duration, receive: 0 },
-    comment: `dynamic-validation exchange_id=${exchange.exchange_id}; source=${exchange.source}; sanitized=true`,
-    _dynval: { exchange_id: exchange.exchange_id, parent_exchange_id: exchange.parent_exchange_id ?? null, source: exchange.source, evidence_binding: exchange.evidence_binding ?? null },
+    timings: { send: durationKnown ? 0 : -1, wait: durationKnown ? duration : -1, receive: durationKnown ? 0 : -1 },
+    comment: `动态验证脱敏历史证据；${durationKnown ? "耗时已记录" : "耗时未记录，time=0 为 HAR 占位值"}。正文缺失与截断状态详见 _dynval。`,
+    _dynval: { exchange_id: exchange.exchange_id, parent_exchange_id: exchange.parent_exchange_id ?? null, source: exchange.source,
+      audit_id: exchange.audit_id ?? null, finding_id: exchange.finding_id ?? null, repository_id: exchange.repository_id ?? null,
+      timestamp_source: exchange.timestamp_source ?? "request_start", duration_ms: durationKnown ? duration : null,
+      request_body_available: Boolean(available(requestBody)), response_body_available: Boolean(available(responseBody)),
+      request_body_truncated: requestBody?.truncated === true, response_body_truncated: responseBody?.truncated === true,
+      capture_gaps: exchange.capture_gaps ?? [], evidence_binding: exchange.evidence_binding ?? null },
   };
 }
 

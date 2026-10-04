@@ -3,5 +3,5 @@
   "type": "subagent-skill-collection",
   "owner_agent": "ai-security-auditor",
   "description": "Skill collection for full-scope AI, LLM, agentic, RAG, MCP/tool, model, data, and evaluation security auditing.",
-  "skills": ["ai-system-security-review"]
+  "skills": ["ai-system-security-review", "agent-tool-boundary-mining"]
 }

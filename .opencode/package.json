@@ -1,7 +1,8 @@
 {
   "scripts": {
-    "test": "npm run test:bac && npm run test:runtime-testing && npm run test:knowledge && npm run test:config && npm run test:audit-todo && npm run test:audit-queue && npm run test:stage-agent-contract && npm run test:stage-delivery-contract && npm run test:truth-validation-contract && npm run test:threat-model-contract && npm run test:semgrep && npm run test:finding-contract && npm run test:report-details && npm run test:external-runtime-validation-contract && npm run test:dynamic-validation-contract && npm run test:windows-control && npm run test:dynamic-validation-core && npm run test:dynamic-validation-web && npm run test:audit-workbench && npm run test:finding-adjudication && npm run test:cvss-assessment && npm run test:adjudication-regressions && npm run test:attack-chain-contract && npm run test:semantic-reseed && npm run test:coverage && npm run test:semantic",
+    "test": "npm run test:product-memory && npm run test:agent-mining && npm run test:bac && npm run test:runtime-testing && npm run test:knowledge && npm run test:config && npm run test:task-board && npm run test:audit-todo && npm run test:audit-queue && npm run test:stage-agent-contract && npm run test:stage-delivery-contract && npm run test:truth-validation-contract && npm run test:threat-model-contract && npm run test:semgrep && npm run test:finding-contract && npm run test:report-details && npm run test:external-runtime-validation-contract && npm run test:dynamic-validation-contract && npm run test:windows-control && npm run test:dynamic-validation-core && npm run test:dynamic-validation-web && npm run test:audit-workbench && npm run test:finding-adjudication && npm run test:cvss-assessment && npm run test:adjudication-regressions && npm run test:attack-chain-contract && npm run test:semantic-reseed && npm run test:coverage && npm run test:semantic",
     "test:runtime-testing": "node --test tests/run-runtime-testing-tests.mjs",
+    "test:validation-evidence": "node --test tests/run-validation-activity-tests.mjs tests/run-validation-activity-ui-tests.mjs tests/run-bruno-export-tests.mjs tests/run-runtime-browser-adapter-tests.mjs",
     "test:knowledge": "node --test tests/run-knowledge-workflow-tests.mjs",
     "test:config": "node tests/validate-configuration.mjs",
     "test:audit-todo": "node tests/run-audit-todo-tests.mjs && node tests/run-workflow-optimization-tests.mjs && node --test tests/run-focus-area-watchdog-tests.mjs",
@@ -15,9 +16,9 @@
     "test:finding-contract": "node tests/run-finding-contract-tests.mjs",
     "test:external-runtime-validation-contract": "node tests/run-external-runtime-validation-contract-tests.mjs",
     "test:dynamic-validation-contract": "node tests/run-dynamic-validation-contract-tests.mjs && node tests/run-web-runtime-validation-tests.mjs",
-    "test:dynamic-validation-core": "node tests/run-dynamic-validation-core-tests.mjs",
+    "test:dynamic-validation-core": "node tests/run-dynamic-validation-core-tests.mjs && npm run test:validation-evidence",
     "test:dynamic-validation-web": "node tests/run-dynamic-validation-observatory-tests.mjs",
-    "test:audit-workbench": "node tests/run-snapshot-cache-tests.mjs && node tests/run-audit-list-tests.mjs && node tests/run-product-store-tests.mjs && node tests/run-audit-workbench-tests.mjs",
+    "test:audit-workbench": "node tests/run-snapshot-cache-tests.mjs && node tests/run-audit-list-tests.mjs && node --test tests/run-audit-product-filter-ui-tests.mjs tests/run-audit-progress-tests.mjs && node tests/run-product-store-tests.mjs && node tests/run-audit-workbench-tests.mjs",
     "test:product-store": "node tests/run-product-store-tests.mjs",
     "start:audit-workbench": "node web/dynamic-validation-observatory/server.mjs",
     "start:audit-workbench:runner": "node web/dynamic-validation-observatory/server.mjs --enable-runner",
@@ -39,8 +40,18 @@
     "winapp:mcp": "node scripts/windows-control-mcp.mjs",
     "test:windows-control": "node tests/run-windows-control-tests.mjs",
     "test:report-details": "node --test tests/run-report-details-tests.mjs",
-    "test:bac": "node --test tests/run-bac-analysis-tests.mjs",
-    "bac": "node scripts/bac-analysis.mjs"
+    "test:bac": "node --test tests/run-bac-analysis-tests.mjs tests/run-task-board-bac-tests.mjs",
+    "bac": "node scripts/bac-analysis.mjs",
+    "test:task-board": "node --test tests/run-task-board-tests.mjs",
+    "test:agent-mining": "node --test tests/run-agent-mining-tests.mjs",
+    "agent-mining": "node scripts/agent-mining.mjs",
+    "test:product-memory": "node --test tests/run-product-memory-tests.mjs tests/run-product-audit-tests.mjs tests/run-product-memory-integration-tests.mjs tests/run-product-memory-ui-tests.mjs",
+    "start:audit-workbench:modern": "npm --prefix ../apps/workbench run start:integrated",
+    "build:audit-workbench:modern": "npm --prefix ../apps/workbench run build",
+    "start:audit-workbench:preview": "npm --prefix ../apps/workbench run start:preview:baseline",
+    "test:audit-workbench:modern": "node --test tests/run-workbench-ui-tests.mjs && npm --prefix ../apps/workbench test",
+    "start:audit-workbench:platform": "npm --prefix ../apps/workbench run start:platform",
+    "test:audit-workbench:platform": "npm --prefix ../apps/workbench run test:tasks"
   },
   "dependencies": {
     "@modelcontextprotocol/sdk": "^1.29.0",

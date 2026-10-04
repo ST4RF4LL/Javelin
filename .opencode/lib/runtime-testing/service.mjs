@@ -191,8 +191,10 @@ export class RuntimeTestingService {
       // Preparation may have outlived the lease; never launch a late worker.
       this.controller.requireActive(active.token);
       await new Promise((resolve, reject) => {
-        const child = this.spawnProcess(this.command, ["run", "--format", "json", "--agent", "runtime-testing-worker", "--dir", this.workspaceRoot,
-          ...(this.model ? ["--model", this.model] : []), "--file", inputPath, "执行附件中的唯一工作包，通过 runtime-browser 提交结果后结束。"],
+        // --file is variadic: keep the positional message before all options.
+        const child = this.spawnProcess(this.command, ["run", "执行随本消息展开的 JSON 工作包。用户环境原文就是该 JSON 对象中 environment.prompt 的字符串值，不是另一个文件或附件。CONTACT 的 environment_ready=false 与 origins=[] 表示等待你理解原文并调用 configure_environment 登记；登记成功前禁止访问目标。通过 runtime-browser 提交结果后结束。",
+          "--format", "json", "--agent", "runtime-testing-worker", "--dir", this.workspaceRoot,
+          ...(this.model ? ["--model", this.model] : []), "--file", inputPath],
         { cwd: this.workspaceRoot, env: { ...this.environment, OPENCODE_CONFIG_CONTENT: JSON.stringify(config) }, stdio: "ignore", shell: false });
         let stopping; let exited = false;
         active.stopWorker = () => {

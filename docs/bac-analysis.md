@@ -22,6 +22,14 @@ $env:AUDIT_BAC_PYTHON = 'C:\Tools\Python311\python.exe'
 
 本机 `.grow` 配置已同步三项技能和角色说明，脚本与公共库通过既有链接共用源码。Grow 启动前需显式设置 `AUDIT_BAC_MODE=auto`、`AUDIT_BAC_CLI`；不设置时保持原流程。`.grow` 仍被本地 Git 忽略，运行器继续保留原有的 OpenCode/Grow 边界；具体说明见本机 `.grow/MIGRATION.md` 的第 13 节。
 
+## 新版任务计划适配
+
+`task-board.v1` 的 Focus Area 与逐接口 API 任务使用原生 `bac-task-plan.v1`。平台从已发布任务、执行尝试与冻结源码生成计划；工作线程通过 `--task/--attempt` 调用原有四步差分工具。无需旧 Coverage Plan 的 coverage_units、checks 或 interface_index，也不会伪造这些实体。
+
+策略会话在任务发布前生成独立策略分片和资源角色目录，将文件路径与 SHA-256 写入任务的 bac_analysis。平台自动传递计划，prepare 自动加载策略；工作线程只补全真实路径和逐候选复查。API 清单中的自由描述保留原 source_id，新增入口必须给出源码证据。
+
+复核与最终封存会重新核对任务、尝试、真实会话、策略摘要、冻结源码和接入候选，生成路径/策略/候选/接入统计及全部缺口。缺附件、缺策略和未决路径不能靠文字 REVIEWED 消除；其他静态审计仍可继续。已经封存的历史报告不会自动改写，新能力用于新建任务。命令和发布字段见[新版执行契约](../.opencode/lib/bac/workflow.md)。
+
 ## 分析流程
 
 1. Recon 复用冻结入口、函数和数据库线索。建立有源码证据的资源/角色规范名，不把同名跨服务表直接合并。

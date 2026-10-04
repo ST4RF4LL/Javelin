@@ -50,7 +50,7 @@ export function parseKnowledgeArgs(args) {
 
 export async function queryKnowledge(request, { environment = process.env, execute = executeFile, host = process.platform } = {}) {
   const base = { schema_version: "audit-knowledge-query.v1", read_only: true, automatic_vulnerability_verdict: false };
-  if (request.track === "blind") return { ...base, status: "SKIPPED", reason: "盲测轨道不加载知识库、历史案例或根因种子。" };
+  if (request.track === "blind" || environment.AUDIT_MEMORY_MODE === "blind") return { ...base, status: "SKIPPED", reason: "盲测轨道不加载知识库、历史案例或根因种子。" };
   if (environment.AUDIT_KNOWLEDGE_ENABLED === "false") return { ...base, status: "SKIPPED", reason: "知识库对接已关闭。" };
   const root = resolve(platformRoot, request.root || knowledgeEnvironment(platformRoot, environment).AUDIT_KNOWLEDGE_ROOT);
   try {

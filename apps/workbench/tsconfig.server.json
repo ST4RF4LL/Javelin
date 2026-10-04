@@ -1,0 +1,9 @@
+{
+  "include": ["server/**/*.ts", "shared/**/*.ts"],
+  "compilerOptions": {
+    "target": "ES2022", "module": "NodeNext", "moduleResolution": "NodeNext",
+    "rootDir": ".", "outDir": "build/api", "strict": true,
+    "experimentalDecorators": true, "emitDecoratorMetadata": true,
+    "esModuleInterop": true, "skipLibCheck": true, "types": ["node"]
+  }
+}

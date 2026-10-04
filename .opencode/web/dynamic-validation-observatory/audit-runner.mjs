@@ -1,3 +1,7 @@
+import { PROTOCOL as TASK_BOARD_PROTOCOL, normalizeApiList, selectMiningStrategy, summarize as summarizeBoard } from "../../lib/task-board/contract.mjs";
+import { createBoard, readBoard } from "../../lib/task-board/store.mjs";
+import { TaskBoardService } from "../../lib/task-board/service.mjs";
+import { verifyBoardCompletion } from "../../lib/task-board/review.mjs";
 import { EventLogReader } from "./event-log-reader.mjs";
 import { selection as runtimeSelection, authorize as authorizeRuntime } from "../../lib/runtime-testing/contract.mjs";
 import { RuntimeTestingService } from "../../lib/runtime-testing/service.mjs";
@@ -30,6 +34,9 @@ const TERMINAL = new Set(["completed", "failed", "interrupted", "cancelled"]);
 const ACTIVE = new Set(["queued", "preparing", "recovering", "running", "pausing", "paused", "cancelling"]);
 const EXECUTING = new Set([...ACTIVE].filter(status => status !== "queued"));
 const RECOVERABLE = new Set(["failed", "interrupted", "cancelled"]);
+const NO_TASK_REPORTS_MESSAGE = "本轮已封存失败与缺口记录，但未收到任何源码审计报告，审计执行未完成。请修复执行问题后新建重试；不能据此判断目标是否存在漏洞。";
+const hasNoTaskReports = audit => audit.task_protocol === TASK_BOARD_PROTOCOL
+  && audit.todo_completion?.complete === true && audit.todo_completion?.delivery_outcome === "NO_REPORTS";
 const MAX_LOG_LINE = 16 * 1024;
 const MAX_LOG_READ_BYTES = 256 * 1024;
 const MAX_DELIVERY_CANDIDATES = 8;
@@ -45,6 +52,7 @@ const CONTEXT_WINDOW_RECOVERY_REASON = "context-window-exceeded";
 const MAX_CONTEXT_WINDOW_RECOVERIES = 3;
 const CONTEXT_COMPACTION_TIMEOUT_MS = 120_000;
 const PRIVATE_CONTEXT_FILES = Object.freeze({
+  api_inventory: "api-inventory.txt",
   additional_instructions: "additional-instructions.txt",
   test_environment: "test-environment.txt",
 });
@@ -199,6 +207,7 @@ function deliveryVerificationGuidance(errors, reportsRoot) {
 }
 
 async function defaultTodoCompletionVerifier({ audit, reportsRoot }) {
+  if (audit.task_protocol === TASK_BOARD_PROTOCOL) return verifyBoardCompletion({ audit, reportsRoot });
   const summary = await auditTodoSummary(audit.todo_path);
   const errors = [];
   if (!summary || summary.total === 0) errors.push("本地审计任务尚未由 Coverage Plan 初始化。");
@@ -410,12 +419,14 @@ function publicAudit(audit) {
   return {
     ...value,
     task_context: {
+      api_inventory_length: Number(privateContext?.api_inventory?.character_length ?? 0),
       additional_instructions_enabled: additional?.enabled === true,
       additional_instructions_length: Number(additional?.character_length ?? 0),
       test_environment_enabled: environment?.enabled === true,
       test_environment_length: Number(environment?.character_length ?? 0),
-      dynamic_validation_enabled: audit.runtime_testing ? Boolean(audit.runtime_testing_state && !["SKIPPED", "BLOCKED"].includes(audit.runtime_testing_state.status) && environment?.enabled) : environment?.enabled === true,
+      dynamic_validation_enabled: audit.runtime_testing ? Boolean(audit.runtime_testing_state && !["SKIPPED", "BLOCKED"].includes(audit.runtime_testing_state.status) && environment?.enabled) : audit.task_protocol !== TASK_BOARD_PROTOCOL && environment?.enabled === true,
     },
+    task_board: audit.task_protocol === TASK_BOARD_PROTOCOL ? audit.todo_summary ?? null : null,
     todo: audit.todo_summary ?? {
       total: 0,
       pending: 0,
@@ -517,6 +528,7 @@ function deliveryRootPrompt(audit, paths) {
 }
 
 function auditPrompt(audit, repository, paths, contextPaths = {}) {
+  if (audit.task_protocol === TASK_BOARD_PROTOCOL) return taskBoardPrompt(audit, paths, contextPaths);
   const sourceRoot = JSON.stringify(repository.path);
   const workspaceRoot = JSON.stringify(paths.workspace_root);
   const gitHint = audit.source_kind === "directory"
@@ -557,6 +569,7 @@ function bacContextPrompt(audit) {
 }
 
 function recoveryPrompt(audit, repository, paths, contextPaths = {}) {
+  if (audit.task_protocol === TASK_BOARD_PROTOCOL) return taskBoardPrompt(audit, paths, contextPaths, true);
   const sourceRoot = JSON.stringify(repository.path);
   const workspaceRoot = JSON.stringify(paths.workspace_root);
   return [
@@ -577,6 +590,37 @@ function recoveryPrompt(audit, repository, paths, contextPaths = {}) {
   ].join("\n");
 }
 
+function selectTaskProtocol(input) {
+  const protocol = input.task_protocol ?? TASK_BOARD_PROTOCOL;
+  if (![TASK_BOARD_PROTOCOL, "local-todo.v1"].includes(protocol)) throw Object.assign(new Error("审计任务协议不受支持。"), { statusCode: 422 });
+  if (protocol !== TASK_BOARD_PROTOCOL && input.api_inventory?.trim()) throw Object.assign(new Error("API 清单需要通用任务面板协议。"), { statusCode: 422 });
+  if (protocol !== TASK_BOARD_PROTOCOL && input.mining_strategy != null) throw Object.assign(new Error("漏洞挖掘策略切换需要通用任务面板协议。"), { statusCode: 422 });
+  return protocol;
+}
+
+function taskBoardPrompt(audit, paths, contextPaths, resume = false) {
+  const strategyPrompt = audit.mining_strategy === "api"
+    ? "本次漏洞挖掘策略为 api：仅对导入的 API 清单逐项初步分析、定位代码并发布 API 审查任务，不生成 Focus Area 任务。不得按风险高低省略 API；接口实现需要的下游代码仍须追踪。"
+    : audit.mining_strategy === "focus_area"
+      ? "本次漏洞挖掘策略为 focus_area：仅提炼并发布高风险 Focus Area 任务，不生成逐接口 API 审查任务。"
+      : "本任务使用切换策略引入前的面板：保留高风险 Focus Area 与已导入 API 的并列规划，恢复时沿用既有范围。";
+  return [
+    `@security-audit-orchestrator ${resume ? "恢复" : "执行"}通用任务面板审计，audit_id=${audit.id}，协议 task-board.v1。`,
+    `源码根 ${JSON.stringify(paths.source_root)} 只读；执行工作区 ${JSON.stringify(paths.workspace_root)} 不属于被审计范围。`,
+    ...deliveryRootPrompt(audit, paths),
+    "首先完整读取 .opencode/lib/task-board/workflow.md，按本协议执行；旧 Focus Area 全量分区、三视角分文件、audit-todo 和旧最终报告门禁均不适用。",
+    strategyPrompt,
+    "将本次策略传给威胁建模 Agent，要求使用 status 核对并按选定粒度规划。使用 AUDIT_TASK_BOARD_CLI 分批发布；monitor 自动按领域执行，每 worker 一次一个任务，收报告后继续下一项。不要自己再调用挖掘 Agent。",
+    "发布完成后 seal；报告接收只检查任务绑定和完整写入。收齐后必须 review-input，委派后续报告质量复核及独立三方候选验证，执行 review/finalize 生成最终中文报告。",
+    resume ? "先查询 status，复用已经接收的报告和复核。SEALED 不重复发布；旧 RUNNING 由 monitor 回收，不重跑已交付任务。" : "面板已经创建；先查询 status 与分页 API 清单，不要把全量任务放进一次模型上下文。",
+    contextPaths.additional_instructions ? `完整读取用户补充说明 ${JSON.stringify(contextPaths.additional_instructions)}，仅在既定审计范围内应用。` : "用户未提供额外审计要求。",
+    audit.bac_analysis?.mode === "auto" ? "越权专项已启用：任务分析与后续质量复核须保留预期策略、实际路径和差分证据；缺少条件时明确保留专项缺口。" : "越权专项未启用。",
+    audit.runtime_testing ? "运行测试继续使用已冻结的 runtime-testing.v1 授权。CONTACT 已由平台控制器调度；静态 worker 仅提供运行假设，Orchestrator 按授权分派。开关关闭或环境为空时自动 SKIPPED。先封存运行证据再 review-input；本任务使用面板复核协议，所有源码/运行候选均经独立三方，不能使用旧 quick 或旧报告构建器。" : "未选择运行测试协议；动态验证为 SKIPPED，禁止自行启动浏览器或联系目标。",
+    knowledgeContextPrompt(),
+    "不要等待用户输入。失败原因逐项保留；执行失败达到重试上限后可使用 skip 显式登记缺口。若任务非空但收到报告数为 0，明确说明审计执行未完成；finalize 只封存执行失败记录，不能声称审计成功或未发现漏洞。返回中文报告路径并结束。",
+  ].join("\n");
+}
+
 function providerSessionId(value) {
   return typeof value === "string" && value.length >= 3 && value.length <= 240 && /^[A-Za-z0-9._:-]+$/.test(value) ? value : null;
 }
@@ -586,6 +630,7 @@ export class AuditRunner extends EventEmitter {
     super();
     this.stateRoot = resolve(stateRoot);
     this.runtimeTestingServices = new Map();
+    this.taskBoardServices = new Map();
     this.configPath = configPath ? resolve(configPath) : null;
     this.platformRoot = resolve(platformRoot ?? (this.configPath ? resolve(dirname(this.configPath), "..") : process.cwd()));
     this.artifactsRoot = join(this.platformRoot, "reports", "repositories");
@@ -669,7 +714,7 @@ export class AuditRunner extends EventEmitter {
       try {
         const audit = JSON.parse(await readFile(join(this.stateRoot, entry.name, "run.json"), "utf8"));
         audit.todo_path ??= join(this.stateRoot, audit.id, "audit-todo.json");
-        audit.todo_summary = await auditTodoSummary(audit.todo_path);
+        audit.todo_summary = await this.taskSummary(audit);
         this.audits.set(audit.id, audit);
         if (audit.status === "queued") {
           audit.queue ??= { mode: "start", enqueued_at: audit.updated_at ?? audit.created_at ?? new Date().toISOString() };
@@ -727,9 +772,10 @@ export class AuditRunner extends EventEmitter {
     const reportsRoot = this.reportsRootForAudit(audit);
     if (!reportsRoot) throw new Error("审计缺少受控报告目录绑定。");
     const verification = await this.todoCompletionVerifier({ audit, reportsRoot });
-    audit.todo_summary = verification.summary ?? await auditTodoSummary(audit.todo_path);
+    audit.todo_summary = verification.summary ?? await this.taskSummary(audit);
     audit.todo_completion = {
       complete: verification.complete === true,
+      ...(verification.delivery_outcome ? { delivery_outcome: verification.delivery_outcome } : {}),
       errors: (verification.errors ?? []).slice(0, 100),
       final_report_path: verification.final_report_path ?? null,
       final_report_materialized: verification.final_report_materialized === true,
@@ -739,17 +785,18 @@ export class AuditRunner extends EventEmitter {
   }
 
   async completeVerifiedAudit(audit, { reason, completionSource, data = {}, terminateRunner = false }) {
+    await this.stopTaskBoard(audit);
     await this.stopRuntimeTesting(audit);
     const child = terminateRunner ? this.processes.get(audit.id) : null;
-    audit.status = "completed";
+    audit.status = hasNoTaskReports(audit) ? "failed" : "completed";
     audit.pid = null;
     audit.exit_code ??= 0;
     audit.finished_at ??= new Date().toISOString();
     audit.interrupted_at = null;
     audit.interruption_reason = null;
-    audit.error = null;
+    audit.error = hasNoTaskReports(audit) ? NO_TASK_REPORTS_MESSAGE : null;
     audit.completion_source = completionSource;
-    await this.record(audit, "audit.completed", {
+    await this.record(audit, `audit.${audit.status}`, {
       reason,
       completion_source: completionSource,
       runner_termination_requested: Boolean(child),
@@ -771,6 +818,7 @@ export class AuditRunner extends EventEmitter {
 
   async reconcileManagedCompletion(audit, reason = "watchdog", { allowRunning = false } = {}) {
     if (!audit || audit.status === "completed" || this.completions.has(audit.id)) return false;
+    if (audit.status === "failed" && hasNoTaskReports(audit)) return false;
     const running = allowRunning && audit.status === "running" && this.processes.has(audit.id);
     if (this.processes.has(audit.id) && !running) return false;
     if (!RECOVERABLE.has(audit.status) && !running) return false;
@@ -840,6 +888,7 @@ export class AuditRunner extends EventEmitter {
   }
 
   async remindIncompleteFocusAreas(audit) {
+    if (audit.task_protocol === TASK_BOARD_PROTOCOL) return;
     if (audit.stage_delivery_enforcement !== "TODO_ENFORCED") return;
     const reportsRoot = this.reportsRootForAudit(audit);
     if (!reportsRoot) return;
@@ -1032,9 +1081,14 @@ export class AuditRunner extends EventEmitter {
       source_baseline: audit.source_baseline ?? null,
       created_at: audit.created_at,
       task_context: {
+        ...(audit.task_protocol === TASK_BOARD_PROTOCOL ? {
+          task_protocol: audit.task_protocol,
+          api_inventory_sha256: audit.private_context?.api_inventory?.sha256 ?? null,
+          ...(audit.mining_strategy ? { mining_strategy: audit.mining_strategy } : {}),
+        } : {}),
         additional_instructions_enabled: audit.private_context?.additional_instructions?.enabled === true,
         additional_instructions_sha256: audit.private_context?.additional_instructions?.sha256 ?? null,
-        quick_dynamic_opt_in: !audit.runtime_testing && audit.private_context?.test_environment?.enabled === true,
+        quick_dynamic_opt_in: audit.task_protocol !== TASK_BOARD_PROTOCOL && !audit.runtime_testing && audit.private_context?.test_environment?.enabled === true,
         ...(audit.runtime_testing ? { runtime_testing: audit.runtime_testing } : {}),
         ...(audit.bac_analysis ? { bac_analysis: audit.bac_analysis } : {}),
         test_environment_context_sha256: audit.private_context?.test_environment?.sha256 ?? null,
@@ -1137,7 +1191,7 @@ export class AuditRunner extends EventEmitter {
   async listAuditsWithTodo() {
     await Promise.all([...this.audits.values()].map(async audit => {
       audit.todo_path ??= join(this.stateRoot, audit.id, "audit-todo.json");
-      audit.todo_summary = await auditTodoSummary(audit.todo_path);
+      audit.todo_summary = await this.taskSummary(audit);
     }));
     return this.listAudits();
   }
@@ -1145,6 +1199,28 @@ export class AuditRunner extends EventEmitter {
   getAudit(id) {
     const audit = this.audits.get(id);
     return audit ? publicAudit(audit) : null;
+  }
+
+  async taskSummary(audit) {
+    if (audit.task_protocol !== TASK_BOARD_PROTOCOL) return auditTodoSummary(audit.todo_path);
+    return summarizeBoard(await readBoard(audit.task_board_path));
+  }
+
+  async taskBoardPage(id, { offset = 0, limit = 50, kind = null, status = null } = {}) {
+    const audit = this.audits.get(id);
+    if (!audit || audit.task_protocol !== TASK_BOARD_PROTOCOL) throw Object.assign(new Error("该审计未使用通用任务面板。"), { statusCode: 404 });
+    const board = await readBoard(audit.task_board_path);
+    const rows = board.tasks.filter(task => (!kind || task.kind === kind) && (!status || task.status === status));
+    const start = Math.max(0, Math.floor(Number(offset) || 0)), size = Math.min(100, Math.max(1, Math.floor(Number(limit) || 50)));
+    return { summary: summarizeBoard(board), total: rows.length, items: rows.slice(start, start + size).map(task => ({ ...task,
+      validation: board.validation.assessments?.find(row => row.task_id === task.task_id) ?? null })),
+      next_offset: start + size < rows.length ? start + size : null };
+  }
+
+  async stopTaskBoard(audit) {
+    const service = this.taskBoardServices.get(audit.id);
+    if (!service) return;
+    try { await service.shutdown(); } finally { this.taskBoardServices.delete(audit.id); }
   }
 
   async stopRuntimeTesting(audit) {
@@ -1187,6 +1263,7 @@ export class AuditRunner extends EventEmitter {
     await this.ready;
     const audit = this.audits.get(id);
     if (!audit || audit.status !== "queued" || this.dispatching.has(id)) return null;
+    if (audit.product_campaign_id && this.productCampaignGuard && !this.productCampaignGuard(audit.product_campaign_id)) return null;
     const repository = this.repositoryForAudit(audit);
     if (!repository) {
       audit.status = "failed";
@@ -1205,6 +1282,15 @@ export class AuditRunner extends EventEmitter {
       else await start();
       return publicAudit(audit);
     } catch (error) {
+      await this.stopTaskBoard(audit).catch(() => {});
+      await this.stopRuntimeTesting(audit).catch(() => {});
+      if (error.code === "product-campaign-not-running") {
+        const cancelled = audit.status === "cancelled" || ["CANCELLING", "CANCELLED"].includes(this.productCampaignState?.(audit.product_campaign_id));
+        audit.status = cancelled ? "cancelled" : "queued";
+        audit.error = null; audit.finished_at = cancelled ? new Date().toISOString() : null;
+        await this.record(audit, cancelled ? "audit.cancelled" : "audit.queue_held", { reason: "product-campaign-not-running" });
+        return publicAudit(audit);
+      }
       audit.status = resume ? "interrupted" : "failed";
       audit.error = redact(error.message);
       audit.finished_at = new Date().toISOString();
@@ -1354,10 +1440,14 @@ export class AuditRunner extends EventEmitter {
     if (!audit) throw Object.assign(new Error("原审计任务不存在，无法恢复重试内容。"), { statusCode: 404, code: "audit-not-found" });
     const paths = await this.verifiedPrivateContextPaths(audit);
     const draft = {};
+    if (audit.memory_mode) draft.memory_mode = audit.memory_mode;
+    if (audit.mining_strategy) draft.mining_strategy = audit.mining_strategy;
     for (const [key, enabledField, valueField] of [
+      ["api_inventory", "api_inventory_enabled", "api_inventory"],
       ["additional_instructions", "additional_instructions_enabled", "additional_instructions"],
       ["test_environment", "test_environment_enabled", "test_environment_context"],
     ]) {
+      if (key === "api_inventory" && audit.task_protocol !== TASK_BOARD_PROTOCOL) continue;
       draft[enabledField] = audit.private_context?.[key]?.enabled === true;
       draft[valueField] = "";
       if (!draft[enabledField]) continue;
@@ -1439,6 +1529,7 @@ export class AuditRunner extends EventEmitter {
       join(reportsRoot, "handoffs", id),
       join(reportsRoot, "validation-handoff", "runtime", id),
       join(reportsRoot, "runtime-testing", id),
+      join(reportsRoot, "task-board", id),
     ]) await removeControlledPath(reportsRoot, directory);
     await removeControlledPath(this.temporaryRoot, join(this.temporaryRoot, repositoryId, id));
     await removeControlledPath(this.executionRoot, join(this.executionRoot, id));
@@ -1542,7 +1633,11 @@ export class AuditRunner extends EventEmitter {
     }
     const commit = await git(repository.path, ["rev-parse", "--verify", `${requestedRef}^{commit}`]);
     if (commit !== facts.commit) throw Object.assign(new Error("当前工作树不在请求的提交上；平台不会自动 checkout。"), { statusCode: 409, code: "ref-not-checked-out" });
+    normalizeApiList(input.api_inventory ?? "");
+    const taskProtocol = selectTaskProtocol(input);
+    const miningStrategy = taskProtocol === TASK_BOARD_PROTOCOL ? selectMiningStrategy(input.mining_strategy, input.api_inventory ?? "") : null;
     const contexts = {
+      api_inventory: { enabled: Boolean(input.api_inventory?.trim()), text: input.api_inventory ?? "" },
       additional_instructions: normalizeContextInput(input, {
         enabledField: "additional_instructions_enabled",
         valueField: "additional_instructions",
@@ -1560,6 +1655,7 @@ export class AuditRunner extends EventEmitter {
     const audit = {
       id,
       name: typeof input.name === "string" && input.name.trim() ? input.name.trim().slice(0, 160) : `仓库级安全审计 · ${repository.name}`,
+      memory_mode: ["full", "facts_only", "off", "blind"].includes(input.memory_mode) ? input.memory_mode : "full",
       repository_id: repository.id,
       repository_name: repository.name,
       commit,
@@ -1577,6 +1673,8 @@ export class AuditRunner extends EventEmitter {
       // Persist the task selection, including null for OpenCode defaults.
       // Queue dispatch and recovery must preserve this binding.
       model: normalizeOpenCodeModel(input.model),
+      task_protocol: taskProtocol,
+      ...(taskProtocol === TASK_BOARD_PROTOCOL ? { task_board_path: join(this.stateRoot, id, "task-board.json"), mining_strategy: miningStrategy } : {}),
       runtime_testing: runtimeSelection(input),
       bac_analysis: bacSelection(input.bac_analysis ?? "auto"),
       provider_session_id: null,
@@ -1594,8 +1692,9 @@ export class AuditRunner extends EventEmitter {
     audit.private_runtime = {
       proxy_environment: await this.writePrivateProxyEnvironment(id),
     };
-    const todo = await createEmptyAuditTodo({ todoPath: audit.todo_path, auditId: id });
-    audit.todo_summary = todo.summary;
+    audit.todo_summary = taskProtocol === TASK_BOARD_PROTOCOL
+      ? summarizeBoard(await createBoard({ path: audit.task_board_path, auditId: id, apiList: contexts.api_inventory.text, miningStrategy, bacMode: audit.bac_analysis?.mode ?? "off" }))
+      : (await createEmptyAuditTodo({ todoPath: audit.todo_path, auditId: id })).summary;
     this.audits.set(id, audit);
     await this.persist(audit);
     await this.record(audit, "audit.queued", {
@@ -1645,7 +1744,11 @@ export class AuditRunner extends EventEmitter {
     const idempotencyDigest = createHash("sha256").update(idempotencyKey).digest("hex");
     for (const existing of this.audits.values()) if (existing.idempotency_digest === idempotencyDigest) return publicAudit(existing);
     if (this.audits.has(id)) throw Object.assign(new Error("audit_id 已存在。"), { statusCode: 409, code: "audit-exists" });
+    normalizeApiList(input.api_inventory ?? "");
+    const taskProtocol = selectTaskProtocol(input);
+    const miningStrategy = taskProtocol === TASK_BOARD_PROTOCOL ? selectMiningStrategy(input.mining_strategy, input.api_inventory ?? "") : null;
     const contexts = {
+      api_inventory: { enabled: Boolean(input.api_inventory?.trim()), text: input.api_inventory ?? "" },
       additional_instructions: normalizeContextInput(input, {
         enabledField: "additional_instructions_enabled", valueField: "additional_instructions", label: "测试目标补充说明", maxLength: MAX_ADDITIONAL_INSTRUCTIONS,
       }),
@@ -1660,6 +1763,8 @@ export class AuditRunner extends EventEmitter {
       repository_id: repository.id,
       repository_name: repository.name,
       source_kind: "directory",
+      memory_mode: ["full", "facts_only", "off", "blind"].includes(input.memory_mode) ? input.memory_mode : "full",
+      product_campaign_id: input.product_campaign_id ?? null,
       execution_spec: snapshot,
       execution_spec_digest: snapshotDigest,
       commit: null,
@@ -1675,6 +1780,8 @@ export class AuditRunner extends EventEmitter {
       error: null,
       allow_dirty: true,
       model: normalizeOpenCodeModel(input.model),
+      task_protocol: taskProtocol,
+      ...(taskProtocol === TASK_BOARD_PROTOCOL ? { task_board_path: join(this.stateRoot, id, "task-board.json"), mining_strategy: miningStrategy } : {}),
       runtime_testing: runtimeSelection(input),
       bac_analysis: bacSelection(input.bac_analysis ?? "auto"),
       provider_session_id: null,
@@ -1690,7 +1797,9 @@ export class AuditRunner extends EventEmitter {
     };
     audit.private_context = await this.writePrivateContexts(id, contexts);
     audit.private_runtime = { proxy_environment: await this.writePrivateProxyEnvironment(id) };
-    audit.todo_summary = (await createEmptyAuditTodo({ todoPath: audit.todo_path, auditId: id })).summary;
+    audit.todo_summary = taskProtocol === TASK_BOARD_PROTOCOL
+      ? summarizeBoard(await createBoard({ path: audit.task_board_path, auditId: id, apiList: contexts.api_inventory.text, miningStrategy, bacMode: audit.bac_analysis?.mode ?? "off" }))
+      : (await createEmptyAuditTodo({ todoPath: audit.todo_path, auditId: id })).summary;
     this.audits.set(id, audit);
     await this.persist(audit);
     await this.record(audit, "audit.queued", {
@@ -1719,8 +1828,16 @@ export class AuditRunner extends EventEmitter {
     const paths = await this.prepareExecutionWorkspace(audit, repository);
     audit.paths = paths;
     await this.record(audit, "audit.workspace.ready", paths);
+    let memoryAdapter = null;
+    if (this.memoryProvider) {
+      try { memoryAdapter = await this.memoryProvider(audit, repository, paths); }
+      catch (error) {
+        if (error.code === "memory-source-drift" || audit.product_campaign_id) throw error;
+        audit.memory_gap = error.message; await this.recordLog(audit, "stderr", `长期记忆未就绪，静态审计继续：${error.message}`);
+      }
+    }
     const contextPaths = await this.verifiedPrivateContextPaths(audit);
-    const quickDynamicEnabled = !audit.runtime_testing && audit.private_context?.test_environment?.enabled === true && Boolean(contextPaths.test_environment);
+    const quickDynamicEnabled = audit.task_protocol !== TASK_BOARD_PROTOCOL && !audit.runtime_testing && audit.private_context?.test_environment?.enabled === true && Boolean(contextPaths.test_environment);
     const proxyEnvironment = await this.verifiedPrivateProxyEnvironment(audit);
     const environment = {
       ...(await buildOpenCodeEnvironment(repository.config_path, { ...this.environment, ...proxyEnvironment })),
@@ -1730,7 +1847,14 @@ export class AuditRunner extends EventEmitter {
       AUDIT_WORKSPACE_ROOT: paths.workspace_root,
       AUDIT_REPORTS_ROOT: paths.reports_root,
       AUDIT_TMP_ROOT: paths.tmp_root,
-      AUDIT_TODO_PATH: paths.todo_path,
+      AUDIT_TASK_PROTOCOL: audit.task_protocol ?? "",
+      AUDIT_MINING_STRATEGY: audit.mining_strategy ?? "",
+      AUDIT_MEMORY_MODE: audit.memory_mode ?? "full",
+      AUDIT_MEMORY_CONNECTION_PATH: "",
+      AUDIT_MEMORY_CLI: "",
+      AUDIT_TASK_BOARD_CLI: join(paths.workspace_root, ".opencode", "scripts", "task-board.mjs"),
+      AUDIT_TASK_BOARD_CONNECTION_PATH: audit.task_protocol === TASK_BOARD_PROTOCOL ? join(this.stateRoot, audit.id, "task-board-service", "endpoint.json") : "",
+      AUDIT_TODO_PATH: audit.task_protocol === TASK_BOARD_PROTOCOL ? "" : paths.todo_path,
       AUDIT_AI_ROUTING_POLICY: "surface-dependency-v1",
       AUDIT_TODO_HANDOFF_ROOT: paths.todo_handoff_root,
       AUDIT_TODO_CLI: join(paths.workspace_root, ".opencode", "scripts", "audit-todo.mjs"),
@@ -1746,7 +1870,7 @@ export class AuditRunner extends EventEmitter {
       AUDIT_RUNTIME_CLI: "",
       AUDIT_RUNTIME_STATE_ROOT: "",
       AUDIT_RUNTIME_CONNECTION_PATH: "",
-      ...(quickDynamicEnabled ? {
+      ...(quickDynamicEnabled && audit.task_protocol !== TASK_BOARD_PROTOCOL ? {
         AUDIT_TEST_ENVIRONMENT_CONTEXT_PATH: contextPaths.test_environment,
         AUDIT_TEST_ENVIRONMENT_CONTEXT_SHA256: audit.private_context.test_environment.sha256,
       } : {}),
@@ -1777,6 +1901,26 @@ export class AuditRunner extends EventEmitter {
         onChange: async snapshot => { audit.runtime_testing_state = snapshot; await this.record(audit, "audit.runtime-testing.updated", { status: snapshot.status, active_packet: snapshot.active_packet, reason: snapshot.reason }); } });
       this.runtimeTestingServices.set(audit.id, service);
       await service.start();
+    }
+    if (audit.task_protocol === TASK_BOARD_PROTOCOL) {
+      const board = await readBoard(audit.task_board_path);
+      if ((board.mining_strategy ?? null) !== (audit.mining_strategy ?? null)) {
+        throw Object.assign(new Error("任务面板的漏洞挖掘策略与创建时不一致，拒绝继续执行。"), { statusCode: 409, code: "audit-mining-strategy-drift" });
+      }
+      const importedApis = normalizeApiList(contextPaths.api_inventory ? await readFile(contextPaths.api_inventory, "utf8") : "");
+      if (JSON.stringify(board.api_sources) !== JSON.stringify(importedApis)) {
+        throw Object.assign(new Error("任务面板的 API 清单与创建时原文不一致，拒绝继续执行。"), { statusCode: 409, code: "audit-api-inventory-drift" });
+      }
+      const service = new TaskBoardService({ path: audit.task_board_path, reportsRoot: paths.reports_root,
+        privateRoot: dirname(environment.AUDIT_TASK_BOARD_CONNECTION_PATH), workspaceRoot: paths.workspace_root, sourceRoot: paths.source_root,
+        auditId: audit.id, scopeDigest: audit.source_baseline.scope_digest, environment, command: this.command, model,
+        runtimeRequired: Boolean(audit.runtime_testing), bacMode: audit.bac_analysis?.mode ?? "off", memory: memoryAdapter,
+        onChange: async summary => { audit.todo_summary = summary; await this.record(audit, "audit.task-board.updated", summary); },
+        onLog: (source, line) => this.recordLog(audit, source, line) });
+      service.paused = true;
+      this.taskBoardServices.set(audit.id, service);
+      await service.start();
+      if (memoryAdapter) { environment.AUDIT_MEMORY_CONNECTION_PATH = service.connectionPath; environment.AUDIT_MEMORY_CLI = join(paths.workspace_root, ".opencode", "scripts", "audit-memory.mjs"); }
     }
     if (audit.model !== model) {
       audit.model = model;
@@ -1834,11 +1978,14 @@ export class AuditRunner extends EventEmitter {
       audit.execution_transport = "opencode-run";
       await this.record(audit, "audit.terminal.failed", { message: audit.terminal.message });
     }
+    const taskBoardService = this.taskBoardServices.get(audit.id);
+    if (taskBoardService) { taskBoardService.command = this.command; taskBoardService.resume(); }
     const runtimeService = this.runtimeTestingServices.get(audit.id);
     if (runtimeService) {
       runtimeService.command = this.command;
       await runtimeService.contact();
     }
+    if (audit.status === "cancelled" || audit.product_campaign_id && this.productCampaignGuard && !this.productCampaignGuard(audit.product_campaign_id)) throw Object.assign(new Error("产品批次已暂停或取消，未启动审计 Agent。"), { code: "product-campaign-not-running" });
     const child = this.spawnProcess(command, args, {
       cwd: paths.workspace_root,
       env: environment,
@@ -1882,10 +2029,11 @@ export class AuditRunner extends EventEmitter {
       this.clearContextTerminationGuard(audit.id, child);
       if (this.processes.get(audit.id) !== child) return;
       const completion = startedEvent.then(async () => {
+        await this.stopTaskBoard(audit);
         await this.stopRuntimeTesting(audit);
         this.processes.delete(audit.id);
         audit.pid = null;
-        if (audit.status === "completed" && audit.completion_source === "todo-artifact-watchdog") {
+        if ((audit.status === "completed" || audit.status === "failed" && hasNoTaskReports(audit)) && audit.completion_source === "todo-artifact-watchdog") {
           audit.exit_code ??= code ?? 0;
           audit.finished_at ??= new Date().toISOString();
           await this.finalizeTerminal(audit).catch(error => {
@@ -1939,7 +2087,9 @@ export class AuditRunner extends EventEmitter {
           try {
             const verification = await this.verifyTodoCompletion(audit);
             if (verification.complete) {
-              audit.status = "completed";
+              audit.status = hasNoTaskReports(audit) ? "failed" : "completed";
+              audit.error = hasNoTaskReports(audit) ? NO_TASK_REPORTS_MESSAGE : null;
+              audit.interruption_reason = null;
             } else {
               audit.status = "interrupted";
               audit.interruption_reason = "local-audit-todo-incomplete";
@@ -2472,6 +2622,9 @@ export class AuditRunner extends EventEmitter {
     if ((audit.action_idempotency_digests ?? []).includes(actionDigest)) return publicAudit(audit);
     if (Number(expectedVersion) !== audit.version) throw Object.assign(new Error("审计版本已变化，请刷新后重试。"), { statusCode: 412, code: "version-mismatch" });
     if (action === "recover") {
+      if (hasNoTaskReports(audit)) {
+        throw Object.assign(new Error(NO_TASK_REPORTS_MESSAGE), { statusCode: 409, code: "task-board-no-reports" });
+      }
       if (await this.reconcileTerminalCompletion(audit, "recovery-preflight")) return publicAudit(audit);
       if (!this.enabled) throw Object.assign(new Error("运行驱动未启用，不能恢复审计。"), { statusCode: 503, code: "runner-disabled" });
       if (!RECOVERABLE.has(audit.status) || this.processes.has(id) || this.completions.has(id)) {
@@ -2538,18 +2691,26 @@ export class AuditRunner extends EventEmitter {
       }
       return publicAudit(audit);
     }
+    if (action === "cancel" && audit.product_campaign_id && ["queued", "preparing", "recovering"].includes(audit.status) && !this.processes.has(id)) {
+      audit.status = "cancelled"; audit.finished_at = new Date().toISOString(); audit.error = null;
+      audit.action_idempotency_digests = [...(audit.action_idempotency_digests ?? []), actionDigest].slice(-100);
+      await this.record(audit, "audit.cancelled", { reason: "cancelled-before-agent-start" });
+      return publicAudit(audit);
+    }
     const child = this.processes.get(id);
     if (!child || TERMINAL.has(audit.status)) throw Object.assign(new Error("审计当前不可执行该操作。"), { statusCode: 409, code: "action-not-allowed" });
     if (action === "pause" && audit.status === "running") {
+      await this.taskBoardServices.get(id)?.pause();
       await this.stopRuntimeTesting(audit);
       audit.status = "pausing";
       await this.record(audit, "audit.pausing", {});
-      if (!child.kill("SIGSTOP")) throw new Error("暂停信号发送失败。");
+      if (!child.kill("SIGSTOP")) { this.taskBoardServices.get(id)?.resume(); throw new Error("暂停信号发送失败。"); }
       try {
         if (audit.terminal?.live) await this.terminalMonitor.signalRun(audit.terminal, "SIGSTOP");
       } catch (error) {
         child.kill("SIGCONT");
         audit.status = "running";
+        this.taskBoardServices.get(id)?.resume();
         await this.record(audit, "audit.pause_failed", { message: redact(error.message) });
         throw new Error(`OpenCode run 暂停失败：${error.message}`);
       }
@@ -2559,8 +2720,10 @@ export class AuditRunner extends EventEmitter {
       if (audit.terminal?.live) await this.terminalMonitor.signalRun(audit.terminal, "SIGCONT");
       if (!child.kill("SIGCONT")) throw new Error("恢复信号发送失败。");
       audit.status = "running";
+      this.taskBoardServices.get(id)?.resume();
       await this.record(audit, "audit.resumed", {});
     } else if (action === "cancel" && ACTIVE.has(audit.status)) {
+      await this.stopTaskBoard(audit);
       await this.stopRuntimeTesting(audit);
       if (audit.status === "paused") {
         if (audit.terminal?.live) await this.terminalMonitor.signalRun(audit.terminal, "SIGCONT");
@@ -2594,6 +2757,7 @@ export class AuditRunner extends EventEmitter {
 
   async shutdown() {
     await this.ready;
+    for (const id of this.taskBoardServices.keys()) await this.stopTaskBoard(this.audits.get(id));
     for (const id of this.runtimeTestingServices.keys()) await this.stopRuntimeTesting(this.audits.get(id));
     if (this.completionWatchdogTimer) clearInterval(this.completionWatchdogTimer);
     this.completionWatchdogTimer = null;

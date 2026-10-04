@@ -3,6 +3,8 @@ import { mkdir, readFile, readdir, rename, stat, writeFile } from "node:fs/promi
 import { extname, isAbsolute, join, relative, resolve, sep } from "node:path";
 import { dirname } from "node:path";
 import { renderFinalReport, validateFinalReportModel } from "../../skills/common-subagent/audit-coverage-accounting/scripts/final-report-model-core.mjs";
+import { renderBoardReport } from "../../lib/task-board/review.mjs";
+import { applyAuditProgress } from "./audit-progress.mjs";
 
 const MAX_ARTIFACT_BYTES = 8 * 1024 * 1024;
 const MAX_ARTIFACTS = 5000;
@@ -19,6 +21,7 @@ const REPORT_DIRECTORIES = new Set([
   "stage-deliveries",
   "validation",
   "vulnerability-mining",
+  "task-board",
 ]);
 
 const STAGES = [
@@ -113,6 +116,8 @@ function finalReportModelForAudit(artifacts, auditId) {
       || right.modified_at.localeCompare(left.modified_at));
   for (const artifact of candidates) {
     try {
+      if (artifact.data?.protocol === "task-board.v1" && artifact.data.artifact_type === "task-board-final-report"
+        && artifact.path === `final/task-board-report-model.${auditId}.json`) return { artifact, model: artifact.data };
       if (validateFinalReportModel(artifact.data).length === 0
         && ["FINAL", "POLICY_FINAL", "PARTIAL_FINAL"].includes(artifact.data.report_kind)) return { artifact, model: artifact.data };
     } catch {
@@ -137,7 +142,7 @@ export async function materializeFinalReportFromModel({ reportsRoot, auditId }) 
   if (existing) return { available: true, materialized: false, artifact: existing, model_path: null };
   const source = finalReportModelForAudit(artifacts, auditId);
   if (!source) return { available: false, materialized: false, artifact: null, model_path: null };
-  const markdown = renderFinalReport(source.model);
+  const markdown = source.model.protocol === "task-board.v1" ? renderBoardReport(source.model) : renderFinalReport(source.model);
   if (Buffer.byteLength(markdown, "utf8") > MAX_ARTIFACT_BYTES) {
     return { available: false, materialized: false, artifact: null, model_path: source.artifact.path, error: "final-report-render-too-large" };
   }
@@ -489,13 +494,14 @@ export function auditsFromArtifacts(artifacts, validationRuns = [], runnerAudits
     const useMaterialized = Boolean(materialized && (runner?.stage_delivery_enforcement === "ENFORCED"
       || materialized.completed_count > 0));
     const stages = stageSnapshot(auditArtifacts, runtimeCount, useMaterialized ? materialized : null);
+    const board = runner?.task_board;
     const todo = runner?.todo ?? null;
     const lastModified = auditArtifacts.map(item => item.modified_at).sort().at(-1) ?? runner?.updated_at ?? null;
     const completedCount = stages.filter(stage => stage.state === "completed").length;
     const completed = completedCount === stages.length;
     const todoEnforced = runner?.stage_delivery_enforcement === "TODO_ENFORCED" && Number(todo?.total ?? 0) > 0;
     const progress = todoEnforced ? Number(todo.progress ?? 0) : Math.round((completedCount / stages.length) * 100);
-    return {
+    return applyAuditProgress({
       id: auditId,
       name: runner?.name ?? `仓库级安全审计 · ${auditId}`,
       repository_id: runner?.repository_id ?? null,
@@ -504,10 +510,13 @@ export function auditsFromArtifacts(artifacts, validationRuns = [], runnerAudits
       status: runner?.status ?? (completed ? "completed" : "artifact_only"),
       version: runner?.version ?? 1,
       event_sequence: runner?.event_sequence ?? 0,
-      stage: currentStageLabel({ stages, todo, todoEnforced, completed }),
+      stage: board ? board.publication !== "SEALED" ? "任务规划与发布" : !board.mining_complete ? `任务执行 · ${board.reported}/${board.total}` : board.validation?.status !== "REVIEWED" ? "报告内容复核" : "报告封存" : currentStageLabel({ stages, todo, todoEnforced, completed }),
       stages,
       progress,
-      progress_source: todoEnforced ? "local-audit-todo" : useMaterialized ? "stage-delivery-manifest" : "legacy-artifact-heuristic",
+      progress_source: board ? "task-board" : todoEnforced ? "local-audit-todo" : useMaterialized ? "stage-delivery-manifest" : "legacy-artifact-heuristic",
+      task_protocol: runner?.task_protocol ?? null,
+      mining_strategy: runner?.mining_strategy ?? null,
+      task_board: runner?.task_board ?? null,
       completion_source: runner?.completion_source ?? null,
       finding_count: findings.filter(finding => finding.audit_id === auditId).length,
       runtime_validation_count: runtimeCount,
@@ -538,7 +547,7 @@ export function auditsFromArtifacts(artifacts, validationRuns = [], runnerAudits
         dynamic_validation_enabled: false,
       },
       todo,
-    };
+    });
   }).sort((left, right) => String(right.updated_at ?? "").localeCompare(String(left.updated_at ?? "")));
 }
 
@@ -552,7 +561,12 @@ export async function buildWorkspaceSnapshot({ reportsRoot, validationRuns = [],
   const reports = artifacts
     .filter(artifact => artifact.kind === "final" && artifact.media_type === "text/markdown")
     .filter(artifact => finalReportArtifactForAudit(artifacts, artifact.audit_id)?.id === artifact.id)
-    .map(reportFromArtifact);
+    .map(artifact => {
+      const model = finalReportModelForAudit(artifacts, artifact.audit_id)?.model;
+      return { ...reportFromArtifact(artifact), finding_index_available: Boolean(model),
+        finding_ids: (model?.findings ?? []).map(row => row.finding_id ?? row.canonical_id ?? row.id).filter(Boolean),
+        excluded_finding_ids: (model?.excluded_findings ?? []).map(row => row.finding_id ?? row.canonical_id ?? row.id).filter(Boolean) };
+    });
   const severity = { critical: 0, high: 0, medium: 0, low: 0, unknown: 0 };
   for (const finding of findings) {
     const key = finding.severity.toLowerCase();

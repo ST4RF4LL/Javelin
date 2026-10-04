@@ -54,7 +54,8 @@ function submission(extra = {}) { return { execution_status: "COMPLETED", outcom
 async function temporary(t) { const root = await mkdtemp(join(tmpdir(), "runtime-testing-")); t.after(() => rm(root, { recursive: true, force: true })); return root; }
 function fakeBrowser(counts) {
   return { tools: async () => [{ name: "navigate_page", inputSchema: { type: "object" } }],
-    call: async (_name, args) => { counts.calls++; return { content: [{ type: "text", text: `正常页面 ${args.identity_id}` }] }; },
+    call: async (name, args) => { counts.calls++; return { content: [{ type: "text", text: `正常页面 ${args.identity_id}` }],
+      ...(["navigate_page", "new_page"].includes(name) ? { structuredContent: { pages: [{ id: args.pageId ?? 1, url: args.url, selected: true }] } } : {}) }; },
     close: async () => { counts.closed++; } };
 }
 async function successfulWorker({ controller, active }) {
@@ -106,6 +107,60 @@ test("Web 服务与默认 worker 在当前主机按工具能力启动，不设�
     assert.equal(evidence.cleanup_status, "NOT_REQUIRED"); assert.equal(evidence.stages.CLEANUP, "SKIPPED");
     assert.equal(counts.closed, 1);
   } finally { await service.shutdown(); }
+});
+
+test("默认 CONTACT worker 从同一份 JSON 读取环境原文，待登记状态不阻止注册且注册前禁止访问", async t => {
+  const contexts = ["http://127.0.0.1:8080/\n", "授权测试入口 http://127.0.0.1:8080/。\n使用测试 SSO 身份进行正常登录，无固定账号字段。"];
+  for (const [index, context] of contexts.entries()) {
+    const root = await temporary(t); const configPath = join(root, "opencode.json");
+    await writeFile(configPath, JSON.stringify({ mcp: { "unrelated-mcp": { enabled: true } } }));
+    const auth = promptGrant({ context, selected: { ...selected, identity_mode: "auto" } });
+    const counts = { calls: 0, closed: 0 }; let received; let inputPath; let workerDone; let workerFinished;
+    const service = new RuntimeTestingService({ root: join(root, "reports"), privateRoot: join(root, "private"),
+      authorization: auth.public, privateContext: auth.private, command: "fixture-opencode", workspaceRoot: root,
+      environment: { OPENCODE_CONFIG: configPath }, browserFactory: async () => fakeBrowser(counts),
+      spawnProcess(_command, args, options) {
+        const child = new EventEmitter(); child.kill = () => true;
+        workerDone = Promise.resolve().then(async () => {
+          assert.equal(args[0], "run");
+          assert.match(args[1], /environment\.prompt/); assert.match(args[1], /configure_environment/);
+          assert.equal(args.at(-2), "--file"); inputPath = args.at(-1);
+          assert.equal(args.includes(context), false); assert.equal(JSON.stringify(options.env).includes(JSON.stringify(context).slice(1, -1)), false);
+          assert.equal(options.shell, false); assert.equal(options.stdio, "ignore");
+          const workerConfig = JSON.parse(options.env.OPENCODE_CONFIG_CONTENT);
+          assert.deepEqual(workerConfig.agent["runtime-testing-worker"].permission, { "*": "deny", "runtime-browser_*": "allow" });
+          assert.equal(workerConfig.mcp["unrelated-mcp"].enabled, false);
+          assert.match(workerConfig.agent["runtime-testing-worker"].prompt, /environment\.prompt 是属性路径/);
+          received = JSON.parse(await readFile(inputPath, "utf8"));
+          assert.equal(received.environment.prompt, context); assert.deepEqual(received.packet, packet(auth.public));
+          assert.equal(received.authorization.environment_ready, false); assert.deepEqual(received.authorization.origins, []);
+          const controller = service.controller; const token = controller.active.token;
+          assert.deepEqual((await controller.tools(token)).map(tool => tool.name), ["configure_environment"]);
+          await assert.rejects(controller.call(token, "navigate_page", { identity_id: "environment", url: "http://127.0.0.1:8080/" }), { code: "runtime-environment-not-prepared" });
+          assert.equal(counts.calls, 0); assert.equal(controller.state.browser_allocated, false);
+          const identity = index === 0 ? { id: "anonymous", role: "anonymous" } : { id: "account-1", role: "test-user" };
+          await controller.configureEnvironment(token, { target_url: "http://127.0.0.1:8080/", origins: ["http://127.0.0.1:8080"], identities: [identity], sensitive_values: [] });
+          assert.equal(controller.authorization.environment_ready, true); assert.equal(counts.calls, 0);
+          const result = await controller.call(token, "navigate_page", { identity_id: identity.id, url: "http://127.0.0.1:8080/" });
+          await controller.submit(token, submission({ evidence_ids: [result.evidence_id] }));
+        }).then(() => child.emit("close", 0), error => { child.emit("error", error); throw error; });
+        // Avoid a rejection escaping while the controller settles its worker race.
+        workerDone.catch(() => {});
+        return child;
+      } });
+    const defaultWorker = service.worker.bind(service);
+    service.worker = args => (workerFinished = defaultWorker(args));
+    try {
+      await service.controller.ready; await mkdir(service.privateRoot, { recursive: true });
+      // Exercise the default worker and controller without binding a port, real
+      // OpenCode process, model request, browser, or authorized test target.
+      await service.controller.run(packet(auth.public)); await workerDone; await workerFinished;
+      assert.equal(service.controller.state.status, "READY"); assert.equal(counts.calls, 1);
+      assert.equal(service.controller.state.packets[0].execution_status, "COMPLETED");
+      await assert.rejects(readFile(inputPath), { code: "ENOENT" });
+    } finally { await service.shutdown(); }
+    assert.equal(counts.closed, 1);
+  }
 });
 
 test("Web 浏览器默认 MCP 连接路径不设主机门禁，无需 clientFactory 绕过", async t => {
@@ -164,7 +219,8 @@ test("环境原文原样进入私有 prompt，不用地址、账号或 JSON 格�
     const auth = promptGrant({ context, selected: { ...selected, identity_mode: "auto", allowed_actions: ["navigate", "test_mutation"] } });
     assert.equal(auth.public.status, "AUTHORIZED"); assert.equal(auth.public.environment_ready, false);
     assert.equal(auth.private.prompt, context); assert.deepEqual(auth.public.origins, []);
-    assert.equal(auth.private.accounts, undefined); assert.equal(JSON.stringify(auth.public).includes(context), false);
+    // Match a serialized string value: "[]" / "{}" are also ordinary JSON syntax.
+    assert.equal(auth.private.accounts, undefined); assert.equal(JSON.stringify(auth.public).includes(JSON.stringify(context)), false);
     const attachment = workerInput(packet(auth.public), auth.public, auth.private);
     assert.equal(attachment.environment.prompt, context);
     assert.equal(promptGrant({ context, enabled: false }).public.reason, "DYNAMIC_NOT_AUTHORIZED");
@@ -337,6 +393,8 @@ test("XSS 支持需要两个身份的实际工具记录，脱敏保留固定 pro
     } });
     await assert.rejects(controller.submit(active.token, result), /xss-identities-not-observed/);
     const second = await controller.call(active.token, "take_snapshot", { identity_id: "victim" }); result.evidence_ids.push(second.evidence_id);
+    await assert.rejects(controller.submit(active.token, result), /xss-identities-not-observed/);
+    const visit = await controller.call(active.token, "navigate_page", { identity_id: "victim", url: auth.private.target_url }); result.evidence_ids.push(visit.evidence_id);
     await controller.submit(active.token, result); await controller.finish(active, active.submission); await controller.close();
     const evidence = await verifyRuntimeEvidenceFiles(join(root, "evidence-set.json"));
     assert.equal(evidence.packets[1].result.proof.method, "REAL_APPLICATION_INPUT");

@@ -2,7 +2,7 @@ import { randomUUID, createHash } from "node:crypto";
 import { mkdir, readFile, writeFile, rename, lstat, realpath } from "node:fs/promises";
 import { join, relative, resolve, isAbsolute } from "node:path";
 import { performance } from "node:perf_hooks";
-import { PROTOCOL, PHASES, seal, digest, check, text, validatePacket, validateSubmission, redact, fail } from "./contract.mjs";
+import { PROTOCOL, PHASES, seal, digest, check, text, httpUrl, validatePacket, validateSubmission, redact, redactStructured, fail } from "./contract.mjs";
 import { environmentTools, resolveEnvironment } from "./environment-prompt.mjs";
 
 export async function atomicJson(path, value) {
@@ -17,6 +17,18 @@ export async function checkedJson(root, path, expected = null) {
   const bytes = await readFile(actual);
   if (expected) check(createHash("sha256").update(bytes).digest("hex") === expected, "runtime-evidence-changed");
   return JSON.parse(bytes.toString("utf8"));
+}
+
+function observedAuthorizedNavigation(name, args, result, authorization) {
+  if (!["navigate_page", "new_page"].includes(name) || result?.isError) return false;
+  const pages = result?.structuredContent?.pages;
+  if (!Array.isArray(pages)) return false;
+  // MCP returns all pages. For routed navigation only the requested page can
+  // prove contact; new_page selects its newly created page in MCP 1.8.0.
+  const observed = pages.filter(page => name === "navigate_page" && args.pageId != null ? page.id === args.pageId : page.selected === true);
+  if (observed.length !== 1) return false;
+  const url = httpUrl(observed[0].url);
+  return Boolean(url && authorization.origins.includes(url.origin));
 }
 
 export class RuntimeTestingController {
@@ -91,7 +103,8 @@ export class RuntimeTestingController {
   async evidence(name, value, active) {
     const safe = redact(value, this.privateContext);
     // Text stays text after redaction: never reparse a potentially altered JSON string.
-    const record = seal({ protocol: PROTOCOL, audit_id: this.authorization.audit_id, content: safe, recorded_at: new Date().toISOString() });
+    const record = seal({ protocol: PROTOCOL, audit_id: this.authorization.audit_id, content: safe,
+      structured_content: redactStructured(value, this.privateContext), recorded_at: new Date().toISOString() });
     const path = `evidence/${name}.json`;
     await atomicJson(join(this.root, path), record);
     const bytes = await readFile(join(this.root, path));
@@ -257,14 +270,20 @@ export class RuntimeTestingController {
         result = await this.browser.call(name, args, active.packet);
       } catch (error) {
         this.requireActive(token);
-        await this.evidence(id, { tool: name, status: "FAILED", code: error.code ?? "BROWSER_TOOL_FAILED" }, active);
-        active.actionIds.add(id); throw error;
+        const code = error.code ?? "BROWSER_TOOL_FAILED";
+        const binding = await this.evidence(id, { tool: name, identity_id: args.identity_id, arguments: args,
+          status: "FAILED", code, summary: "浏览器工具调用失败。",
+          result: { isError: true, error: { code, message: String(error.message ?? "浏览器工具未返回错误说明。") } } }, active);
+        active.actionIds.add(binding.id); await this.save(); throw error;
       }
       this.requireActive(token);
       const binding = await this.evidence(id, { tool: name, identity_id: args.identity_id, arguments: args, result }, active);
-      if (!result?.isError && ["navigate_page", "new_page", "take_snapshot"].includes(name)) active.identitiesUsed.add(args.identity_id);
+      if (observedAuthorizedNavigation(name, args, result, this.authorization)) active.identitiesUsed.add(args.identity_id);
       active.actionIds.add(binding.id); await this.save();
-      return { evidence_id: binding.id, result: redact(result, this.privateContext) };
+      // Keep the legacy text while exposing MCP page/request IDs and typed data
+      // without reparsing text that redaction may have made non-JSON.
+      return { evidence_id: binding.id, result: redact(result, this.privateContext),
+        structured_result: redactStructured(result, this.privateContext), isError: result?.isError === true };
     } finally { release(); }
   }
   async submit(token, value) {

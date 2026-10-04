@@ -9,6 +9,27 @@ import { check, httpUrl } from "./contract.mjs";
 const READ = new Set(["list_pages", "select_page", "take_snapshot", "list_console_messages", "get_console_message", "list_network_requests", "get_network_request"]);
 const NAVIGATE = new Set(["navigate_page", "new_page", "close_page"]);
 const INTERACT = new Set(["click", "fill", "fill_form", "press_key", "hover", "handle_dialog"]);
+const FORBIDDEN_ARGUMENTS = new Set(["initScript", "filePath", "file_path", "requestFilePath", "responseFilePath"]);
+
+function controllerTool(tool, identities) {
+  const schema = tool.inputSchema ?? { type: "object" };
+  const properties = Object.fromEntries(Object.entries(schema.properties ?? {}).filter(([key]) => !FORBIDDEN_ARGUMENTS.has(key)));
+  const required = (schema.required ?? []).filter(key => !FORBIDDEN_ARGUMENTS.has(key));
+  // The headless controller has no user-selected Network panel request.
+  // Require the actual reqid returned by list_network_requests instead.
+  if (tool.name === "get_network_request") required.push("reqid");
+  return { ...tool, inputSchema: { ...schema, properties: { ...properties, identity_id: { type: "string", enum: identities } },
+    required: [...new Set([...required, "identity_id"])] } };
+}
+
+function browserResult(name, result) {
+  // MCP 1.8.0 catches navigation failures inside its handler and returns a
+  // regular response. Preserve the diagnostic but do not count it as success.
+  if (name === "navigate_page" && /^Unable to (?:navigate(?: back| forward)? in the selected page|reload the selected page):/m.test(result?.structuredContent?.message ?? "")) {
+    return { ...result, isError: true };
+  }
+  return result;
+}
 
 export function targetLookup(hostname, options, callback) {
   if (hostname.toLowerCase() !== "localhost") return dnsLookup(hostname, options, callback);
@@ -108,18 +129,19 @@ export class ChromeRuntimeBrowser {
   }
   async tools(packet) {
     const session = await this.session(packet.identity_ids[0]);
-    return session.tools.filter(tool => this.allowed(tool.name, packet)).map(tool => ({ ...tool,
-      inputSchema: { ...tool.inputSchema, properties: { ...tool.inputSchema.properties, identity_id: { type: "string", enum: packet.identity_ids } },
-        required: [...(tool.inputSchema.required ?? []), "identity_id"] } }));
+    return session.tools.filter(tool => this.allowed(tool.name, packet)).map(tool => controllerTool(tool, packet.identity_ids));
   }
   async call(name, args, packet) {
     check(this.allowed(name, packet) && packet.identity_ids.includes(args.identity_id), "browser-tool-not-authorized");
     if (args.url != null) check(httpUrl(args.url) && this.authorization.origins.includes(new URL(args.url).origin), "browser-origin-not-authorized");
     // No arbitrary JS, raw CDP, file uploads/downloads, request interception, or global browser reset.
-    check(!args.filePath && !args.file_path, "browser-file-operation-not-authorized");
+    check(!Object.keys(args).some(key => FORBIDDEN_ARGUMENTS.has(key)), "browser-script-or-file-operation-not-authorized");
+    if (name === "get_network_request") check(Number.isInteger(args.reqid) && args.reqid > 0, "browser-network-request-id-required");
     const session = await this.session(args.identity_id); const { identity_id, ...arguments_ } = args;
     check(!this.closed, "runtime-browser-closed");
-    return session.client.callTool({ name, arguments: arguments_ }, undefined, { timeout: 45_000 });
+    const tool = session.tools.find(tool => tool.name === name);
+    if (tool?.inputSchema?.required?.includes("pageId")) check(Number.isInteger(args.pageId) && args.pageId >= 0, "browser-page-id-required");
+    return browserResult(name, await session.client.callTool({ name, arguments: arguments_ }, undefined, { timeout: 45_000 }));
   }
   async close() {
     this.closing ??= this.closeOnce();

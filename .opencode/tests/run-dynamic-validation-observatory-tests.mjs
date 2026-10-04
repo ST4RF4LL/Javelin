@@ -165,13 +165,20 @@ try {
     const exportResponse = await fetch(`http://127.0.0.1:${address.port}/api/v1/http-exchanges/export/bruno`, {
       method: "POST",
       headers: { "Content-Type": "application/json" },
-      body: JSON.stringify({ exchange_ids: [recordedExchange.exchange_id] }),
+      body: JSON.stringify({ exchange_ids: [recordedExchange.exchange_id], format: "opencollection" }),
     });
     assert.equal(exportResponse.status, 200);
     assert.equal(exportResponse.headers.get("content-type"), "application/zip");
     assert.match(exportResponse.headers.get("content-disposition"), /dynamic-validation-.*\.zip/);
     const exportedFiles = unzipSync(new Uint8Array(await exportResponse.arrayBuffer()));
     assert(Object.keys(exportedFiles).some(path => path.endsWith("/opencollection.yml")));
+
+    const jsonExport = await fetch(`http://127.0.0.1:${address.port}/api/v1/http-exchanges/export/bruno`, {
+      method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ exchange_ids: [recordedExchange.exchange_id] }),
+    });
+    assert.equal(jsonExport.status, 200);
+    assert.match(jsonExport.headers.get("content-type"), /application\/json/);
+    assert.equal((await jsonExport.json()).version, "1");
 
     const harResponse = await fetch(`http://127.0.0.1:${address.port}/api/v1/http-exchanges/export/har`, {
       method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ exchange_ids: [recordedExchange.exchange_id] }),

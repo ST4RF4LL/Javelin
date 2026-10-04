@@ -187,9 +187,13 @@ export class ProductStore {
   close() { this.db?.close(); this.db = null; }
   async transaction(callback) {
     await this.ready;
-    this.db.exec("BEGIN IMMEDIATE");
-    try { const value = await callback(); this.db.exec("COMMIT"); return value; }
-    catch (cause) { try { this.db.exec("ROLLBACK"); } catch {} throw cause; }
+    const operation = (this.writeQueue ?? Promise.resolve()).catch(() => {}).then(async () => {
+      this.db.exec("BEGIN IMMEDIATE");
+      try { const value = await callback(); this.db.exec("COMMIT"); return value; }
+      catch (cause) { try { this.db.exec("ROLLBACK"); } catch {} throw cause; }
+    });
+    this.writeQueue = operation.catch(() => {});
+    return operation;
   }
   async withTargetOperation(targetId, operation, callback) {
     await this.ready;
@@ -197,8 +201,7 @@ export class ProductStore {
     const holder = randomUUID();
     const acquiredAt = now();
     const expiresAt = new Date(Date.now() + 15 * 60_000).toISOString();
-    this.db.exec("BEGIN IMMEDIATE");
-    try {
+    await this.transaction(() => {
       this.db.prepare("DELETE FROM target_operation_locks WHERE expires_at<=?").run(acquiredAt);
       if (!this.db.prepare("SELECT id FROM audit_targets WHERE id=?").get(targetId)) throw error("审计对象不存在。", 404, "target-not-found");
       try {
@@ -209,21 +212,12 @@ export class ProductStore {
         throw cause;
       }
       this.db.prepare("UPDATE audit_targets SET operation_epoch=operation_epoch+1 WHERE id=?").run(targetId);
-      this.db.exec("COMMIT");
-    } catch (cause) {
-      try { this.db.exec("ROLLBACK"); } catch {}
-      throw cause;
-    }
+    });
     try { return await callback(); }
     finally {
-      this.db.exec("BEGIN IMMEDIATE");
-      try {
+      await this.transaction(() => {
         this.db.prepare("DELETE FROM target_operation_locks WHERE target_id=? AND holder=?").run(targetId, holder);
-        this.db.exec("COMMIT");
-      } catch (cause) {
-        try { this.db.exec("ROLLBACK"); } catch {}
-        throw cause;
-      }
+      });
     }
   }
   event(productId, type, resourceType, resourceId, payload = {}) {
@@ -389,6 +383,7 @@ export class ProductStore {
       this.db.prepare("UPDATE audit_targets SET name=?,description=?,tags_json=?,version_label=?,test_focus=?,relationship_notes=?,version=version+1,operation_epoch=operation_epoch+?,updated_at=? WHERE id=?")
         .run(name, description, JSON.stringify(tags), versionLabel, testFocus, relationshipNotes, scopeUpdate ? 1 : 0, changed, targetId);
       if (scopes) {
+        this.memoryScopeChanged?.(target, scopes);
         this.db.prepare("UPDATE audit_targets SET availability='available',availability_checked_at=?,availability_error=NULL WHERE id=?").run(changed, targetId);
         this.db.prepare("DELETE FROM source_scopes WHERE target_id=?").run(targetId);
         const insert = this.db.prepare("INSERT INTO source_scopes(id,target_id,name,path,include_patterns_json,exclude_patterns_json,role,description,position,created_at,updated_at) VALUES(?,?,?,?,?,?,?,?,?,?,?)");
@@ -454,6 +449,7 @@ export class ProductStore {
       if (Number(expectedVersion) !== target.version) throw error("审计对象版本已变化，请刷新后重试。", 412, "version-mismatch");
       const linkCount = Number(this.db.prepare("SELECT COUNT(*) AS count FROM audit_target_links WHERE target_id=?").get(targetId).count);
       if (linkCount) throw error("审计对象仍有关联任务或历史资源，不能删除。", 409, "target-has-audits");
+      this.memoryLifecycle?.('deleted', target);
       this.db.prepare("DELETE FROM audit_targets WHERE id=?").run(targetId);
       this.event(productId, "target.deleted", "target", targetId, {});
       return { target_id: targetId, deleted: true, source_directories_deleted: false, artifacts_deleted: false };
@@ -483,6 +479,7 @@ export class ProductStore {
       });
       const changed = now();
       for (const target of targets) {
+        this.memoryLifecycle?.('transferred', target, destination.id);
         this.db.prepare("UPDATE audit_targets SET product_id=?,version=version+1,operation_epoch=operation_epoch+1,ownership_generation=ownership_generation+1,updated_at=? WHERE id=?")
           .run(destination.id, changed, target.id);
         this.event(fromProductId, "target.transferred_out", "target", target.id, { to_product_id: destination.id });

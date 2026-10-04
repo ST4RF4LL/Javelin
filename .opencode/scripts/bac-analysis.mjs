@@ -13,8 +13,9 @@ try {
   };
   let result;
   if (command === "prepare") {
-    required(["plan", "source-root", "reports-root", "focus-area", "assignment", "session", "run-id"]);
-    result = await prepareBac({ planPath: args.plan, sourceRoot: args["source-root"], reportsRoot: args["reports-root"], focusAreaId: args["focus-area"], assignmentId: args.assignment, sessionId: args.session, runId: args["run-id"] });
+    required(["plan", "source-root", "reports-root", ...(args.task || args.attempt ? ["task", "attempt"] : ["focus-area", "assignment"]), "session", "run-id"]);
+    result = await prepareBac({ planPath: args.plan, sourceRoot: args["source-root"], reportsRoot: args["reports-root"], focusAreaId: args["focus-area"], assignmentId: args.assignment,
+      taskId: args.task, attemptId: args.attempt, sessionId: args.session, runId: args["run-id"] });
   } else if (command === "compare") {
     required(["request", "reports-root"]);
     result = await compareBac({ requestPath: args.request, reportsRoot: args["reports-root"] });
@@ -25,7 +26,7 @@ try {
     required(["run", "review", "reports-root"]);
     result = await reviewBac({ runPath: args.run, reviewPath: args.review, reportsRoot: args["reports-root"] });
   } else if (["--help", "-h", undefined].includes(command)) {
-    result = { commands: ["prepare --plan PATH --source-root PATH --reports-root PATH --focus-area ID --assignment ID --session ID --run-id ID", "compare --request PATH --reports-root PATH", "prepare-review --run PATH --output PATH", "review --run PATH --review PATH --reports-root PATH"],
+    result = { commands: ["prepare --plan PATH --source-root PATH --reports-root PATH --task ID --attempt ID --session ID --run-id ID", "prepare --plan PATH --source-root PATH --reports-root PATH --focus-area ID --assignment ID --session ID --run-id ID", "compare --request PATH --reports-root PATH", "prepare-review --run PATH --output PATH", "review --run PATH --review PATH --reports-root PATH"],
       note: "纯静态越权分析；先由独立策略会话与源码工作包补齐输入，未知事实保持缺口。" };
   } else throw new Error("未知越权专项命令。");
   process.stdout.write(`${JSON.stringify(result)}\n`);

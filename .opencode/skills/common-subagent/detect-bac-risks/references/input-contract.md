@@ -1,8 +1,10 @@
 # BAC 输入与证据契约
 
+task-board.v1 使用 monitor 注入的 bac-task-plan.v1；prepare 通过 --task/--attempt 绑定任务，策略由发布条目的摘要引用自动载入。不得把描述性 Focus Area 清单当作 Coverage Plan。
+
 `prepare` 生成请求草稿，核心字段定义在 `.opencode/lib/bac/service.mjs:validateRequest`，平台校验在 `contract.mjs`，比较逻辑在本 skill 的 `scripts/analyze_bac.py`。脚本只处理输入事实，不自行恢复源码语义。
 
-请求绑定 `contract_version=bac-analysis.v1`、audit/scope、Focus/assignment、真实专业会话、Plan 路径和只读源码根目录。`acp`、`paths`、`api_catalog` 各自的 `repository` 必须同时绑定该根目录与 `scope_digest`。三个输入的 `coverage.status` 必须有 `coverage.evidence` 定位证据支持，未闭合为 PARTIAL；逐项 `known_gaps` 不得丢弃。声明 COMPLETE 但缺少审查依据时，差分仍保留完整性缺口。
+请求绑定 `contract_version=bac-analysis.v1`、audit/scope、旧版 Focus/assignment 或新版 task_id/attempt_id、真实专业会话、Plan 路径和只读源码根目录。`acp`、`paths`、`api_catalog` 各自的 `repository` 必须同时绑定该根目录与 `scope_digest`。三个输入的 `coverage.status` 必须有 `coverage.evidence` 定位证据支持，未闭合为 PARTIAL；逐项 `known_gaps` 不得丢弃。声明 COMPLETE 但缺少审查依据时，差分仍保留完整性缺口。
 
 `resource_role_catalog` 包含 `resources:[{D,evidence}]`、`roles:[{R,evidence}]`、`aliases:[{alias,canonical,evidence}]`、`known_gaps:[]`。资源包含数据库命名空间，避免同名表跨服务合并；权限码到角色没有证据则不创建规范映射。
 
@@ -37,3 +39,5 @@ VAC 的五个事实是存在、可信身份、角色匹配、控制先于所有�
 `api_catalog.apis` 至少保留分派内的所有冻结 ingress 接口。每项有 api_id、database_relevant（true/false/null），补充发现入口或判断 false 需要证据。出现一条路径只证明入口已关联，是否所有数据库操作/分支已分析还须由输入 coverage 与已知缺口约束。
 
 调用 `prepare-review` 后，ACCEPTED 的 decision 增加完整 Finding v2；使用 `bac_source:{run_digest,candidate_id}`、差分摘要作为 `provenance.source_report_sha256`。所有处置提供中文 reason；REJECTED 增加非空 evidence 反证数组，DUPLICATE 增加 duplicate_of，INCONCLUSIVE 保持缺口。不得把静态置信度转换为真伪结论、CVSS 或实际复现记录。
+
+新版任务 Finding routing 使用 `{protocol:"task-board.v1",task_id,attempt_id,domain,threat_ids}`，由 prepare-review 返回当前分派字段；不填写旧 Focus/check。详细证据、分类、源码定位、bac_source 和候选状态校验与旧版相同。

@@ -2,7 +2,42 @@
 
 仅对冻结任务 `bac_analysis.mode=auto` / `AUDIT_BAC_MODE=auto` 启用 `bac-analysis.v1`。新建工作台任务默认启用，创建时可关闭；历史任务缺字段按关闭处理。设置与断点恢复绑定，不增加动态执行授权。
 
+## 新版 task-board.v1 任务
+
+本分支替代下文旧 Coverage Plan、check、audit-todo 和三视角分文件绑定。Focus Area 与逐接口 API 都直接绑定已发布的 task_id、spec_digest 和本次 attempt_id；API 不创建 Focus Area 父子关系。不能把 threat/focus-areas.json 传给旧工作包入口，也不补造 coverage_units/checks。
+
+发布前，独立 security-threat-modeler 会话依据冻结源码和任务范围准备策略；任务发布条目携带 `bac_analysis`：
+
+```json
+{
+  "policy_shards": [{"path":"bac/<audit_id>/policies/orders.json","sha256":"<文件摘要>"}],
+  "resource_role_catalog": {"path":"bac/<audit_id>/policies/catalog.json","sha256":"<文件摘要>"},
+  "entry_points": [{"api_id":"EP-ORDER","operation":"GET /orders/:id"}]
+}
+```
+
+制品路径相对 AUDIT_REPORTS_ROOT。策略分片必须包含 contract_version=bac-analysis.v1、artifact_type=bac-policy-shard、audit_id、scope_digest、task_ids（包含当前任务）及 acp；acp 遵循输入契约，producer 为策略会话实际 ID，与源码 worker 不同。一个任务的多个分片来自同一策略会话，避免混淆生产者；应避免重复 D/O/R 四元组，冲突及未决策略保持可见。目录包含 contract_version=bac-analysis.v1、artifact_type=bac-resource-role-catalog、audit_id、scope_digest 和 resource_role_catalog（resources/roles/aliases/known_gaps）；兼容同四个集合直接位于顶层的目录。每项证据绑定冻结文件与 SHA-256。未知预期不能由源码 worker 自行填成确定策略；缺策略记录 GAP 后继续常规审计。
+
+monitor 根据实际领取任务和冻结 source-baseline 生成不可变 `bac-task-plan.v1`，通过附件 bac_plan.path 提供给 worker。API 模式还保留原始 source_id 与自由文本，不能删除清单入口；新增代码入口需结构化源码证据。平台不把任何入口默认判定为数据库相关，也不把空输入视为审查完整。
+
+worker 从只读 session_path 获取平台登记的真实 agent_session_id，并使用以下命令：
+
+```sh
+node "$AUDIT_BAC_CLI" prepare --plan "$BAC_PLAN" --source-root "$AUDIT_SOURCE_ROOT" --reports-root "$AUDIT_REPORTS_ROOT" --task "$TASK_ID" --attempt "$ATTEMPT_ID" --session "$SESSION_ID" --run-id "$RUN_ID"
+node "$AUDIT_BAC_CLI" compare --request "$REQUEST" --reports-root "$AUDIT_REPORTS_ROOT"
+node "$AUDIT_BAC_CLI" prepare-review --run "$BAC_RUN" --output "$REVIEW_DRAFT"
+node "$AUDIT_BAC_CLI" review --run "$BAC_RUN" --review "$REVIEW_DRAFT" --reports-root "$AUDIT_REPORTS_ROOT"
+```
+
+prepare 自动载入摘要绑定的独立策略和目录，默认 paths/api_catalog 为 PARTIAL。worker 只补全实际路径、API 相关性和覆盖证据，不改策略。prepare-review 返回 task-board.v1 的 routing（task_id/attempt_id/domain）和允许的权限漏洞类型；ACCEPTED 仍须完整 Finding v2、finding-details.v1、CANDIDATE、真实 origin_lens、bac_source 及来源摘要（新版单报告可保留 sink/control/config 中实际发现视角）。routing 添加有依据的 threat_ids，不填写旧 primary_check_id/focus_area_id。将 review 返回的 attachment 与 findings 原样交付到当前单份报告，并填写真实 agent_session_id。
+
+NOT_APPLICABLE 仍需 plan_path=bac_plan.path、source_root、非空结构化 evidence 及中文理由。没有结构化附件或生成计划失败时保留 GAP；不能用文字说明替代差分证据。服务在 review-input、review 和 finalize 时从已接收报告重建专项统计，检查任务/尝试/会话/策略/源码及候选集合；PARTIAL 不允许被质量复核标为专项 REVIEWED。最终报告与工作台展示同一份统计及全部缺口。
+
+已封存历史任务保留原报告与缺口。新版计划能力随新建任务记录，断点恢复复用原选择和不可变执行制品；旧结果不会因工具升级自动变为通过。
+
 ## 调度和策略准备
+
+以下为旧版 Coverage Plan 工作包分支。
 
 Recon 复用既有入口、函数、数据库 sink、敏感操作和配置清单，记录资源/角色别名、数据库命名空间及未解析入口。不要再构建全库 AST/CPG。数据库相关性未知的入口不能被删除。
 

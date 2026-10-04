@@ -1,3 +1,57 @@
+import { initProductMemoryUI } from "./product-memory-ui.js";
+
+export function filterValidationActivity(items, { query = "", scope = "all" } = {}) {
+  const needle = query.trim().toLowerCase();
+  return items.filter(item => {
+    const actions = item.actions ?? [], exchanges = item.exchange_ids ?? [];
+    if (scope === "http" && !exchanges.length) return false;
+    if (scope === "actions" && !actions.length) return false;
+    if (scope === "blocked" && !/BLOCKED|FAILED|TIMED_OUT|QUARANTINED|ERROR|INVALID/i.test(item.status ?? "")) return false;
+    if (scope === "pending" && (actions.length || exchanges.length || /BLOCKED|FAILED|TIMED_OUT|QUARANTINED|ERROR|INVALID|COMPLETED|CLOSED|CONFIRMED|SUPPORTED/i.test(item.status ?? ""))) return false;
+    return !needle || [item.title, item.finding_id, item.audit_id, item.summary, item.provenance?.product_name,
+      ...actions.map(action => `${action.tool ?? ""} ${action.summary ?? ""} ${action.id}`)].join(" ").toLowerCase().includes(needle);
+  });
+}
+
+export function capturedBodyText(body) {
+  if (!body) return "未记录正文，不能据此认定正文为空。";
+  if (body.available === false || body.omitted || body.capture_status === "missing") return "正文不可用或未完整捕获；工具占位文本不是 HTTP 正文。";
+  const notes = [];
+  if (body.truncated) notes.push("正文已截断，以下为捕获片段。");
+  if (body.encoding === "base64") notes.push("二进制正文（Base64）。");
+  const content = typeof body.text === "string" ? body.text : "未记录正文文本。";
+  return [...notes, content || "（已捕获空正文）"].join("\n");
+}
+export function auditListPath(productId, parameters) {
+  return `${productId ? `/api/v2/products/${encodeURIComponent(productId)}/audits` : "/api/v1/audits"}?${parameters}`;
+}
+
+export function auditScope(audit) {
+  const managed = audit?.provenance?.audit_managed !== false && audit?.managed !== false && audit?.status !== "artifact_only";
+  return {
+    productId: audit?.provenance?.audit_product_id ?? (managed ? null : audit?.provenance?.product_id) ?? null,
+    repositoryId: audit?.repository_id ?? null,
+    managed,
+  };
+}
+
+export async function resolveAuditScope(auditId, { audit, api, signal, repositoryId } = {}) {
+  let value = audit;
+  let scope = auditScope(value);
+  if (!value || !scope.productId) {
+    const parameters = new URLSearchParams({ live: "1" });
+    if (repositoryId ?? scope.repositoryId) parameters.set("repository_id", repositoryId ?? scope.repositoryId);
+    const response = await api(`/api/v1/audits/${encodeURIComponent(auditId)}?${parameters}`, { signal });
+    value = response.audit ?? response;
+    scope = auditScope(value);
+  }
+  if (scope.managed && !scope.productId) throw new Error("无法确认任务所属产品，请刷新任务列表后重试。");
+  return { ...scope, audit: value };
+}
+
+export function mountWorkbench({ document = globalThis.document, window = globalThis.window, initialView = "dashboard", initialFilters = {}, onNavigate = null, onMutation = null } = {}) {
+let disposed = false;
+let navigationSequence = 0;
 const state = {
   workspace: { summary: {}, audits: [], findings: [], reports: [], artifacts: [], queue: { enabled: false, interval_hours: 1, concurrency: 1 } },
   repositories: [],
@@ -6,8 +60,17 @@ const state = {
   editingTarget: null,
   transferringTargets: [],
   selectedTargetIds: new Set(),
-  selectedProductId: "product-undefined",
+  selectedProductId: initialFilters.product_id || "product-undefined",
+  auditProductFilter: initialFilters.product_id ?? "",
   validationRuns: [],
+  runtimeAudits: [],
+  validationActivity: [],
+  validationActivityExchanges: [],
+  validationActivityError: null,
+  validationActivityLoaded: false,
+  validationActivityHistoryWindow: null,
+  selectedValidationCaseId: null,
+  validationActivityPage: 1,
   validationRequests: [],
   requestExchanges: [],
   selectedRequestExchangeIds: new Set(),
@@ -16,8 +79,20 @@ const state = {
   modelSettings: { selected_model: "default", options: [{ value: "default", label: "默认" }], sources: [], selection_available: true },
   selectedAuditId: null,
   selectedAudit: null,
+  auditDetailProductId: null,
+  auditDetailRepositoryId: null,
+  auditDetailManaged: true,
+  selectedFinding: null,
+  selectedValidationRequest: null,
+  validationTab: "activity",
+  validationPage: 1,
+  validationRequestSequence: 0,
+  selectedReportId: null,
+  sourceOptions: { products: [], audits: [], reports: [] },
+  sourceOptionsRequestSequence: 0,
+  sourceFilters: { finding: { product_id: "", audit_id: "", report_id: "" }, validation: { product_id: "", audit_id: "", report_id: "" }, report: { product_id: "", audit_id: "", report_id: "" } },
   audits: [],
-  auditTab: "running",
+  auditTab: "all",
   auditPage: 1,
   auditPageSize: 20,
   auditTotal: 0,
@@ -28,9 +103,11 @@ const state = {
   auditDialogRequest: 0,
   auditSearchTimer: null,
   auditQueryKey: null,
+  taskBoardViews: new Map(),
+  auditPresentationLoad: null,
   selectedValidationId: null,
   selectedFindingResourceId: null,
-  view: "dashboard",
+  view: initialView,
   eventSource: null,
   liveRefresh: null,
   validationEventSource: null,
@@ -60,7 +137,7 @@ const VIEW_META = {
   audits: ["审计任务", "任务中心 / 当前产品空间"],
   findings: ["漏洞发现", "风险中心 / canonical findings"],
   reports: ["审计报告", "交付中心 / 完整性记录"],
-  validation: ["完整动态验证", "验证中心 / 人工 localhost 证据"],
+  validation: ["动态验证", "验证中心 / 来源与执行证据"],
   runtime: ["运行环境", "平台管理 / 能力与组件"],
   settings: ["设置", "平台管理 / 任务序列排队"],
 };
@@ -98,7 +175,7 @@ function status(value) {
     queue_active: "已激活", queue_inactive: "未激活",
     unreviewed: "未处理", confirmed: "已确认", rejected: "已排除", insufficient_evidence: "证据不足",
     awaiting_validation: "待动态验证", validated: "验证通过", validation_failed: "验证失败", validation_blocked: "验证受阻", reported: "已入报告",
-    supported_static: "静态证实",
+    supported_static: "静态证实", true_positive: "复核确认", false_positive: "复核排除", inconclusive: "证据不足",
   };
   const key = String(value ?? "unknown").toLowerCase();
   return element("span", `status ${key}`, labels[key] ?? value ?? "未知");
@@ -110,6 +187,12 @@ function formatDate(value) {
   return Number.isNaN(date.valueOf()) ? String(value) : new Intl.DateTimeFormat("zh-CN", { dateStyle: "medium", timeStyle: "short" }).format(date);
 }
 
+function auditStatus(audit) {
+  const badge = status(audit.execution_incomplete ? "failed" : audit.status);
+  if (audit.execution_incomplete) badge.textContent = "执行未完成";
+  return badge;
+}
+
 function short(value, length = 12) {
   if (!value) return "—";
   const text = String(value);
@@ -117,6 +200,10 @@ function short(value, length = 12) {
 }
 
 function todoStatusText(todo) {
+  if (todo?.protocol === "task-board.v1") {
+    if (!todo.total) return todo.publication === "SEALED" ? "本轮无审计任务" : "规划中 · 尚未发布任务";
+    return `已交报告 ${todo.reported}/${todo.total} · 执行中 ${todo.running} · 待执行 ${todo.pending}${todo.gap ? ` · 缺口 ${todo.gap}` : ""}${todo.failed ? ` · 失败 ${todo.failed}` : ""}`;
+  }
   if (!todo?.total) return "尚未从 Focus Area 初始化";
   if (todo.finalization_ready || todo.complete) {
     const terminal = todo.terminal ?? ((todo.done ?? 0) + (todo.gap ?? 0) + (todo.failed ?? 0));
@@ -152,19 +239,25 @@ function toast(message) {
 }
 
 async function api(path, options = {}) {
+  if (disposed) throw new DOMException("页面已关闭", "AbortError");
   const response = await fetch(path, { headers: { Accept: "application/json", ...(options.headers ?? {}) }, ...options });
   const body = await response.json().catch(() => ({}));
-  if (!response.ok) throw new Error(body.message ?? `请求失败：HTTP ${response.status}`);
+  if (disposed) throw new DOMException("页面已关闭", "AbortError");
+  if (!response.ok) throw Object.assign(new Error(body.message ?? `请求失败：HTTP ${response.status}`), { status: response.status });
+  if (!['GET', 'HEAD'].includes(options.method ?? 'GET')) onMutation?.();
   return body;
 }
 
 function setView(view) {
+  if (disposed || !VIEW_META[view]) return;
+  if (state.view !== view) closeAuditDrawer();
   state.view = view;
   document.querySelectorAll(".view").forEach(item => item.classList.toggle("active", item.id === `view-${view}`));
   document.querySelectorAll(".nav button[data-view]").forEach(item => item.classList.toggle("active", item.dataset.view === view));
   $("page-title").textContent = VIEW_META[view][0];
   $("breadcrumb").textContent = VIEW_META[view][1];
   renderActiveView();
+  if (view === "projects") memoryUI.refresh().catch(showError);
   loadViewResources(view).catch(showError);
   if (view === "audits") loadAuditsPage(1).catch(showError);
   else {
@@ -178,6 +271,7 @@ function setView(view) {
   }
   if (view === "findings" && !state.findingLoaded && !state.findingLoading) loadFindingsPage(1).catch(showError);
   window.scrollTo(0, 0);
+  onNavigate?.(view);
 }
 
 function invalidateFindings() {
@@ -193,8 +287,68 @@ function invalidateFindings() {
 function applyWorkspace(workspace) {
   const previousCount = Number(state.workspace?.summary?.finding_count ?? 0);
   const nextCount = Number(workspace?.summary?.finding_count ?? 0);
-  state.workspace = workspace;
+  state.workspace = { ...workspace, audits: workspace.audits.map(audit => normalizeAuditView(audit)) };
   if (previousCount !== nextCount) invalidateFindings();
+}
+
+function normalizeAuditView(audit, summary = {}) {
+  const value = { ...summary, ...audit };
+  const board = value.task_board ?? (value.todo?.protocol === "task-board.v1" ? value.todo : null);
+  // Older running servers may omit presentation fields on product routes.
+  // This adapter keeps a page refresh usable without interrupting a live audit.
+  if (board && !value.progress_text) {
+    const sealed = board.publication === "SEALED", mined = board.mining_complete === true;
+    const reviewed = board.validation?.status === "REVIEWED";
+    const finalized = board.next_action === "DONE" || value.todo_completion?.complete === true || value.status === "completed";
+    value.task_board = board; value.progress_source = "task-board";
+    value.progress = board.total ? Math.max(0, Math.min(100, Math.round(board.reported * 10000 / board.total) / 100)) : 0;
+    value.stage = value.status === "queued" ? "等待调度" : !sealed ? "任务规划与发布" : !mined
+      ? board.failed ? "任务执行 · 需处理失败项" : `任务执行 · 已交报告 ${board.reported}/${board.total}`
+      : !reviewed ? "报告内容复核" : finalized ? "报告已封存" : "报告封存";
+    value.progress_text = value.status === "queued" ? "等待调度" : !sealed
+      ? board.total ? `发布中 · 已发布 ${board.total} 项，已交报告 ${board.reported} 份` : "规划中 · 尚未发布任务"
+      : !board.total ? "本轮无审计任务" : `报告交付 ${board.reported}/${board.total} · ${value.progress}%${board.gap ? ` · 缺口 ${board.gap}` : ""}`;
+    let active = false;
+    const stopped = ["queued", "paused", "interrupted", "cancelled", "failed"].includes(value.status);
+    value.stages = [["scope", "范围冻结", Boolean(value.paths || value.source_baseline || sealed)], ["planning", "任务规划与发布", sealed],
+      ["audit", "任务执行与报告收集", mined], ["validation", "报告内容复核", reviewed], ["report", "报告封存", finalized]]
+      .map(([id, label, reached]) => { const state = reached ? "completed" : !active && !stopped ? "active" : "pending"; if (!reached) active = true; return { id, label, state }; });
+  }
+  if (board?.mining_complete && Number(board.total) > 0 && Number(board.reported) === 0) {
+    // Also correct already sealed historical runs without rewriting evidence.
+    value.execution_incomplete = board.next_action === "DONE" || value.todo_completion?.complete === true || value.status === "completed";
+    if (value.execution_incomplete) value.stage = "执行未完成 · 缺口记录已封存";
+    value.stages = value.stages?.map(stage => stage.id === "audit" ? { ...stage, label: "任务执行（未收到报告）", state: "failed" } : stage);
+  }
+  return value;
+}
+
+async function auditViews(items, { details = false } = {}) {
+  if (items.every(item => typeof item.stage === "string" && Number.isFinite(item.progress) && (!details || Array.isArray(item.stages)))) {
+    return items.map(item => normalizeAuditView(item));
+  }
+  const snapshot = await fullPresentationSnapshot();
+  const summaries = new Map(snapshot.audits.map(item => [item.id, item]));
+  return items.map(item => normalizeAuditView(item, summaries.get(item.id)));
+}
+
+function fullPresentationSnapshot() {
+  state.auditPresentationLoad ??= api("/api/v1/workspace?live=1").finally(() => { state.auditPresentationLoad = null; });
+  return state.auditPresentationLoad;
+}
+
+async function loadWorkspaceView() {
+  const workspace = await api("/api/v1/workspace?audits=compact&live=1");
+  // Older compact responses omit the source needed to distinguish delivery
+  // progress from lifecycle progress. Keep compatibility until server restart.
+  return workspace.audits.some(audit => !audit.progress_source) ? fullPresentationSnapshot() : workspace;
+}
+
+function auditProgressText(audit) {
+  if (audit.status === "queued") return "等待调度";
+  if (audit.progress_text) return audit.progress_text;
+  if (!Number.isFinite(audit.progress)) return "进度待同步";
+  return `${Math.max(0, Math.min(100, audit.progress))}%${audit.todo?.total ? ` · 任务 ${audit.todo.done ?? 0}/${audit.todo.total}` : ""}`;
 }
 
 function metric(label, value, note) {
@@ -225,12 +379,13 @@ function auditListItem(audit) {
   const progress = element("span");
   const bar = element("span", "progress");
   const fill = element("i");
-  fill.style.width = `${audit.progress ?? 0}%`;
+  fill.style.width = `${Number.isFinite(audit.progress) ? Math.max(0, Math.min(100, audit.progress)) : 0}%`;
   bar.append(fill);
-  const todo = audit.todo?.total ? ` · 本地任务 ${audit.todo.done}/${audit.todo.total}${audit.todo.gap ? `，${audit.todo.gap} GAP` : ""}` : "";
-  progress.append(element("small", "", audit.status === "queued" ? "等待定时调度" : `${audit.stage} · ${audit.progress ?? 0}%${todo}`), bar);
-  button.append(identity, progress, status(audit.status));
-  button.addEventListener("click", () => { state.selectedAuditId = audit.id; setView("audits"); selectAudit(audit.id).catch(showError); });
+  progress.append(element("small", "", audit.status === "queued" ? "等待定时调度" : `${audit.stage ?? "阶段待同步"} · ${auditProgressText(audit)}`), bar);
+  bar.hidden = audit.task_board?.publication === "OPEN";
+  button.append(identity, progress, auditStatus(audit));
+  button.addEventListener("click", () => selectAudit(audit.id, { productId: audit.provenance?.audit_product_id,
+    repositoryId: audit.repository_id, managed: audit.provenance?.audit_managed ?? audit.status !== "artifact_only" }).catch(showError));
   return button;
 }
 
@@ -373,6 +528,10 @@ async function productAction() {
 }
 
 function renderAudits() {
+  const productSelector = $("audit-product-selector");
+  const allProducts = element("option", "", "全部"); allProducts.value = "";
+  productSelector.replaceChildren(allProducts, ...state.products.map(product => { const option = element("option", "", product.name); option.value = product.id; return option; }));
+  productSelector.value = state.auditProductFilter ?? "";
   document.querySelectorAll("[data-audit-tab]").forEach(button => {
     const selected = button.dataset.auditTab === state.auditTab;
     button.classList.toggle("primary", selected);
@@ -399,14 +558,20 @@ function renderAudits() {
   const [value, body] = table(["审计任务", "仓库 / 提交", "当前阶段", "进度", "漏洞", "状态", "操作"]);
   for (const audit of state.audits) {
     const row = element("tr", "clickable");
+    row.tabIndex = 0;
+    row.dataset.auditId = audit.id;
+    row.setAttribute("aria-label", `查看任务 ${audit.name}`);
+    row.addEventListener("keydown", event => {
+      if (event.target === row && ["Enter", " "].includes(event.key)) { event.preventDefault(); selectAudit(audit.id).catch(showError); }
+    });
     const identity = element("td");
     identity.append(element("strong", "", audit.name), element("small", "mono", audit.id));
     row.append(identity);
     cell(row, `${audit.repository_name ?? "—"}\n${short(audit.commit)}`);
-    cell(row, audit.stage);
-    cell(row, audit.status === "queued" ? "等待调度" : (audit.todo?.total ? `${audit.progress}% · 任务 ${audit.todo.done}/${audit.todo.total}` : `${audit.progress}%`));
-    cell(row, audit.finding_count);
-    const statusCell = element("td"); statusCell.append(status(audit.status)); row.append(statusCell);
+    cell(row, audit.stage ?? "阶段待同步");
+    cell(row, auditProgressText(audit));
+    cell(row, audit.finding_count ?? "—");
+    const statusCell = element("td"); statusCell.append(auditStatus(audit)); row.append(statusCell);
     const actionCell = element("td");
     if (audit.status === "queued") {
       const start = element("button", "button primary", "立即开始");
@@ -428,34 +593,28 @@ function renderAudits() {
   }
   $("audit-table").replaceChildren(value);
   if (!state.audits.length) $("audit-table").append(element("div", "empty-state", state.auditLoading ? "正在加载任务…" : "没有符合条件的审计任务。"));
-  renderAuditDetail();
 }
 
 async function loadAuditsPage(page = 1) {
-  if (!state.selectedProductId) {
-    state.audits = [];
-    state.auditTotal = 0;
-    state.auditTotalPages = 1;
-    renderAudits();
-    return;
-  }
   state.auditController?.abort();
   const controller = new AbortController();
   state.auditController = controller;
   state.auditLoading = true;
-  const parameters = new URLSearchParams({ tab: state.auditTab, page: String(page), page_size: String(state.auditPageSize), q: $("audit-query").value.trim() });
-  const queryKey = parameters.toString();
+  const parameters = new URLSearchParams({ live: "1", tab: state.auditTab, page: String(page), page_size: String(state.auditPageSize), q: $("audit-query").value.trim() });
+  const productId = state.auditProductFilter;
+  const queryKey = `${productId}/${parameters}`;
   if (state.auditQueryKey !== queryKey) state.audits = [];
   renderAudits();
   try {
-    const payload = await api(`/api/v2/products/${encodeURIComponent(state.selectedProductId)}/audits?${parameters}`, { signal: controller.signal });
+    const payload = await api(auditListPath(productId, parameters), { signal: controller.signal });
+    const items = await auditViews(payload.items.map(audit => productId ? { ...audit, provenance: { audit_product_id: productId, audit_managed: true, ...audit.provenance } } : audit));
     if (controller.signal.aborted || state.view !== "audits") return;
-    state.audits = payload.items;
+    state.audits = items;
     state.auditPage = payload.page;
     state.auditTotal = payload.count;
     state.auditTotalPages = payload.total_pages;
     parameters.set("page", String(payload.page));
-    state.auditQueryKey = parameters.toString();
+    state.auditQueryKey = `${productId}/${parameters}`;
   } catch (error) {
     if (error.name !== "AbortError") throw error;
   } finally {
@@ -466,20 +625,50 @@ async function loadAuditsPage(page = 1) {
   }
 }
 
-async function selectAudit(auditId) {
+function closeAuditDrawer() {
+  if ($("audit-drawer").open) $("audit-drawer").close();
+  state.auditDetailController?.abort();
+  state.selectedAuditId = null;
+  state.selectedAudit = null;
+}
+
+function refreshSelectedAudit() {
+  if (!state.selectedAuditId || !$("audit-drawer").open) return Promise.resolve();
+  return selectAudit(state.selectedAuditId, { productId: state.auditDetailProductId, repositoryId: state.auditDetailRepositoryId, managed: state.auditDetailManaged, open: false });
+}
+
+function auditProductId(auditId) {
+  return state.selectedAuditId === auditId ? state.auditDetailProductId : auditScope(findAudit(auditId)).productId;
+}
+
+async function selectAudit(auditId, { productId = null, repositoryId = null, managed = null, open = true } = {}) {
+  if (!open && !$("audit-drawer").open) return;
   state.auditDetailController?.abort();
   const controller = new AbortController();
   state.auditDetailController = controller;
   state.selectedAuditId = auditId;
-  if (state.selectedAudit?.id !== auditId) state.selectedAudit = null;
-  renderAuditDetail();
+  state.auditDetailProductId = productId;
+  state.auditDetailRepositoryId = repositoryId;
+  state.auditDetailManaged = managed;
+  if (open && !$("audit-drawer").open) $("audit-drawer").showModal();
+  if (state.selectedAudit?.id !== auditId) { state.selectedAudit = null; renderAuditDetail(); }
   try {
-    const audit = await api(`/api/v2/products/${encodeURIComponent(state.selectedProductId)}/audits/${encodeURIComponent(auditId)}`, { signal: controller.signal });
-    if (controller.signal.aborted || state.selectedAuditId !== auditId || state.view !== "audits") return;
-    state.selectedAudit = audit;
-    renderAuditDetail();
+    const known = findAudit(auditId);
+    const scope = await resolveAuditScope(auditId, { audit: known ?? (productId ? { id: auditId, repository_id: repositoryId, provenance: { audit_product_id: productId, audit_managed: managed !== false } } : null), api, signal: controller.signal, repositoryId });
+    if (controller.signal.aborted || state.selectedAuditId !== auditId) return;
+    state.auditDetailProductId = scope.productId;
+    state.auditDetailRepositoryId = scope.repositoryId ?? repositoryId;
+    state.auditDetailManaged = scope.managed;
+    const path = scope.managed ? `/api/v2/products/${encodeURIComponent(scope.productId)}/audits/${encodeURIComponent(auditId)}`
+      : `/api/v1/audits/${encodeURIComponent(auditId)}?repository_id=${encodeURIComponent(scope.repositoryId ?? repositoryId ?? "")}`;
+    const audit = await api(path, { signal: controller.signal });
+    const [view] = await auditViews([audit], { details: true });
+    if (controller.signal.aborted || state.selectedAuditId !== auditId || !$("audit-drawer").open) return;
+    state.selectedAudit = { ...view, provenance: { ...view.provenance, audit_product_id: scope.productId, audit_managed: scope.managed } };
+    await renderAuditDetail();
+    connectEventStream();
   } catch (error) {
-    if (error.name !== "AbortError") throw error;
+    if (error.name !== "AbortError") { $("audit-detail").replaceChildren(element("div", "notice error", error.message)); throw error; }
   }
 }
 
@@ -490,19 +679,25 @@ function findAudit(auditId) {
 }
 
 function renderAuditDetail() {
+  if (!$("audit-drawer").open) return;
   const audit = state.selectedAudit;
   const panel = $("audit-detail");
-  if (!audit) { panel.replaceChildren(element("div", "empty-state", "选择一个审计任务查看阶段详情。")); return; }
+  if (!audit) { $("audit-drawer-title").textContent = "正在加载任务…"; panel.replaceChildren(element("div", "empty-state", "正在读取任务详情…")); return; }
+  $("audit-drawer-title").textContent = audit.name;
+  const scrollTop = panel.scrollTop;
+  const configurationOpen = panel.querySelector(".audit-configuration")?.open ?? false;
   const modelForDisplay = audit.model;
-  const head = element("div");
-  head.append(element("p", "eyebrow", "AUDIT SNAPSHOT"), element("h2", "", audit.name), element("p", "mono", audit.id), status(audit.status));
+  const head = element("section", "audit-overview"); head.id = "audit-overview";
+  const progress = element("div", "audit-progress-summary");
+  progress.append(auditStatus(audit), element("strong", "", audit.stage ?? "阶段待同步"), element("p", "", auditProgressText(audit)));
+  head.append(element("p", "mono muted", audit.id), progress);
   const facts = element("dl", "detail-facts");
-  [["测试对象", audit.repository_name], [audit.source_kind === "directory" ? "目录范围快照" : "提交", audit.source_kind === "directory" ? short(audit.execution_spec_digest, 18) : short(audit.commit, 18)], [audit.status === "queued" ? "OpenCode 模型（下次启动）" : "OpenCode 模型（本次启动）", modelForDisplay ?? "默认（不传 --model）"], ["制品", `${audit.artifact_count ?? 0} 个`], ["队列状态", audit.status === "queued" ? (audit.queue?.mode === "recover" ? "断点恢复等待调度；可立即调度" : "等待定时调度；可立即调度") : "未排队"], ["本地调度任务", todoStatusText(audit.todo)], ["上下文 watchdog", contextRecoveryText(audit.context_window_recovery)], ["人工完整验证", `${audit.runtime_validation_count ?? 0} 次`], ["补充说明", audit.task_context?.additional_instructions_enabled ? `已启用 · ${audit.task_context.additional_instructions_length} 字符` : "未启用"], ["动态参与", audit.runtime_testing ? "贯穿式流程（详见下方）" : audit.task_context?.dynamic_validation_enabled ? "旧版快速动态（240/180秒）" : "未授权（静态三方）"], ["交付进度来源", audit.progress_source === "local-audit-todo" ? "本地调度队列" : audit.progress_source === "stage-delivery-manifest" ? "八环节物化清单" : "历史制品推断"], ["断点恢复", audit.recovery_count ? `${audit.recovery_count} 次 · ${formatDate(audit.last_recovered_at)}` : "尚未恢复"], ["更新时间", formatDate(audit.updated_at)], ["覆盖状态", audit.coverage?.status ?? "未生成"], ["工作台制品目录", audit.paths?.reports_root ?? "启动后生成"]].forEach(([label, value]) => {
+  [["测试对象", audit.repository_name], [audit.source_kind === "directory" ? "目录范围快照" : "提交", audit.source_kind === "directory" ? short(audit.execution_spec_digest, 18) : short(audit.commit, 18)], [audit.status === "queued" ? "OpenCode 模型（下次启动）" : "OpenCode 模型（本次启动）", modelForDisplay ?? "默认（不传 --model）"], ["制品", `${audit.artifact_count ?? 0} 个`], ["队列状态", audit.status === "queued" ? (audit.queue?.mode === "recover" ? "断点恢复等待调度；可立即调度" : "等待定时调度；可立即调度") : "未排队"], ["本地调度任务", todoStatusText(audit.todo)], ["上下文 watchdog", contextRecoveryText(audit.context_window_recovery)], ["人工完整验证", `${audit.runtime_validation_count ?? 0} 次`], ["补充说明", audit.task_context?.additional_instructions_enabled ? `已启用 · ${audit.task_context.additional_instructions_length} 字符` : "未启用"], ["动态参与", audit.runtime_testing ? "贯穿式流程（详见下方）" : audit.task_context?.dynamic_validation_enabled ? "旧版快速动态（240/180秒）" : "未授权（静态三方）"], ["交付进度来源", audit.progress_source === "task-board" ? "通用任务面板（报告交付）" : audit.progress_source === "local-audit-todo" ? "本地调度队列" : audit.progress_source === "stage-delivery-manifest" ? "八环节物化清单" : "历史制品推断"], ["断点恢复", audit.recovery_count ? `${audit.recovery_count} 次 · ${formatDate(audit.last_recovered_at)}` : "尚未恢复"], ["更新时间", formatDate(audit.updated_at)], ["覆盖状态", audit.coverage?.status ?? "未生成"], ["工作台制品目录", audit.paths?.reports_root ?? "启动后生成"]].forEach(([label, value]) => {
     const wrapper = element("div"); wrapper.append(element("dt", "", label), element("dd", "", value ?? "—")); facts.append(wrapper);
   });
   const stages = element("ol", "stage-list");
   for (const stage of audit.stages ?? []) {
-    const item = element("li", stage.state); item.append(element("i"), element("span", "", stage.label), element("small", "", stage.state === "completed" ? "完成" : stage.state === "active" ? "当前" : "等待")); stages.append(item);
+    const item = element("li", stage.state); item.append(element("i"), element("span", "", stage.label), element("small", "", stage.state === "completed" ? "完成" : stage.state === "failed" ? "未完成" : stage.state === "active" ? "当前" : "等待")); stages.append(item);
   }
   const diagnostics = [...new Set([
     ...(audit.todo_completion?.errors ?? []),
@@ -539,7 +734,7 @@ function renderAuditDetail() {
     dispatch.addEventListener("click", () => requestAuditAction(audit, "dispatch"));
     actions.append(dispatch);
   }
-  if (["failed", "interrupted", "cancelled"].includes(audit.status) && audit.repository_id) {
+  if (["failed", "interrupted", "cancelled"].includes(audit.status) && audit.repository_id && !audit.execution_incomplete) {
     const recover = element("button", "button primary", "断点恢复");
     recover.disabled = !state.runtime?.runner?.enabled;
     recover.title = recover.disabled ? "运行驱动未启用" : "沿用原 audit_id、工作区、制品和 OpenCode 会话继续";
@@ -547,14 +742,15 @@ function renderAuditDetail() {
     actions.append(recover);
   }
   if (["queued", "failed", "interrupted", "cancelled", "completed", "artifact_only"].includes(audit.status) && audit.repository_id) {
-    const retry = element("button", "button secondary", audit.status === "completed" ? "再次审计" : "新建重试");
+    const retry = element("button", "button secondary", audit.status === "completed" && !audit.execution_incomplete ? "再次审计" : "新建重试");
     retry.addEventListener("click", async () => {
       retry.disabled = true;
-      try { await openAuditDialog(audit.repository_id, audit); }
+      try { await retryAudit(audit); }
+      catch (error) { showError(error); }
       finally { retry.disabled = false; }
     });
     actions.append(retry);
-    if (state.selectedProductId === "product-undefined") {
+    if (auditProductId(audit.id) === "product-undefined") {
       const remove = element("button", "button danger", "删除任务");
       remove.addEventListener("click", () => openDeleteAuditDialog(audit));
       actions.append(remove);
@@ -564,21 +760,108 @@ function renderAuditDetail() {
   logs.append(element("p", "eyebrow", "RECENT OPENCODE EVENTS"), element("div", "agent-event-stream", "正在读取最近事件…"));
   const runtimePanel = renderRuntimeTesting(audit);
   const bacPanel = renderBacAnalysis(audit);
-  panel.replaceChildren(head, facts, stages, ...(bacPanel ? [bacPanel] : []), ...(runtimePanel ? [runtimePanel] : []), ...(diagnosticPanel ? [diagnosticPanel] : []), actions, logs);
-  loadAuditLogs(audit.id, logs).catch(error => { logs.querySelector(".agent-event-stream").textContent = error.message; });
+  const taskBoardPanel = audit.task_board ? renderTaskBoard(audit) : null;
+  const configuration = element("details", "audit-configuration"); configuration.open = configurationOpen;
+  configuration.append(element("summary", "", "任务配置与制品信息"), facts);
+  const sources = sourceContext(audit, { includeReports: true }); sources.id = "audit-sources";
+  const navigation = element("nav", "audit-detail-nav"); navigation.setAttribute("aria-label", "任务详情章节");
+  const sections = [[head, "audit-overview", "概览"], [taskBoardPanel, "audit-board-section", "任务面板"], [runtimePanel, "audit-runtime-section", "动态执行"], [logs, "audit-logs-section", "执行日志"], [sources, "audit-sources", "来源与报告"]];
+  for (const [section, id, label] of sections) if (section) {
+    section.id = id;
+    const button = element("button", "text-button", label); button.type = "button";
+    button.addEventListener("click", async () => { await taskBoardPanel?.taskBoardReady; if (section.isConnected) section.scrollIntoView({ behavior: "smooth", block: "start" }); });
+    navigation.append(button);
+  }
+  head.append(actions, stages, configuration);
+  panel.replaceChildren(navigation, head, sources, ...(taskBoardPanel ? [taskBoardPanel] : []), ...(runtimePanel ? [runtimePanel] : []), ...(bacPanel ? [bacPanel] : []), ...(diagnosticPanel ? [diagnosticPanel] : []), logs);
+  panel.scrollTop = scrollTop;
+  if (state.auditDetailManaged) loadAuditLogs(audit.id, logs).catch(error => { logs.querySelector(".agent-event-stream").textContent = error.message; });
+  else logs.replaceChildren(element("p", "muted", "历史制品没有关联可读取的执行日志。"));
+  return taskBoardPanel?.taskBoardReady;
+}
+
+function renderTaskBoard(audit) {
+  const viewKey = `${auditProductId(audit.id)}/${audit.id}`;
+  if (!state.taskBoardViews.has(viewKey)) state.taskBoardViews.set(viewKey, { kind: "", status: "", offset: 0, expanded: new Set(), requestSequence: 0 });
+  const view = state.taskBoardViews.get(viewKey);
+  const panel = element("section", "task-board-panel");
+  panel.append(element("p", "eyebrow", "TASK BOARD"), element("h3", "", "审计任务面板"));
+  const summary = audit.task_board;
+  if (audit.execution_incomplete) panel.append(element("p", "notice error", "本轮未收到任何源码审计报告，无法据此判断目标是否存在漏洞。失败与缺口记录已封存，请修复执行问题后新建重试。"));
+  const strategy = audit.mining_strategy ?? summary.mining_strategy;
+  const strategyLabel = strategy === "api" ? "逐接口 API 审查" : strategy === "focus_area" ? "高风险 Focus Area" : "原有并列任务范围";
+  panel.append(element("p", "", `漏洞挖掘策略：${strategyLabel}`));
+  const metrics = element("p", "", `共 ${summary.total} 项 · 已交报告 ${summary.reported} · 执行中 ${summary.running} · 待执行 ${summary.pending} · 缺口 ${summary.gap} · 失败 ${summary.failed}`);
+  if (strategy !== "api") panel.append(element("p", "", `Focus Area 报告交付 ${summary.tracks.focus_area.reported}/${summary.tracks.focus_area.total}。`));
+  if (strategy !== "focus_area") panel.append(element("p", "", `API 任务报告交付 ${summary.tracks.api.reported}/${summary.tracks.api.total}；用户 API 清单 ${summary.api_inventory.reported}/${summary.api_inventory.submitted} 项已收齐报告。`));
+  panel.append(metrics, element("p", "muted", `发布${summary.publication === "SEALED" ? "已结束" : "进行中"}；内容复核${summary.validation?.status === "REVIEWED" ? "已完成" : "未完成"}。报告交付进度与内容复核分别统计。`));
+  const controls = element("div", "action-row"), kind = element("select"), status = element("select");
+  kind.setAttribute("aria-label", "任务类型"); status.setAttribute("aria-label", "任务执行状态");
+  for (const [value, label] of [["", "全部类型"], ["focus_area", "Focus Area"], ["api", "API"]]) { const option = element("option", "", label); option.value = value; kind.append(option); }
+  const labels = { PENDING: "待执行", RUNNING: "执行中", REPORTED: "已交报告", GAP: "存在缺口", FAILED: "执行失败" };
+  for (const [value, label] of [["", "全部状态"], ...Object.entries(labels)]) { const option = element("option", "", label); option.value = value; status.append(option); }
+  kind.value = view.kind; status.value = view.status;
+  if (strategy) { view.kind = strategy; kind.value = strategy; kind.hidden = true; }
+  const previous = element("button", "button secondary", "上一页"), next = element("button", "button secondary", "下一页"), page = element("span", "muted");
+  controls.append(kind, status, previous, next, page); panel.append(controls);
+  const list = element("div", "task-board-items"); panel.append(list);
+  let nextOffset = null;
+  const productId = auditProductId(audit.id);
+  async function refresh() {
+    const sequence = ++view.requestSequence;
+    previous.disabled = true; next.disabled = true;
+    try {
+      const params = new URLSearchParams({ offset: view.offset, limit: 25, kind: view.kind, status: view.status });
+      const data = await api(`/api/v2/products/${encodeURIComponent(productId)}/audits/${encodeURIComponent(audit.id)}/task-board?${params}`);
+      if (sequence !== view.requestSequence) return;
+      if (view.offset > 0 && view.offset >= data.total) {
+        view.offset = Math.max(0, Math.ceil(data.total / 25) - 1) * 25;
+        return refresh();
+      }
+      list.replaceChildren();
+      for (const task of data.items) {
+        const detail = element("details", "task-board-item"), heading = element("summary");
+        detail.open = view.expanded.has(task.task_id);
+        detail.addEventListener("toggle", () => {
+          if (!detail.isConnected) return;
+          if (detail.open) view.expanded.add(task.task_id); else view.expanded.delete(task.task_id);
+        });
+        heading.append(element("strong", "", task.title), element("span", "", `${task.kind === "api" ? "API" : "Focus Area"} · ${task.domain} · ${labels[task.status] ?? task.status}`));
+        detail.append(heading, element("p", "muted", `任务 ${task.task_id} · 执行 ${task.attempt_count} 次 · 内容复核：${task.validation ? task.validation.status === "REVIEWED" ? "已复核" : "待补充或有缺口" : "尚未复核"}`), element("pre", "task-board-prompt", task.prompt));
+        if (task.code_refs?.length) detail.append(element("p", "", `初步定位：${task.code_refs.map(ref => `${ref.path}${ref.line ? `:${ref.line}` : ""}`).join("；")}`));
+        if (task.report) detail.append(element("p", "", `报告：${task.report.path}`));
+        if (task.reason) detail.append(element("p", "", `执行缺口：${task.reason}`));
+        if (task.validation) detail.append(element("p", "", `复核说明：${task.validation.reason}`));
+        list.append(detail);
+      }
+      if (!data.items.length) list.append(element("p", "muted", "暂无符合条件的任务；规划中的任务会在发布后出现。"));
+      nextOffset = data.next_offset; previous.disabled = view.offset === 0; next.disabled = nextOffset == null;
+      page.textContent = `${data.total} 项 · 第 ${Math.floor(view.offset / 25) + 1} 页`;
+    } catch (error) { if (sequence === view.requestSequence) list.replaceChildren(element("p", "", error.message)); }
+  }
+  kind.addEventListener("change", () => { view.kind = kind.value; view.offset = 0; refresh(); });
+  status.addEventListener("change", () => { view.status = status.value; view.offset = 0; refresh(); });
+  previous.addEventListener("click", () => { view.offset = Math.max(0, view.offset - 25); refresh(); });
+  next.addEventListener("click", () => { if (nextOffset != null) { view.offset = nextOffset; refresh(); } });
+  panel.taskBoardReady = refresh(); return panel;
 }
 
 function renderBacAnalysis(audit) {
   if (!audit.bac_analysis && !audit.bac_summary) return null;
   const panel = element("section", "audit-diagnostics");
   panel.append(element("h3", "", "越权专项分析"));
-  const summary = audit.bac_summary;
+  const summary = audit.bac_summary?.summary ?? audit.bac_summary;
+  if (summary && audit.task_board && !summary.counts) {
+    panel.append(element("p", "", summary.status === "REVIEWED" ? "越权专项已复核" : "越权专项存在缺口"), element("p", "", summary.reason ?? ""));
+    return panel;
+  }
   if (!summary) panel.append(element("p", "", audit.bac_analysis?.mode === "auto" ? "已启用，等待工作包交付策略、访问路径和差分复查结果。" : "专项差分已关闭；常规权限审计继续执行。"));
   else {
+    if (audit.bac_summary?.summary) panel.append(element("p", "", audit.bac_summary.reason));
     panel.append(element("p", "", `状态 ${summary.status} · 路径 ${summary.counts.paths} · 策略 ${summary.counts.policies} · 候选 ${summary.counts.candidates} · 接入复核 ${summary.counts.accepted}`));
     panel.append(element("p", "context-note", summary.claim_boundary));
     const list = element("ul");
-    for (const unit of summary.units) list.append(element("li", "", `${unit.focus_area_id} / ${unit.assignment_id}：${unit.status}${unit.reason ? `；${unit.reason}` : ""}`));
+    for (const unit of summary.units) list.append(element("li", "", `${unit.task_id ?? unit.focus_area_id} / ${unit.attempt_id ?? unit.assignment_id}：${unit.status}${unit.reason ? `；${unit.reason}` : ""}`));
     for (const gap of summary.gaps) list.append(element("li", "", `缺口：${gap}`));
     panel.append(list);
   }
@@ -654,7 +937,7 @@ function renderAgentEvent(item, recent) {
 }
 
 async function loadAuditLogs(auditId, container) {
-  const items = (await api(`/api/v2/products/${encodeURIComponent(state.selectedProductId)}/audits/${encodeURIComponent(auditId)}/logs?limit=80`)).items;
+  const items = (await api(`/api/v2/products/${encodeURIComponent(auditProductId(auditId))}/audits/${encodeURIComponent(auditId)}/logs?limit=80`)).items;
   if (state.selectedAuditId !== auditId) return;
   const output = container.querySelector(".agent-event-stream");
   if (!items.length) {
@@ -719,7 +1002,7 @@ async function syncTerminalSize(auditId, { force = false } = {}) {
   if (!size) return null;
   const signature = `${auditId}:${size.columns}x${size.rows}`;
   if (!force && state.terminalGrid === signature) return null;
-  const payload = await api(`/api/v2/products/${encodeURIComponent(state.selectedProductId)}/audits/${encodeURIComponent(auditId)}/terminal/resize`, {
+  const payload = await api(`/api/v2/products/${encodeURIComponent(auditProductId(auditId))}/audits/${encodeURIComponent(auditId)}/terminal/resize`, {
     method: "POST",
     headers: { "Content-Type": "application/json" },
     body: JSON.stringify(size),
@@ -755,7 +1038,7 @@ function observeTerminalSize() {
 async function refreshTerminal(auditId) {
   window.clearTimeout(state.terminalRefresh);
   state.terminalRefresh = null;
-  const payload = withTerminalSession(await api(`/api/v2/products/${encodeURIComponent(state.selectedProductId)}/audits/${encodeURIComponent(auditId)}/terminal`), auditId);
+  const payload = withTerminalSession(await api(`/api/v2/products/${encodeURIComponent(auditProductId(auditId))}/audits/${encodeURIComponent(auditId)}/terminal`), auditId);
   if (state.terminalAuditId !== auditId || !$("terminal-dialog").open) return;
   setTerminalStatus(payload);
   const output = $("terminal-output");
@@ -788,7 +1071,9 @@ function closeTerminal() {
 
 async function requestAuditAction(audit, action) {
   try {
-    await api(`/api/v2/products/${encodeURIComponent(state.selectedProductId)}/audits/${encodeURIComponent(audit.id)}/actions`, {
+    const scope = await resolveAuditScope(audit.id, { audit, api });
+    if (!scope.managed) throw new Error("历史制品任务不支持运行控制。");
+    await api(`/api/v2/products/${encodeURIComponent(scope.productId)}/audits/${encodeURIComponent(audit.id)}/actions`, {
       method: "POST",
       headers: { "Content-Type": "application/json", "If-Match": `"${audit.version}"`, "Idempotency-Key": crypto.randomUUID() },
       body: JSON.stringify({ action }),
@@ -796,6 +1081,17 @@ async function requestAuditAction(audit, action) {
     toast(`已提交${({ pause: "暂停", resume: "恢复", recover: "断点恢复", cancel: "取消", dispatch: "立即开始" })[action]}操作`);
     await load();
   } catch (error) { showError(error); }
+}
+
+async function retryAudit(audit) {
+  const scope = await resolveAuditScope(audit.id, { audit, api });
+  if (!scope.productId) throw new Error("无法确认任务所属产品，请刷新任务列表后重试。");
+  if (scope.productId !== state.selectedProductId) {
+    state.selectedProductId = scope.productId;
+    state.selectedTargetIds.clear();
+    await loadProductTargets();
+  }
+  await openAuditDialog(scope.repositoryId ?? audit.repository_id, { ...audit, ...scope.audit });
 }
 
 function openCancelValidationDialog(request) {
@@ -930,7 +1226,102 @@ async function submitDeleteAudit(event) {
   } finally { button.disabled = false; }
 }
 
+function renderSourceFilters(kind) {
+  const container = $(`${kind}-source-filters`), filters = state.sourceFilters[kind];
+  if (!container) return;
+  const focusedFilter = container.contains(document.activeElement) ? document.activeElement.dataset.sourceFilter : null;
+  const options = state.sourceOptions;
+  const definitions = [
+    ["product_id", "产品", "全部产品", [...new Map([...state.products, ...options.products].map(product => [product.id, product])).values()]],
+    ["audit_id", "审计任务", "全部任务", options.audits.filter(row => !filters.product_id || row.product_id === filters.product_id)],
+    ...(kind === "report" ? [] : [["report_id", "关联报告", "全部报告", options.reports.filter(row => (!filters.product_id || row.product_id === filters.product_id) && (!filters.audit_id || row.audit_id === filters.audit_id))]]),
+  ];
+  container.replaceChildren(...definitions.map(([field, label, all, rows]) => {
+    const wrapper = element("label", "", label), select = element("select");
+    select.setAttribute("aria-label", `${label}筛选`);
+    select.dataset.sourceFilter = `${kind}-${field}`;
+    const empty = element("option", "", all); empty.value = ""; select.append(empty);
+    for (const row of rows) { const option = element("option", "", `${row.name}${field === "audit_id" ? ` · ${row.id}` : ""}`); option.value = row.id; select.append(option); }
+    select.value = filters[field];
+    select.addEventListener("change", () => {
+      filters[field] = select.value;
+      if (field === "product_id") filters.audit_id = "";
+      if (field !== "report_id") filters.report_id = "";
+      if (kind === "finding") loadFindingsPage(1).catch(showError);
+      else if (kind === "validation") { state.validationPage = 1; state.selectedRequestExchangeIds.clear(); state.selectedValidationId = null; $("validation-detail").hidden = true; loadViewResources("validation").catch(showError); }
+      else renderReports();
+    });
+    wrapper.append(select); return wrapper;
+  }));
+  const clear = element("button", "button secondary", "重置筛选"); clear.type = "button";
+  clear.disabled = !Object.values(filters).some(Boolean);
+  clear.addEventListener("click", () => {
+    Object.assign(filters, { product_id: "", audit_id: "", report_id: "" });
+    if (kind === "finding") loadFindingsPage(1).catch(showError);
+    else if (kind === "validation") { state.validationPage = 1; state.selectedRequestExchangeIds.clear(); state.selectedValidationId = null; $("validation-detail").hidden = true; loadViewResources("validation").catch(showError); }
+    else renderReports();
+  });
+  container.append(clear);
+  if (focusedFilter) [...container.querySelectorAll("select")].find(select => select.dataset.sourceFilter === focusedFilter)?.focus({ preventScroll: true });
+}
+
+function matchesSource(record, kind) {
+  const filter = state.sourceFilters[kind], source = record.provenance;
+  return (!filter.product_id || source?.product_id === filter.product_id)
+    && (!filter.audit_id || record.audit_id === filter.audit_id)
+    && (!filter.report_id || source?.reports?.some(report => report.id === filter.report_id && report.membership !== "NOT_INCLUDED"));
+}
+
+async function openSourceFinding(resourceId) {
+  const finding = await api(`/api/v1/findings/${encodeURIComponent(resourceId)}`);
+  openFinding(finding);
+}
+
+function sourceContext(record, { includeFinding = false, includeReports = true } = {}) {
+  const source = record.provenance ?? {}, block = element("section", "source-context");
+  block.setAttribute("aria-label", "来源信息");
+  const grid = element("div", "source-context-grid");
+  const product = element("div", "source-field");
+  product.append(element("small", "", "产品 / 测试对象"), element("strong", "", source.product_name ?? "未关联产品"), element("span", "", source.target_name ?? record.repository_name ?? "未关联测试对象"));
+  if (source.product_name_at_creation && source.product_name_at_creation !== source.product_name) product.append(element("small", "", `创建时：${source.product_name_at_creation}`));
+  const task = element("div", "source-field"); task.append(element("small", "", "来源审计任务"));
+  const auditId = source.audit_id ?? record.audit_id;
+  const auditName = source.audit_name ?? auditId ?? "未关联审计任务";
+  if (auditId) {
+    const button = element("button", "source-link", auditName); button.type = "button";
+    button.addEventListener("click", () => selectAudit(auditId, { productId: source.audit_product_id ?? source.product_id, repositoryId: record.repository_id, managed: source.audit_managed === true }).catch(showError));
+    task.append(button, element("small", "mono", auditId));
+  } else task.append(element("span", "", auditName));
+  grid.append(product, task);
+  if (includeFinding) {
+    const finding = element("div", "source-field"); finding.append(element("small", "", "关联漏洞"));
+    if (source.finding_resource_id) {
+      const button = element("button", "source-link", source.finding_title ?? source.finding_id); button.type = "button";
+      button.addEventListener("click", () => openSourceFinding(source.finding_resource_id).catch(showError));
+      finding.append(button, element("small", "mono", source.finding_id));
+    } else finding.append(element("span", "", source.finding_id ?? record.finding_id ?? "未记录漏洞 ID"), element("small", "missing", source.finding_link === "AMBIGUOUS" ? "关联不唯一，需回查请求制品" : "未找到对应漏洞记录，可回查任务与请求制品"));
+    grid.append(finding);
+  }
+  block.append(grid);
+  if (includeReports) {
+    const reports = element("div", "source-reports");
+    const labels = { INCLUDED: "已纳入报告", EXCLUDED: "报告列为排除或未确认", NOT_INCLUDED: "同次审计报告 · 未纳入此发现", UNKNOWN: "同次审计报告 · 关联待确认", RELATED: "审计报告" };
+    for (const report of source.reports ?? []) {
+      const row = element("div", "source-report");
+      const button = element("button", "source-link", report.name); button.type = "button";
+      button.addEventListener("click", () => openReport(report));
+      row.append(element("span", `source-membership ${report.membership.toLowerCase()}`, labels[report.membership] ?? "关联报告"), button);
+      reports.append(row);
+    }
+    if (!source.reports?.length) reports.append(element("p", "muted", "关联报告：尚无可读取的最终报告。"));
+    block.append(reports);
+  }
+  if (source.source_path) block.append(element("p", "source-artifact mono", `来源制品：${source.source_path}`));
+  return block;
+}
+
 function renderFindings() {
+  renderSourceFilters("finding");
   const findings = state.findings;
   const value = element("div", "finding-card-list");
   const positioned = findings.filter(finding => finding.location_complete).length;
@@ -950,7 +1341,8 @@ function renderFindings() {
     open.addEventListener("click", () => openFinding(finding));
     identity.append(open);
     const statuses = element("div", "finding-card-statuses");
-    statuses.append(status(finding.workflow?.status ?? "unreviewed"), status(finding.status));
+    statuses.append(finding.memory ? element("span", "status", memoryUI.label(finding.memory.human_verdict)) : status(finding.workflow?.status ?? "unreviewed"), status(finding.status));
+    if (finding.memory) statuses.append(element("span", "status", memoryUI.label(finding.memory.remediation)), element("small", "", `历史 ${finding.memory.observation_count} 次${finding.memory.duplicate_of ? " · 重复关联" : ""}`));
     header.append(identity, statuses);
     const locationText = finding.location?.path
       ? `${finding.location.path}${finding.location.line ? `:${finding.location.line}${finding.location.line_end ? `-${finding.location.line_end}` : ""}` : ""}`
@@ -959,8 +1351,6 @@ function renderFindings() {
     const summary = element("p", "finding-card-summary", finding.description || "未提供漏洞判断摘要。");
     const facts = element("div", "finding-card-facts");
     facts.append(
-      element("span", "", `Repo：${finding.repository_name ?? "未知"}`),
-      element("span", "", `审计：${finding.audit_id}`),
       element("span", "", `维度：${finding.dimension ?? "未标注"}`),
       element("span", "", `证据：${finding.evidence?.length ?? 0} 条`),
     );
@@ -969,7 +1359,7 @@ function renderFindings() {
     const action = element("button", "button secondary", "查看证据与处理");
     action.addEventListener("click", () => openFinding(finding));
     footer.append(action);
-    card.append(header, location, summary, facts, footer);
+    card.append(header, sourceContext(finding), location, summary, facts, footer);
     value.append(card);
   }
   if (!findings.length) value.append(element("div", "empty-state", "没有符合条件的漏洞发现。"));
@@ -997,6 +1387,9 @@ async function loadFindingsPage(page = 1) {
   renderFindings();
   try {
     const parameters = new URLSearchParams({ page: String(page) });
+    const severity = $("finding-severity").value;
+    if (severity) parameters.set("severity", severity);
+    for (const [key, value] of Object.entries(state.sourceFilters.finding)) if (value) parameters.set(key, value);
     const query = $("finding-query").value.trim();
     if (query) parameters.set("q", query);
     const payload = await api(`/api/v1/findings?${parameters}`);
@@ -1059,9 +1452,11 @@ function findingEvidenceSection(finding) {
 }
 
 function openFinding(finding) {
+  state.selectedFinding = finding;
   state.selectedFindingResourceId = finding.resource_id;
   $("finding-detail-title").textContent = finding.title;
-  $("finding-detail-subtitle").textContent = `${finding.repository_name ?? "未知 Repo"} · ${finding.audit_id} · ${finding.id}`;
+  $("finding-detail-subtitle").textContent = `${finding.provenance?.product_name ?? "未关联产品"} · ${finding.provenance?.audit_name ?? finding.audit_id} · ${finding.id}`;
+  $("finding-detail-source").replaceChildren(sourceContext(finding));
   const facts = $("finding-detail-facts");
   facts.replaceChildren();
   [["关联 Repo", finding.repository_name], ["Repository ID", finding.repository_id], ["审计 ID", finding.audit_id], ["等级", finding.severity], ["CVSS", finding.cvss_score], ["维度", finding.dimension], ["漏洞类型", finding.vulnerability_type_id], ["主定位", sourceLocationText(finding.location)], ["处理状态", statusText(finding.workflow?.status)], ["验证状态", statusText(finding.status)], ["来源制品", finding.source_path]].forEach(([label, value]) => {
@@ -1087,7 +1482,8 @@ function openFinding(finding) {
   form.elements.note.value = finding.workflow?.note ?? "";
   $("finding-workflow-version").textContent = `版本 ${finding.workflow?.version ?? 0}${finding.workflow?.updated_at ? ` · ${formatDate(finding.workflow.updated_at)}` : " · 尚未保存"}`;
   $("finding-workflow-error").hidden = true;
-  $("finding-dialog").showModal();
+  if (!$("finding-dialog").open) $("finding-dialog").showModal();
+  memoryUI.openFinding(finding).catch(showError);
 }
 
 function statusText(value) {
@@ -1100,14 +1496,16 @@ function statusText(value) {
 
 async function submitFindingWorkflow(event) {
   event.preventDefault();
-  const finding = state.findings.find(item => item.resource_id === state.selectedFindingResourceId);
+  const finding = state.selectedFinding;
   if (!finding) return;
   const form = event.currentTarget;
   const data = new FormData(form);
   const button = $("submit-finding-workflow");
   button.disabled = true;
   try {
-    await api(`/api/v1/findings/${encodeURIComponent(finding.resource_id)}/workflow`, {
+    const productId = finding.provenance?.product_id;
+    const path = productId ? `/api/v2/products/${encodeURIComponent(productId)}/findings/${encodeURIComponent(finding.resource_id)}/workflow` : `/api/v1/findings/${encodeURIComponent(finding.resource_id)}/workflow`;
+    await api(path, {
       method: "POST",
       headers: { "Content-Type": "application/json", "If-Match": `"${finding.workflow?.version ?? 0}"`, "Idempotency-Key": crypto.randomUUID() },
       body: JSON.stringify({ status: data.get("status"), note: data.get("note") }),
@@ -1124,7 +1522,8 @@ async function submitFindingWorkflow(event) {
 }
 
 function renderReports() {
-  const cards = state.workspace.reports.map(report => {
+  renderSourceFilters("report");
+  const cards = state.workspace.reports.filter(report => matchesSource(report, "report")).map(report => {
     const card = element("article", "report-card");
     card.append(element("p", "eyebrow", "AUDIT REPORT"), element("h3", "", report.name), element("p", "mono", report.path));
     const footer = element("footer", "", `${report.repository_name ?? "—"} · ${bytes(report.size)} · ${formatDate(report.sealed_at)}`);
@@ -1135,42 +1534,272 @@ function renderReports() {
     const download = element("a", "button secondary", "下载 Markdown");
     download.href = `/api/v1/reports/${encodeURIComponent(report.id)}/download`;
     actions.append(preview, download);
-    card.append(footer, actions);
+    card.append(sourceContext(report, { includeReports: false }), footer, actions);
     return card;
   });
   $("report-grid").replaceChildren(...cards);
   if (!cards.length) $("report-grid").append(element("div", "panel empty-state", "尚未发现最终封存报告。"));
 }
 
+function renderReportOutline(preview) {
+  const outline = $("report-outline");
+  outline.replaceChildren();
+  const headings = [...preview.querySelectorAll("h2, h3")];
+  outline.hidden = !headings.length;
+  if (!headings.length) return;
+  outline.append(element("p", "report-outline-title", "报告目录"));
+  let group;
+  headings.forEach((heading, index) => {
+    heading.id = `report-heading-${index}`;
+    heading.tabIndex = -1;
+    const jump = element("button", "report-outline-link", heading.textContent);
+    jump.type = "button";
+    jump.title = heading.textContent;
+    jump.addEventListener("click", () => {
+      heading.focus({ preventScroll: true });
+      preview.scrollTo({ top: preview.scrollTop + heading.getBoundingClientRect().top - preview.getBoundingClientRect().top - 20, behavior: "instant" });
+      outline.querySelectorAll("[aria-current]").forEach(item => item.removeAttribute("aria-current"));
+      jump.setAttribute("aria-current", "location");
+    });
+    if (heading.tagName === "H2") {
+      const chapter = element("div", "report-outline-chapter");
+      chapter.append(jump);
+      group = element("details", "report-outline-group");
+      const summary = element("summary", "", "展开小节");
+      group.append(summary);
+      chapter.append(group);
+      outline.append(chapter);
+    } else (group ?? outline).append(jump);
+  });
+  outline.querySelectorAll("details").forEach(group => { if (!group.querySelector("button")) group.remove(); });
+}
+
 async function openReport(report) {
+  state.selectedReportId = report.id;
   const dialog = $("report-dialog");
   $("report-title").textContent = report.name;
   $("report-subtitle").textContent = `${report.repository_name ?? "—"} · ${report.path}`;
   $("report-preview").textContent = "正在读取报告…";
+  $("report-outline").replaceChildren();
+  $("report-outline").hidden = true;
+  $("report-reading-note").hidden = true;
+  $("report-original-download").hidden = true;
   $("report-download").href = `/api/v1/reports/${encodeURIComponent(report.id)}/download`;
-  dialog.showModal();
+  $("report-download").textContent = "下载 Markdown";
+  if (!dialog.open) dialog.showModal();
   try {
     const value = await api(`/api/v1/reports/${encodeURIComponent(report.id)}`);
+    if (state.selectedReportId !== report.id || !dialog.open) return;
+    $("report-subtitle").textContent = `${value.provenance?.product_name ?? value.repository_name ?? "未关联产品"} · ${value.provenance?.audit_name ?? value.audit_id} · ${value.path}`;
     const preview = $("report-preview");
     if (value.rendering !== "markdown-it-html-disabled" || typeof value.rendered_html !== "string") throw new Error("服务端未返回可信的 Markdown 渲染结果。");
     preview.innerHTML = value.rendered_html;
+    preview.scrollTop = 0;
+    renderReportOutline(preview);
+    $("report-original-download").href = `/api/v1/reports/${encodeURIComponent(report.id)}/download?format=original`;
+    $("report-original-download").hidden = !value.presentation?.derived;
+    $("report-reading-note").hidden = !value.presentation?.derived;
+    $("report-reading-note").textContent = "结构化阅读版：按章节、任务和复核来源组织原有内容，审计结论与封存原文保持一致。";
+    $("report-download").textContent = value.presentation?.derived ? "下载结构化 Markdown" : "下载 Markdown";
   } catch (error) {
+    if (state.selectedReportId !== report.id || !dialog.open) return;
     $("report-preview").textContent = `报告读取失败：${error.message}`;
     showError(error);
   }
 }
 
+function validationRequestState(request) {
+  if (["preparing", "running", "cancelling"].includes(request.job?.status)) return "running";
+  if (request.result_present) return "completed";
+  return request.dispatch_ready ? "pending" : "blocked";
+}
+
+function renderValidation() {
+  renderSourceFilters("validation");
+  if (state.selectedValidationId && !state.validationRuns.some(run => (run.resource_id ?? run.id) === state.selectedValidationId && matchesSource(run, "validation"))) {
+    state.selectedValidationId = null;
+    $("validation-detail").hidden = true;
+  }
+  for (const button of document.querySelectorAll("[data-validation-tab]")) {
+    const active = button.dataset.validationTab === state.validationTab;
+    button.classList.toggle("primary", active);
+    button.setAttribute("aria-selected", String(active));
+    button.tabIndex = active ? 0 : -1;
+    $(button.getAttribute("aria-controls")).hidden = !active;
+  }
+  renderValidationActivity(); renderValidationRequests(); renderValidationList(); renderRequestHistory();
+}
+
+function validationStateLabel(value) {
+  return ({ COMPLETED: "已完成", CLOSED: "已封存", SUPPORTED: "证据支持", NOT_SUPPORTED: "证据不支持", INCONCLUSIVE: "未能确定",
+    BLOCKED: "执行受阻", FAILED: "执行失败", TIMED_OUT: "执行超时", SKIPPED: "已跳过", NOT_TESTED: "未验证", PENDING: "待验证",
+    RUNNING: "执行中", IN_USE: "执行中", AUTHORIZED: "已授权", READY: "环境就绪", QUARANTINED: "已隔离", CANCELLED: "已取消",
+    SUCCESS: "已记录", RECORDED: "已记录", EVIDENCE_INVALID: "证据校验失败", UNKNOWN: "状态未记录" })[String(value ?? "").toUpperCase()] ?? value ?? "状态未记录";
+}
+
+function validationExportActions(ids) {
+  const toolbar = element("div", "validation-evidence-actions");
+  const unique = [...new Set(ids)];
+  for (const [label, callback] of [["导出 Bruno 集合（JSON）", downloadBruno], ["导出 HAR", downloadHar]]) {
+    const button = element("button", `button ${callback === downloadBruno ? "primary" : "secondary"}`, label); button.type = "button";
+    button.disabled = unique.length < 1 || unique.length > 100;
+    button.title = !unique.length ? "尚未捕获可导出的 HTTP 请求" : unique.length > 100 ? "一次最多导出 100 条，请在 HTTP 证据中分批选择" : "导出已有记录";
+    button.addEventListener("click", async () => {
+      button.disabled = true;
+      try { await callback(unique); } catch (error) { showError(error); } finally { button.disabled = unique.length < 1 || unique.length > 100; }
+    });
+    toolbar.append(button);
+  }
+  if (unique.length > 100) toolbar.append(element("small", "muted", "超过 100 条，请在 HTTP 证据中分批选择导出。"));
+  return toolbar;
+}
+
+function renderHttpEvidence(exchange) {
+  const panel = element("section", "validation-http-evidence");
+  const request = exchange.request ?? {}, response = exchange.response ?? {};
+  panel.append(element("p", "validation-http-caption", `${request.method ?? "HTTP"} ${request.url ?? "地址未记录"}`));
+  const meta = [response.status == null ? "未收到 HTTP 响应" : `HTTP ${response.status} ${response.status_text ?? ""}`,
+    Number.isFinite(exchange.duration_ms) ? `${exchange.duration_ms} ms` : "耗时未记录", formatDate(exchange.started_at)].join(" · ");
+  panel.append(element("p", "muted", meta));
+  const panes = element("div", "validation-http-panes");
+  for (const [label, value] of [["请求", request], ["响应", response]]) {
+    const pane = element("section", "validation-http-pane");
+    pane.append(element("h4", "", label));
+    const headers = (value.headers ?? []).map(header => `${header.name}: ${header.value}`).join("\n");
+    pane.append(element("h5", "", "Headers"), element("pre", "", headers || "未记录头部"),
+      element("h5", "", "Body"), element("pre", "", capturedBodyText(value.body)));
+    if (value.body?.sha256) pane.append(element("small", "mono", `SHA-256 ${value.body.sha256}`));
+    panes.append(pane);
+  }
+  panel.append(panes);
+  const error = response.error ?? exchange.error;
+  if (error) panel.append(element("p", "notice", typeof error === "string" ? error : JSON.stringify(error)));
+  for (const gap of exchange.capture_gaps ?? []) panel.append(element("p", "notice", gap));
+  const actions = validationExportActions([exchange.exchange_id]);
+  const copy = element("button", "button secondary", "复制请求与响应"); copy.type = "button";
+  copy.addEventListener("click", () => copyExchange(exchange).catch(showError)); actions.append(copy); panel.append(actions);
+  return panel;
+}
+
+function renderValidationActivity() {
+  const all = state.validationActivity.filter(item => matchesSource(item, "validation"));
+  const actions = all.reduce((sum, item) => sum + (item.actions?.length ?? 0), 0);
+  const ids = new Set(all.flatMap(item => item.exchange_ids ?? []));
+  $("validation-activity-metrics").replaceChildren(
+    metric("验证记录", all.length, "按漏洞与任务归集"), metric("已记录动作", actions, "浏览器操作与 HTTP 捕获"),
+    metric("HTTP 请求", ids.size, "可查看请求与响应"), metric("受阻 / 失败", filterValidationActivity(all, { scope: "blocked" }).length, "保留原因与证据缺口"),
+  );
+  const error = $("validation-activity-error"); error.hidden = !state.validationActivityError;
+  error.replaceChildren();
+  if (state.validationActivityError) {
+    error.append(element("span", "", `验证动作读取失败：${state.validationActivityError}。`));
+    const retry = element("button", "button secondary", "重新读取"); retry.type = "button";
+    retry.addEventListener("click", () => loadViewResources("validation").catch(showError)); error.append(retry);
+  }
+  const historyWindow = state.validationActivityHistoryWindow;
+  $("validation-activity-window").hidden = !historyWindow?.has_more;
+  $("validation-activity-window").textContent = historyWindow?.has_more ? `独立历史发包共 ${historyWindow.total} 条，本次加载最近 ${historyWindow.returned} 条；审计绑定的验证证据另行完整读取。` : "";
+  const filtered = filterValidationActivity(all, { query: $("validation-activity-query").value, scope: $("validation-activity-status").value });
+  const pages = Math.max(1, Math.ceil(filtered.length / 15)); state.validationActivityPage = Math.max(1, Math.min(state.validationActivityPage, pages));
+  const visible = filtered.slice((state.validationActivityPage - 1) * 15, state.validationActivityPage * 15);
+  if (!visible.some(item => item.id === state.selectedValidationCaseId)) state.selectedValidationCaseId = visible[0]?.id ?? null;
+  $("validation-activity-count").textContent = state.validationActivityLoaded ? `${filtered.length} 条记录 · 第 ${state.validationActivityPage}/${pages} 页` : "正在读取验证动作…";
+  const list = $("validation-case-list"); list.replaceChildren();
+  for (const item of visible) {
+    const button = element("button", "validation-case"); button.type = "button";
+    button.classList.toggle("active", item.id === state.selectedValidationCaseId);
+    button.setAttribute("aria-pressed", String(item.id === state.selectedValidationCaseId));
+    button.append(element("small", "", item.finding_id ? `漏洞 · ${item.finding_id}` : "任务环境 / 未关联漏洞"),
+      element("strong", "", item.title ?? item.finding_id ?? "动态验证记录"),
+      element("span", "", `${validationStateLabel(item.status)} · ${item.actions?.length ?? 0} 个动作 · ${item.exchange_ids?.length ?? 0} 条 HTTP`),
+      element("small", "muted", item.provenance?.audit_name ?? item.audit_id));
+    button.addEventListener("click", () => { state.selectedValidationCaseId = item.id; renderValidationActivity(); }); list.append(button);
+  }
+  if (pages > 1) {
+    const controls = element("div", "validation-evidence-actions");
+    for (const [delta, label] of [[-1, "上一页"], [1, "下一页"]]) {
+      const button = element("button", "button secondary", label); button.type = "button";
+      button.disabled = state.validationActivityPage + delta < 1 || state.validationActivityPage + delta > pages;
+      button.addEventListener("click", () => { state.validationActivityPage += delta; state.selectedValidationCaseId = null; renderValidationActivity(); }); controls.append(button);
+    }
+    list.append(controls);
+  }
+  const detail = $("validation-case-detail");
+  const previousCaseId = detail.dataset.caseId;
+  const expanded = new Set([...detail.querySelectorAll("details[open][data-action-id]")].map(node => node.dataset.actionId));
+  detail.replaceChildren();
+  const selected = visible.find(item => item.id === state.selectedValidationCaseId);
+  detail.dataset.caseId = selected?.id ?? "";
+  if (!selected) {
+    detail.append(element("div", "empty-state", state.validationActivityError ? "修复读取错误后可重新查看记录。" : !state.validationActivityLoaded ? "正在读取已有验证记录…" : all.length ? "没有符合筛选条件的验证记录。" : "当前范围尚无动态验证记录。授权任务执行后，这里会显示真实动作；未执行的验证不会生成请求或响应。"));
+    return;
+  }
+  const header = element("header", "validation-case-header");
+  header.append(element("p", "eyebrow", selected.finding_id ? "FINDING VALIDATION" : "ENVIRONMENT ACTIVITY"),
+    element("h3", "", selected.title ?? selected.finding_id ?? "动态验证记录"),
+    element("p", "", `${validationStateLabel(selected.status)} · ${formatDate(selected.updated_at)}`));
+  detail.append(header, sourceContext(selected, { includeFinding: true }), validationExportActions(selected.exchange_ids ?? []));
+  if (selected.summary) detail.append(element("p", "validation-summary", selected.summary));
+  for (const gap of selected.gaps ?? []) detail.append(element("p", "notice", typeof gap === "string" ? gap : JSON.stringify(gap)));
+  const exchanges = new Map([...state.requestExchanges, ...state.validationActivityExchanges].map(exchange => [exchange.exchange_id, exchange]));
+  const rendered = new Set();
+  const timeline = element("ol", "validation-action-timeline");
+  for (const [index, action] of (selected.actions ?? []).entries()) {
+    const item = element("li"), row = element("details", "validation-action"); row.dataset.actionId = action.id;
+    row.open = expanded.has(action.id) || (previousCaseId !== selected.id && index === 0);
+    const summary = element("summary");
+    const phase = ({ CONTACT: "环境接触", EXPLORE: "动态探索", CONFIRM: "漏洞确认", CLEANUP: "清理", MANUAL: "补充验证" })[action.phase] ?? action.phase ?? "验证";
+    summary.append(element("strong", "", `${index + 1}. ${action.tool ?? action.summary ?? "验证动作"}`),
+      element("span", "muted", `${phase} · ${validationStateLabel(action.status)} · ${formatDate(action.recorded_at)}`)); row.append(summary);
+    if (action.summary) row.append(element("p", "", action.summary));
+    for (const id of action.exchange_ids ?? []) {
+      const exchange = exchanges.get(id); rendered.add(id);
+      row.append(exchange ? renderHttpEvidence(exchange) : element("p", "notice", `HTTP 记录 ${id} 未能读取，刷新后重试。`));
+    }
+    for (const gap of action.gaps ?? []) row.append(element("p", "notice", typeof gap === "string" ? gap : JSON.stringify(gap)));
+    if (action.arguments != null || action.result != null) {
+      const raw = element("details", "validation-action-raw"); raw.append(element("summary", "", "查看脱敏动作原文"));
+      if (action.arguments != null) raw.append(element("h4", "", "动作参数"), element("pre", "", JSON.stringify(action.arguments, null, 2)));
+      if (action.result != null) raw.append(element("h4", "", "工具返回"), element("pre", "", typeof action.result === "string" ? action.result : JSON.stringify(action.result, null, 2)));
+      row.append(raw);
+    }
+    item.append(row); timeline.append(item);
+  }
+  detail.append(timeline);
+  for (const id of selected.exchange_ids ?? []) if (!rendered.has(id)) {
+    const exchange = exchanges.get(id); if (exchange) detail.append(renderHttpEvidence(exchange));
+  }
+  if (!selected.actions?.length && !selected.exchange_ids?.length) detail.append(element("p", "notice", "该记录尚无已捕获的验证动作或 HTTP 请求。上方状态与原因来自任务记录，不能作为漏洞已验证的证据。"));
+}
+
 function renderValidationList() {
   const list = $("validation-list");
   list.replaceChildren();
-  for (const run of state.validationRuns) {
-    const button = element("button", "audit-item");
-    const identity = element("span"); identity.append(element("strong", "", `${run.audit_id} / ${run.finding_id}`), element("small", "", `${run.agent_name} · ${formatDate(run.recorded_at)}`));
-    button.append(identity, status(run.verification_level ?? run.outcome));
-    button.addEventListener("click", () => selectValidation(run.resource_id ?? run.id));
-    list.append(button);
+  const runtimeAudits = state.runtimeAudits.filter(audit => matchesSource(audit, "validation"));
+  if (runtimeAudits.length) list.append(element("h3", "", "审计内动态执行"));
+  for (const audit of runtimeAudits) {
+    const runtime = audit.runtime_testing_state, card = element("article", "request-item");
+    const labels = { SKIPPED: "已跳过", CLOSED: "已封存", QUARANTINED: "已隔离", BLOCKED: "执行受阻", AUTHORIZED: "已授权", READY: "环境就绪", IN_USE: "执行中", RUNNING: "执行中", CANCELLED: "已取消", COMPLETED: "已完成" };
+    const header = element("header");
+    header.append(element("h3", "", audit.name), element("span", `status ${["BLOCKED", "QUARANTINED"].includes(runtime.status) ? "blocked" : "artifact_only"}`, labels[runtime.status] ?? runtime.status));
+    const button = element("button", "button secondary", "查看任务动态执行详情"); button.type = "button";
+    button.addEventListener("click", () => selectAudit(audit.id, { productId: audit.provenance?.audit_product_id, repositoryId: audit.repository_id, managed: audit.provenance?.audit_managed === true })
+      .then(() => $("audit-runtime-section")?.scrollIntoView({ behavior: "smooth", block: "start" })).catch(showError));
+    card.append(header, sourceContext(audit), element("p", "muted", `本次审计的环境接触、动态测试、按需确认和清理记录，共 ${runtime.packets?.length ?? 0} 个执行工作包。`), button);
+    list.append(card);
   }
-  if (!state.validationRuns.length) list.append(element("div", "empty-state", "尚无动态验证结果。"));
+  const manualRuns = state.validationRuns.filter(run => matchesSource(run, "validation"));
+  if (manualRuns.length) list.append(element("h3", "", "补充验证结果"));
+  for (const run of manualRuns) {
+    const card = element("article", "request-item");
+    const header = element("header");
+    header.append(element("h3", "", run.provenance?.finding_title ?? run.finding_id), status(run.verification_level ?? run.outcome));
+    const button = element("button", "button secondary", "查看验证证据"); button.type = "button";
+    button.addEventListener("click", () => selectValidation(run.resource_id ?? run.id));
+    card.append(header, sourceContext(run, { includeFinding: true }), element("p", "muted", `${run.agent_name} · ${formatDate(run.recorded_at)}`), button);
+    list.append(card);
+  }
+  if (!list.childElementCount) list.append(element("div", "empty-state", "当前筛选范围内尚无动态验证结果。"));
 }
 
 function renderValidationRequests() {
@@ -1179,13 +1808,30 @@ function renderValidationRequests() {
   $("dynamic-runner-caption").textContent = enabled ? "动态 Runner 已启用" : "只读模式";
   $("dynamic-runner-caption").className = `status ${enabled ? "running" : "artifact_only"}`;
   list.replaceChildren();
-  for (const request of state.validationRequests) {
+  const query = $("validation-query").value.trim().toLowerCase();
+  const sourceRequests = state.validationRequests.filter(request => matchesSource(request, "validation")
+    && (!query || `${request.finding_id} ${request.provenance?.finding_title ?? ""} ${request.summary ?? ""} ${request.audit_id}`.toLowerCase().includes(query)));
+  const requestedState = $("validation-status-filter").value;
+  const selected = sourceRequests.filter(request => requestedState === "all" || validationRequestState(request) === requestedState)
+    .sort((a, b) => String(b.provenance?.reports?.[0]?.sealed_at ?? b.audit_id).localeCompare(String(a.provenance?.reports?.[0]?.sealed_at ?? a.audit_id)) || a.id.localeCompare(b.id));
+  const totalPages = Math.max(1, Math.ceil(selected.length / 10));
+  state.validationPage = Math.min(state.validationPage, totalPages);
+  const requests = selected.slice((state.validationPage - 1) * 10, state.validationPage * 10);
+  $("validation-request-count").textContent = `${selected.length} 条符合条件 · 第 ${state.validationPage}/${totalPages} 页 · 最近报告优先`;
+  for (const option of $("validation-status-filter").options) {
+    const label = { pending: "待验证", running: "执行中", completed: "已有结果", blocked: "不可执行", all: "全部状态" }[option.value];
+    const count = option.value === "all" ? sourceRequests.length : sourceRequests.filter(request => validationRequestState(request) === option.value).length;
+    option.textContent = `${label}（${count}）`;
+  }
+  for (const request of requests) {
     const item = element("article", "request-item");
     const header = element("header");
     const identity = element("div");
-    identity.append(element("h3", "", `${request.audit_id} / ${request.finding_id}`), element("small", "mono", request.vulnerability_type_id));
-    header.append(identity, status(request.job?.status ?? (request.result_present ? "completed" : request.dispatch_ready ? "queued" : "failed")));
-    item.append(header, element("p", "", request.summary ?? "没有保存验证请求摘要。"));
+    identity.append(element("h3", "", request.provenance?.finding_title ?? request.summary ?? request.finding_id), element("small", "mono", `${request.finding_id} · ${request.vulnerability_type_id ?? "未标注类型"}`));
+    const requestState = validationRequestState(request);
+    const badge = requestState === "pending" ? element("span", "status warning", "待授权验证") : requestState === "blocked" ? element("span", "status blocked", "不可执行") : status(requestState === "completed" ? "completed" : request.job.status);
+    header.append(identity, badge);
+    item.append(header, sourceContext(request, { includeFinding: true }), element("p", "", request.summary ?? "没有保存验证请求摘要。"));
     if (request.audit_managed && !request.task_test_environment_preconfigured && !request.result_present) {
       item.append(element("p", "request-guidance", "任务创建时未录入测试环境；可在本页授权表单中补录后启动完整动态验证。"));
     }
@@ -1210,8 +1856,13 @@ function renderValidationRequests() {
       stopButton.disabled = request.job.status === "cancelling";
       stopButton.addEventListener("click", () => openCancelValidationDialog(request));
       footer.append(stopButton);
+    } else if (request.result_present) {
+      const result = state.validationRuns.find(run => run.repository_id === request.repository_id && run.audit_id === request.audit_id && run.finding_id === request.finding_id);
+      const button = element("button", "button secondary", "查看验证结果"); button.disabled = !result;
+      button.addEventListener("click", () => { state.validationTab = "results"; renderValidation(); selectValidation(result.resource_id ?? result.id); });
+      footer.append(button);
     } else {
-      const button = element("button", "button primary", request.result_present ? "已有结果" : request.task_test_environment_preconfigured ? "授权并启动" : "补录环境并启动");
+      const button = element("button", "button primary", request.task_test_environment_preconfigured ? "授权并启动" : "补录环境并启动");
       button.disabled = !enabled || !request.dispatch_ready || request.job?.status === "preparing";
       button.title = request.dispatch_blocked_reason ?? "";
       button.addEventListener("click", () => openValidationDialog(request));
@@ -1220,15 +1871,24 @@ function renderValidationRequests() {
     item.append(footer);
     list.append(item);
   }
-  if (!state.validationRequests.length) list.append(element("div", "empty-state", "没有发现可进行完整动态验证的 Web 漏洞。"));
+  if (!requests.length) list.append(element("div", "empty-state", sourceRequests.length ? "当前状态下没有请求，可切换执行状态查看其他记录。" : "当前产品、任务和报告范围内没有补充验证请求。"));
+  if (totalPages > 1) {
+    const pagination = element("nav", "finding-pagination"); pagination.setAttribute("aria-label", "验证请求分页");
+    for (const [offset, label] of [[-1, "上一页"], [1, "下一页"]]) {
+      const button = element("button", "button secondary", label); button.type = "button";
+      button.disabled = state.validationPage + offset < 1 || state.validationPage + offset > totalPages;
+      button.addEventListener("click", () => { state.validationPage += offset; renderValidationRequests(); $("validation-requests-panel").scrollIntoView({ block: "start" }); });
+      pagination.append(button);
+    }
+    pagination.append(element("span", "", `第 ${state.validationPage}/${totalPages} 页 · 每页 10 条`)); list.append(pagination);
+  }
 }
 
 function exchangeText(exchange) {
-  const requestHeaders = (exchange.request.headers ?? []).map(item => `${item.name}: ${item.value}`).join("\n");
-  const requestBody = exchange.request.body?.text ?? "";
-  const responseHeaders = (exchange.response.headers ?? []).map(item => `${item.name}: ${item.value}`).join("\n");
-  const responseBody = exchange.response.body?.text ?? "";
-  return `${exchange.request.method} ${exchange.request.url}\n${requestHeaders}${requestBody ? `\n\n${requestBody}` : ""}\n\nHTTP ${exchange.response.status ?? "ERR"} ${exchange.response.status_text ?? ""}\n${responseHeaders}${responseBody ? `\n\n${responseBody}` : ""}`;
+  const request = exchange.request ?? {}, response = exchange.response ?? {};
+  const requestHeaders = (request.headers ?? []).map(item => `${item.name}: ${item.value}`).join("\n");
+  const responseHeaders = (response.headers ?? []).map(item => `${item.name}: ${item.value}`).join("\n");
+  return `${request.method} ${request.url}\n${requestHeaders}\n\n${capturedBodyText(request.body)}\n\nHTTP ${response.status ?? "ERR"} ${response.status_text ?? ""}\n${responseHeaders}\n\n${capturedBodyText(response.body)}`;
 }
 
 async function copyExchange(exchange) {
@@ -1237,7 +1897,7 @@ async function copyExchange(exchange) {
 }
 
 async function downloadBruno(exchangeIds) {
-  return downloadExchangeExport("/api/v1/http-exchanges/export/bruno", exchangeIds, "dynamic-validation-open-collection.zip", "OpenCollection");
+  return downloadExchangeExport("/api/v1/http-exchanges/export/bruno", exchangeIds, "dynamic-validation-bruno.json", "Bruno 集合（JSON）");
 }
 
 async function downloadHar(exchangeIds) {
@@ -1248,7 +1908,8 @@ async function downloadExchangeExport(path, exchangeIds, fallbackFilename, label
   const response = await fetch(path, {
     method: "POST",
     headers: { "Content-Type": "application/json" },
-    body: JSON.stringify({ exchange_ids: exchangeIds }),
+    body: JSON.stringify({ exchange_ids: exchangeIds, ...(path.endsWith("/bruno") ? { format: "bruno-json" } : {}) }),
+    signal: AbortSignal.timeout(30000),
   });
   if (!response.ok) {
     const body = await response.json().catch(() => ({}));
@@ -1256,7 +1917,16 @@ async function downloadExchangeExport(path, exchangeIds, fallbackFilename, label
   }
   const disposition = response.headers.get("content-disposition") ?? "";
   const filename = disposition.match(/filename="([^"]+)"/)?.[1] ?? fallbackFilename;
-  const objectUrl = URL.createObjectURL(await response.blob());
+  const blob = await response.blob();
+  let exportSummary = `已导出 ${exchangeIds.length} 条记录的 ${label}`;
+  if (path.endsWith("/bruno")) {
+    if (!response.headers.get("content-type")?.includes("application/json")) throw new Error("后台仍返回旧版 ZIP 导出。请重启平台加载 Bruno JSON 导出后重试。");
+    const collection = JSON.parse(await blob.text());
+    if (collection.version !== "1" || !Array.isArray(collection.items)) throw new Error("后台返回的 Bruno 集合格式无效，未下载文件。");
+    const count = collection.items.filter(item => item.type === "http-request").length;
+    exportSummary = `已下载 Bruno 集合：${count} 条请求${count < exchangeIds.length ? `，${exchangeIds.length - count} 条不完整记录仅保留证据说明` : ""}。请选择 local 环境并补全凭据。`;
+  }
+  const objectUrl = URL.createObjectURL(blob);
   const link = document.createElement("a");
   link.href = objectUrl;
   link.download = filename;
@@ -1264,7 +1934,7 @@ async function downloadExchangeExport(path, exchangeIds, fallbackFilename, label
   link.click();
   link.remove();
   window.setTimeout(() => URL.revokeObjectURL(objectUrl), 0);
-  toast(`已导出 ${exchangeIds.length} 条请求的 ${label}`);
+  toast(exportSummary);
 }
 
 function filteredRequestExchanges() {
@@ -1273,6 +1943,7 @@ function filteredRequestExchanges() {
   const source = $("exchange-source-filter").value;
   const query = $("exchange-query-filter").value.trim().toLowerCase();
   return state.requestExchanges.filter(exchange => {
+    if (!matchesSource(exchange, "validation")) return false;
     if (method && exchange.request.method !== method) return false;
     if (statusValue && String(exchange.response?.status ?? "ERR") !== statusValue) return false;
     if (source && exchange.source !== source) return false;
@@ -1313,9 +1984,11 @@ function updateExchangeSelectionControls() {
   const selected = state.selectedRequestExchangeIds.size;
   const visible = filteredRequestExchanges();
   const all = visible.length > 0 && visible.every(exchange => state.selectedRequestExchangeIds.has(exchange.exchange_id));
-  $("selected-exchange-count").textContent = `已选择 ${selected} 条`;
-  $("export-selected-bruno").disabled = selected < 1;
-  $("export-selected-har").disabled = selected < 1;
+  $("selected-exchange-count").textContent = `已选择 ${selected} 条${selected > 100 ? " · 一次最多导出 100 条，请减少选择" : ""}`;
+  for (const id of ["export-selected-bruno", "export-selected-har"]) {
+    $(id).disabled = selected < 1 || selected > 100;
+    $(id).title = selected > 100 ? "一次最多导出 100 条，请减少选择" : selected < 1 ? "请先选择 HTTP 记录" : "导出已选择的记录";
+  }
   $("compare-selected-exchanges").disabled = selected !== 2;
   $("clear-exchange-selection").disabled = selected < 1;
   $("select-all-exchanges").checked = all;
@@ -1345,10 +2018,11 @@ function renderRequestHistory() {
     const detail = element("details", "exchange request-exchange");
     const path = new URL(exchange.request.url).pathname;
     detail.append(element("summary", "", `${exchange.request.method} ${path} · ${exchange.response.status ?? "ERR"} · ${formatDate(exchange.started_at)}`));
+    detail.append(sourceContext(exchange, { includeFinding: true }));
     detail.append(element("pre", "", exchangeText(exchange)));
     const actions = element("div", "request-exchange-actions");
     const copy = element("button", "button secondary", "复制"); copy.type = "button"; copy.addEventListener("click", () => copyExchange(exchange).catch(showError));
-    const exportBruno = element("button", "button secondary", "导出 OpenCollection"); exportBruno.type = "button"; exportBruno.addEventListener("click", () => downloadBruno([exchange.exchange_id]).catch(showError));
+    const exportBruno = element("button", "button secondary", "导出 Bruno 集合（JSON）"); exportBruno.type = "button"; exportBruno.addEventListener("click", () => downloadBruno([exchange.exchange_id]).catch(showError));
     actions.append(copy, exportBruno); detail.append(actions); row.append(selection, detail); list.append(row);
   }
   if (!visibleExchanges.length) list.append(element("div", "empty-state", state.requestExchanges.length ? "没有符合筛选条件的记录。" : "尚无 HTTP exchange 记录。"));
@@ -1357,9 +2031,12 @@ function renderRequestHistory() {
 
 async function selectValidation(id) {
   state.selectedValidationId = id;
+  const panel = $("validation-detail");
+  panel.hidden = false;
+  panel.replaceChildren(element("p", "muted", "正在读取验证证据…"));
   try {
-    const run = (await api(`/api/runs/${encodeURIComponent(id)}`)).run;
-    const panel = $("validation-detail");
+    const run = (await api(`/api/runs/${encodeURIComponent(id)}`, { signal: AbortSignal.timeout(20000) })).run;
+    if (state.selectedValidationId !== id) return;
     const header = element("div");
     header.append(element("p", "eyebrow", "RUNTIME RESULT"), element("h2", "", `${run.audit_id} / ${run.finding.id}`), element("p", "", run.finding.summary ?? "未保存漏洞摘要。"), status(run.finding.verification_level ?? run.finding.outcome));
     const facts = element("dl", "detail-facts");
@@ -1374,8 +2051,13 @@ async function selectValidation(id) {
       exchanges.append(detail);
     }
     if (!(run.network.exchanges ?? []).length) exchanges.append(element("div", "notice", run.network.warning ?? "未捕获 HTTP exchange。"));
-    panel.replaceChildren(header, facts, exchanges);
-  } catch (error) { showError(error); }
+    panel.replaceChildren(header, sourceContext(run, { includeFinding: true }), facts, exchanges);
+    panel.scrollIntoView({ behavior: "smooth", block: "start" });
+  } catch (error) {
+    if (state.selectedValidationId !== id) return;
+    panel.replaceChildren(element("p", "notice error", `验证证据读取失败：${error.name === "TimeoutError" ? "读取超时，请重试" : error.message}`));
+    showError(error);
+  }
 }
 
 function renderRuntime() {
@@ -1456,6 +2138,8 @@ function renderSettings() {
 }
 
 function renderShell() {
+  const modernLink = $("modern-workbench-link");
+  if (modernLink) modernLink.hidden = state.runtime?.workbench_ui?.modernUrl !== "/workbench";
   const summary = state.workspace.summary;
   const enabled = Boolean(state.runtime?.runner?.enabled);
   $("runner-state").textContent = enabled ? "运行驱动已启用" : "只读观测模式";
@@ -1474,7 +2158,7 @@ function renderActiveView() {
     audits: renderAudits,
     findings: renderFindings,
     reports: renderReports,
-    validation: () => { renderRequestHistory(); renderValidationRequests(); renderValidationList(); },
+    validation: renderValidation,
     runtime: renderRuntime,
     settings: renderSettings,
   };
@@ -1485,9 +2169,12 @@ function renderActiveView() {
 function connectEventStream() {
   state.eventSource?.close();
   state.eventSource = null;
-  const audit = state.workspace.audits.find(item => ["queued", "preparing", "recovering", "running", "pausing", "paused", "cancelling"].includes(item.status));
+  if (disposed) return;
+  const audit = [state.selectedAudit, ...state.workspace.audits].find(item => item && ["queued", "preparing", "recovering", "running", "pausing", "paused", "cancelling"].includes(item.status));
   if (!audit || !state.runtime?.runner?.enabled) return;
-  const source = new EventSource(`/api/v1/audits/${encodeURIComponent(audit.id)}/events?after=${audit.event_sequence ?? 0}`);
+  const productId = audit.provenance?.audit_product_id ?? (audit.id === state.selectedAuditId ? state.auditDetailProductId : null);
+  const path = productId ? `/api/v2/products/${encodeURIComponent(productId)}/audits/${encodeURIComponent(audit.id)}` : `/api/v1/audits/${encodeURIComponent(audit.id)}`;
+  const source = new EventSource(`${path}/events?after=${audit.event_sequence ?? 0}`);
   state.eventSource = source;
   source.onmessage = () => {
     if (state.liveRefresh) return;
@@ -1501,6 +2188,7 @@ function connectEventStream() {
 function connectValidationEventStream() {
   state.validationEventSource?.close();
   state.validationEventSource = null;
+  if (disposed) return;
   const request = state.validationRequests.find(item => ["preparing", "running", "cancelling"].includes(item.job?.status));
   if (!request || !state.runtime?.dynamic_runner?.enabled) return;
   const source = new EventSource(`/api/v1/validations/${encodeURIComponent(request.job.id)}/events?after=${request.job.event_sequence ?? 0}`);
@@ -1515,6 +2203,7 @@ function connectValidationEventStream() {
 }
 
 function showError(error) {
+  if (disposed) return;
   const value = $("global-error");
   value.textContent = error.message;
   value.hidden = false;
@@ -1525,20 +2214,25 @@ async function refreshLiveWorkspace() {
   if (state.liveLoad) return state.liveLoad;
   const request = (async () => {
     $("global-error").hidden = true;
-    const auditRefresh = state.view === "audits"
-      ? Promise.all([loadAuditsPage(state.auditPage), state.selectedAuditId ? selectAudit(state.selectedAuditId) : null])
-      : Promise.resolve();
-    const requests = [api("/api/v1/workspace?audits=compact&live=1")];
+    const auditRefresh = Promise.all([state.view === "audits" ? loadAuditsPage(state.auditPage) : null, refreshSelectedAudit()]);
+    const requests = [loadWorkspaceView()];
+    const validationFilterKey = JSON.stringify(state.sourceFilters.validation);
+    const validationSequence = state.view === "validation" ? ++state.validationRequestSequence : null;
+    let activityReady = null;
     // Validation has two supplementary collections.  Keep them current only
     // while that page is visible; status output from a static audit should not
     // repeatedly scan validation records or rebuild that page in the background.
-    if (state.view === "validation") requests.push(api("/api/runs"), api("/api/v1/validation-requests"), api("/api/v1/http-exchanges?limit=100"));
-    const [resources] = await Promise.all([Promise.all(requests), auditRefresh]);
-    const [workspace, validation, validationRequests, exchanges] = resources;
+    if (state.view === "validation") {
+      const validationResources = validationResourceRequests();
+      requests.push(...validationResources);
+      activityReady = showValidationActivityWhenReady(validationResources[4], () => !disposed && validationSequence === state.validationRequestSequence && validationFilterKey === JSON.stringify(state.sourceFilters.validation));
+    }
+    const [resources] = await Promise.all([Promise.all(requests), auditRefresh, activityReady]);
+    const [workspace, validation, validationRequests, exchanges, runtimeAudits, activity] = resources;
     applyWorkspace(workspace);
-    if (validation) state.validationRuns = validation.runs;
-    if (validationRequests) state.validationRequests = validationRequests.items;
-    if (exchanges) state.requestExchanges = exchanges.items;
+    if (validationSequence === state.validationRequestSequence && validationFilterKey === JSON.stringify(state.sourceFilters.validation)) {
+      if (activity) applyValidationResources([validation, validationRequests, exchanges, runtimeAudits, activity]);
+    }
     renderActiveView();
     connectEventStream();
     connectValidationEventStream();
@@ -1555,14 +2249,14 @@ async function load() {
   $("global-error").hidden = true;
   // Render each resource on arrival; environment and validation are page-local.
   const resources = [
-    api("/api/v1/workspace?audits=compact&live=1").then(workspace => { applyWorkspace(workspace); renderActiveView(); connectEventStream(); }),
+    loadWorkspaceView().then(async workspace => { applyWorkspace(workspace); renderActiveView(); connectEventStream(); if (state.view === "findings") await loadFindingsPage(state.findingPage); }),
     api("/api/v1/repositories?live=1").then(payload => { state.repositories = payload.items; renderActiveView(); }),
     api("/api/v1/runtime/health").then(runtime => { state.runtime = runtime; renderActiveView(); connectEventStream(); }),
     api("/api/v1/settings/model").then(payload => { state.modelSettings = payload.model; if (state.view === "settings") renderActiveView(); }),
-    loadProducts(),
+    loadProducts().then(() => { if (state.view === "audits") return loadAuditsPage(state.auditPage); }),
     loadViewResources(state.view),
   ];
-  if (state.view === "audits") resources.push(loadAuditsPage(state.auditPage), state.selectedAuditId ? selectAudit(state.selectedAuditId) : Promise.resolve());
+  resources.push(refreshSelectedAudit());
   await Promise.all(resources);
   connectEventStream();
   connectValidationEventStream();
@@ -1579,8 +2273,10 @@ async function loadProducts() {
   if (!state.products.some(product => product.id === state.selectedProductId)) {
     state.selectedProductId = state.products.find(product => product.status === "active")?.id ?? null;
   }
+  if (!state.products.some(product => product.id === state.auditProductFilter)) state.auditProductFilter = "";
   await loadProductTargets();
-  if (state.view === "projects") renderActiveView();
+  if (["projects", "audits"].includes(state.view)) renderActiveView();
+  if (state.view === "projects") await memoryUI.refresh();
 }
 
 async function loadProductTargets() {
@@ -1590,17 +2286,73 @@ async function loadProductTargets() {
   if (state.selectedProductId === productId) state.targets = payload.items;
 }
 
+function validationResourceRequests() {
+  const parameters = new URLSearchParams();
+  for (const [key, value] of Object.entries(state.sourceFilters.validation)) if (value) parameters.set(key, value);
+  return [
+    ["补充验证结果", `/api/runs?${parameters}`], ["补充验证请求", `/api/v1/validation-requests?${parameters}`],
+    ["HTTP 证据", `/api/v1/http-exchanges?limit=500&${parameters}`], ["审计动态状态", `/api/v1/runtime-audits?${parameters}`],
+    ["验证动作", `/api/v1/validation-activity?${parameters}`],
+  ].map(([label, path]) => api(path, { signal: AbortSignal.timeout(20000) }).catch(error => {
+    const message = label === "验证动作" && (error.status === 404 || /HTTP 404/.test(error.message))
+      ? "后台尚未加载验证动作接口（HTTP 404），请正常重启平台后刷新" : error.name === "TimeoutError" ? "读取超时，请重试" : error.message;
+    return { error: `${label}：${message}` };
+  }));
+}
+
+function applyValidationResources([validation, requests, exchanges, runtimeAudits, activity]) {
+  state.validationActivityLoaded = true;
+  state.validationActivityError = [validation, requests, exchanges, runtimeAudits, activity].map(payload => payload?.error).filter(Boolean).join("；") || null;
+  if (validation?.runs) state.validationRuns = validation.runs;
+  if (requests?.items) state.validationRequests = requests.items;
+  if (exchanges?.items) state.requestExchanges = exchanges.items;
+  if (runtimeAudits?.items) state.runtimeAudits = runtimeAudits.items;
+  if (activity?.items) state.validationActivity = activity.items;
+  if (activity?.exchanges) state.validationActivityExchanges = activity.exchanges;
+  if (activity?.items) state.validationActivityHistoryWindow = activity.history_window ?? null;
+}
+
+function showValidationActivityWhenReady(promise, current) {
+  return promise.then(activity => {
+    if (!current()) return;
+    applyValidationResources([null, null, null, null, activity]);
+    if (state.view === "validation") renderActiveView();
+  });
+}
+
 async function loadViewResources(view) {
+  if (view === "validation") {
+    const sequence = ++state.validationRequestSequence;
+    const sourceSequence = ++state.sourceOptionsRequestSequence;
+    const filterKey = JSON.stringify(state.sourceFilters.validation);
+    const current = () => !disposed && sequence === state.validationRequestSequence && filterKey === JSON.stringify(state.sourceFilters.validation);
+    const currentSources = () => !disposed && sourceSequence === state.sourceOptionsRequestSequence;
+    const sources = api("/api/v1/provenance/options", { signal: AbortSignal.timeout(20000) }).then(options => {
+      if (!currentSources()) return;
+      state.sourceOptions = options;
+      if (state.view === view) renderActiveView();
+    }).catch(error => { if (currentSources()) showError(new Error(`来源筛选读取失败：${error.name === "TimeoutError" ? "读取超时，请重试" : error.message}`)); });
+    const resources = validationResourceRequests();
+    const activityReady = showValidationActivityWhenReady(resources[4], current);
+    const records = Promise.all(resources).then(resources => {
+      if (!current()) return;
+      applyValidationResources(resources);
+      connectValidationEventStream();
+      if (state.view === view) renderActiveView();
+    });
+    await Promise.all([sources, records, activityReady]);
+    return;
+  }
+  if (["findings", "reports"].includes(view)) {
+    const sequence = ++state.sourceOptionsRequestSequence;
+    const options = await api("/api/v1/provenance/options");
+    if (!disposed && sequence === state.sourceOptionsRequestSequence) {
+      state.sourceOptions = options;
+      if (state.view === view) renderActiveView();
+    }
+  }
   if (view === "runtime") {
     state.environment = await api("/api/v1/environment");
-  } else if (view === "validation") {
-    const [validation, requests, exchanges] = await Promise.all([
-      api("/api/runs"), api("/api/v1/validation-requests"), api("/api/v1/http-exchanges?limit=100"),
-    ]);
-    state.validationRuns = validation.runs;
-    state.validationRequests = requests.items;
-    state.requestExchanges = exchanges.items;
-    connectValidationEventStream();
   } else return;
   if (state.view === view) renderActiveView();
 }
@@ -1621,9 +2373,10 @@ function openValidationDialog(request) {
   if (!state.runtime?.dynamic_runner?.enabled) { toast("动态验证 Runner 未启用。"); return; }
   const form = $("validation-form");
   form.reset();
+  state.selectedValidationRequest = request;
   form.elements.validation_request_id.value = request.id;
   form.elements.repository_id.value = request.repository_id;
-  $("validation-form-subtitle").textContent = `${request.audit_id} / ${request.finding_id} · ${request.vulnerability_type_id}`;
+  $("validation-form-subtitle").textContent = `${request.provenance?.product_name ?? request.repository_name} · ${request.provenance?.audit_name ?? request.audit_id} · ${request.provenance?.finding_title ?? request.finding_id}`;
   $("validation-form-error").hidden = true;
   $("validation-dialog").showModal();
 }
@@ -1647,7 +2400,8 @@ async function submitValidation(event) {
   const button = $("submit-validation");
   button.disabled = true;
   try {
-    const run = await api("/api/v1/validations", {
+    const productId = state.selectedValidationRequest?.provenance?.product_id;
+    const run = await api(productId ? `/api/v2/products/${encodeURIComponent(productId)}/validations` : "/api/v1/validations", {
       method: "POST",
       headers: { "Content-Type": "application/json", "Idempotency-Key": crypto.randomUUID() },
       body: JSON.stringify(input),
@@ -1663,6 +2417,14 @@ async function submitValidation(event) {
 }
 
 function syncAuditContextControls(form) {
+  const apiStrategy = form.elements.mining_strategy.value === "api";
+  const apiInventory = form.elements.api_inventory;
+  $("api-inventory-panel").hidden = !apiStrategy;
+  apiInventory.disabled = !apiStrategy;
+  apiInventory.required = apiStrategy;
+  $("mining-strategy-description").textContent = apiStrategy
+    ? "按你提供的 API 清单逐项定位实现代码并审查，涵盖每个条目的适用安全问题。"
+    : "由威胁建模提炼高风险主题，按 Focus Area 定向深入分析。";
   for (const [enabledName, textareaName] of [
     ["additional_instructions_enabled", "additional_instructions"],
     ["test_environment_enabled", "test_environment_context"],
@@ -1716,11 +2478,14 @@ async function openAuditDialog(repositoryId = null, templateAudit = null) {
   }));
   form.elements.model.value = selectedModel;
   if (draft) {
+    form.elements.api_inventory.value = draft.api_inventory ?? "";
     form.elements.additional_instructions_enabled.checked = draft.additional_instructions_enabled;
     form.elements.additional_instructions.value = draft.additional_instructions;
     form.elements.test_environment_enabled.checked = draft.test_environment_enabled;
     form.elements.test_environment_context.value = draft.test_environment_context;
   }
+  form.elements.memory_mode.value = draft?.memory_mode ?? templateAudit?.memory_mode ?? "full";
+  form.elements.mining_strategy.value = draft?.mining_strategy ?? templateAudit?.mining_strategy ?? (draft?.api_inventory?.trim() ? "api" : "focus_area");
   if (templateAudit?.runtime_testing) {
     const runtime = templateAudit.runtime_testing;
     form.elements.runtime_mode.value = runtime.mode;
@@ -1863,7 +2628,7 @@ async function submitProduct(event) {
     const product = await api("/api/v2/products", {
       method: "POST",
       headers: { "Content-Type": "application/json" },
-      body: JSON.stringify({ name: data.get("name"), description: data.get("description") }),
+      body: JSON.stringify({ name: data.get("name"), description: data.get("description"), root_path: data.get("root_path") || undefined }),
     });
     state.selectedProductId = product.id;
     $("product-dialog").close();
@@ -1909,6 +2674,9 @@ async function submitAudit(event) {
     name: data.get("name"), target_id: data.get("target_id"), audit_id: data.get("audit_id"),
     model: data.get("model"),
     bac_analysis: data.get("bac_analysis") ?? "auto",
+    memory_mode: data.get("memory_mode") ?? "full",
+    mining_strategy: data.get("mining_strategy") ?? "focus_area",
+    api_inventory: data.get("mining_strategy") === "api" ? String(data.get("api_inventory") ?? "") : "",
     additional_instructions_enabled: additionalInstructionsEnabled,
     additional_instructions: additionalInstructionsEnabled ? form.elements.additional_instructions.value : "",
     test_environment_enabled: testEnvironmentEnabled,
@@ -1934,7 +2702,7 @@ async function submitAudit(event) {
     state.selectedAuditId = audit.id;
     toast(`审计 ${audit.id} 已进入队列`);
     await load();
-    state.auditTab = "completed";
+    state.auditTab = "all";
     setView("audits");
     await selectAudit(audit.id);
   } catch (error) {
@@ -2010,6 +2778,44 @@ async function toggleQueue() {
 document.querySelectorAll(".nav button[data-view]").forEach(button => button.addEventListener("click", () => setView(button.dataset.view)));
 document.querySelectorAll("[data-go]").forEach(button => button.addEventListener("click", () => setView(button.dataset.go)));
 document.querySelectorAll("[data-open-audit]").forEach(button => button.addEventListener("click", () => openAuditDialog()));
+$("close-audit-drawer").addEventListener("click", closeAuditDrawer);
+let drawerPointerOutside = false;
+$("audit-drawer").addEventListener("pointerdown", event => {
+  const rect = $("audit-drawer").getBoundingClientRect();
+  drawerPointerOutside = event.clientX < rect.left || event.clientX > rect.right || event.clientY < rect.top || event.clientY > rect.bottom;
+});
+$("audit-drawer").addEventListener("click", event => {
+  const rect = $("audit-drawer").getBoundingClientRect();
+  if (drawerPointerOutside && (event.clientX < rect.left || event.clientX > rect.right || event.clientY < rect.top || event.clientY > rect.bottom)) closeAuditDrawer();
+  drawerPointerOutside = false;
+});
+$("audit-drawer").addEventListener("close", () => {
+  if ($("audit-drawer").open) return;
+  state.auditDetailController?.abort(); state.selectedAuditId = null; state.selectedAudit = null;
+  $("audit-detail").replaceChildren();
+  connectEventStream();
+});
+async function selectAuditProductFilter(value) {
+  closeAuditDrawer(); state.auditProductFilter = value;
+  if (state.auditProductFilter) { state.selectedProductId = state.auditProductFilter; state.selectedTargetIds.clear(); }
+  await Promise.all([state.auditProductFilter ? loadProductTargets() : Promise.resolve(), loadAuditsPage(1)]);
+  renderActiveView();
+}
+$("audit-product-selector").addEventListener("change", event => selectAuditProductFilter(event.currentTarget.value).catch(showError));
+document.querySelectorAll("[data-validation-tab]").forEach(button => {
+  button.addEventListener("click", () => { state.validationTab = button.dataset.validationTab; renderValidation(); });
+  button.addEventListener("keydown", event => {
+    if (!["ArrowLeft", "ArrowRight", "Home", "End"].includes(event.key)) return;
+    event.preventDefault();
+    const tabs = [...document.querySelectorAll("[data-validation-tab]")], index = tabs.indexOf(button);
+    const next = event.key === "Home" ? 0 : event.key === "End" ? tabs.length - 1 : (index + (event.key === "ArrowRight" ? 1 : -1) + tabs.length) % tabs.length;
+    tabs[next].click(); tabs[next].focus();
+  });
+});
+$("validation-status-filter").addEventListener("change", () => { state.validationPage = 1; renderValidationRequests(); });
+$("validation-query").addEventListener("input", () => { state.validationPage = 1; renderValidationRequests(); });
+$("validation-activity-query").addEventListener("input", () => { state.validationActivityPage = 1; renderValidationActivity(); });
+$("validation-activity-status").addEventListener("change", () => { state.validationActivityPage = 1; renderValidationActivity(); });
 document.querySelectorAll("[data-close-dialog]").forEach(button => button.addEventListener("click", () => $("audit-dialog").close()));
 $("audit-dialog").addEventListener("close", () => {
   if ($("audit-dialog").open) return;
@@ -2033,15 +2839,17 @@ $("add-product").addEventListener("click", openProductDialog);
 $("product-archive").addEventListener("click", () => productAction().catch(showError));
 $("transfer-selected-targets").addEventListener("click", () => openTargetTransferDialog(state.targets.filter(target => state.selectedTargetIds.has(target.id))).catch(showError));
 $("product-selector").addEventListener("change", event => {
+  closeAuditDrawer();
   state.selectedTargetIds.clear();
   state.selectedProductId = event.currentTarget.value;
   state.selectedAuditId = null;
   state.selectedAudit = null;
-  Promise.all([loadProductTargets(), state.view === "audits" ? loadAuditsPage(1) : Promise.resolve()]).then(renderActiveView).catch(showError);
+  Promise.all([loadProductTargets(), state.view === "projects" ? memoryUI.refresh(true) : Promise.resolve(), state.view === "audits" ? loadAuditsPage(1) : Promise.resolve()]).then(renderActiveView).catch(showError);
 });
 $("refresh").addEventListener("click", () => load().then(() => toast("制品与运行状态已刷新")).catch(showError));
 $("dispatch-queue").addEventListener("click", () => dispatchQueueNow().catch(showError));
 document.querySelectorAll("[data-audit-tab]").forEach(button => button.addEventListener("click", () => {
+  closeAuditDrawer();
   state.auditTab = button.dataset.auditTab;
   state.auditDetailController?.abort();
   state.selectedAuditId = null;
@@ -2061,6 +2869,7 @@ $("audit-query").addEventListener("input", () => {
     if (state.view === "audits") loadAuditsPage(1).catch(showError);
   }, 300);
 });
+$("finding-severity").addEventListener("change", () => loadFindingsPage(1).catch(showError));
 $("finding-query").addEventListener("input", () => {
   window.clearTimeout(state.findingSearchTimer);
   state.findingSearchTimer = window.setTimeout(() => loadFindingsPage(1).catch(showError), 300);
@@ -2071,6 +2880,9 @@ $("queue-settings-form").addEventListener("submit", submitQueueSettings);
 $("toggle-queue").addEventListener("click", () => toggleQueue().catch(showError));
 for (const checkbox of $("audit-form").querySelectorAll(".enable-switch input[type=checkbox]")) {
   checkbox.addEventListener("change", () => syncAuditContextControls($("audit-form")));
+}
+for (const option of $("audit-form").querySelectorAll('input[name="mining_strategy"]')) {
+  option.addEventListener("change", () => syncAuditContextControls($("audit-form")));
 }
 $("project-form").addEventListener("submit", submitProject);
 $("product-form").addEventListener("submit", submitProduct);
@@ -2103,4 +2915,48 @@ $("refresh-environment").addEventListener("click", () => refreshEnvironment().ca
 $("refresh-terminal").addEventListener("click", () => state.terminalAuditId && refreshTerminal(state.terminalAuditId).catch(showError));
 window.addEventListener("resize", scheduleTerminalResize);
 
-load().catch(showError);
+const memoryUI = initProductMemoryUI({ state, api, element, table, status, toast, loadProducts, loadFindingsPage, openAuditDialog, document, window });
+document.querySelectorAll(".view").forEach(item => item.classList.toggle("active", item.id === `view-${state.view}`));
+for (const area of ['finding', 'validation', 'report']) for (const key of ['product_id', 'audit_id', 'report_id']) if (initialFilters[key]) state.sourceFilters[area][key] = initialFilters[key];
+if (initialFilters.q) $(state.view === "findings" ? "finding-query" : "audit-query").value = initialFilters.q;
+if (['running', 'completed', 'all'].includes(initialFilters.status)) state.auditTab = initialFilters.status;
+async function openAudit(id, current = () => !disposed) {
+  const response = await api(`/api/v1/audits/${encodeURIComponent(id)}?live=1`);
+  if (!current()) return;
+  const value = response.audit ?? response;
+  return selectAudit(id, auditScope(value));
+}
+const ready = load().catch(showError);
+return { ready, setView, refresh: load, openAudit, async navigate(view, filters = {}, auditId) {
+  if (disposed) return;
+  const sequence = ++navigationSequence;
+  if (view === "audits" && Object.hasOwn(filters, "product_id")) state.auditProductFilter = filters.product_id && state.products.some(product => product.id === filters.product_id) ? filters.product_id : "";
+  if (filters.product_id && state.products.some(product => product.id === filters.product_id)) {
+    state.selectedProductId = filters.product_id;
+    await loadProductTargets();
+  }
+  if (disposed || sequence !== navigationSequence) return;
+  const area = { findings: "finding", validation: "validation", reports: "report" }[view];
+  if (area) for (const key of ["product_id", "audit_id", "report_id"]) if (filters[key]) state.sourceFilters[area][key] = filters[key];
+  if (Object.hasOwn(filters, "q") && ["audits", "findings"].includes(view)) $(view === "audits" ? "audit-query" : "finding-query").value = filters.q;
+  if (view === "audits" && ["running", "completed", "all"].includes(filters.status)) state.auditTab = filters.status;
+  if (view === "findings") {
+    if (Object.hasOwn(filters, "severity")) $("finding-severity").value = String(filters.severity).toUpperCase();
+    invalidateFindings();
+  }
+  setView(view);
+  if (auditId) await openAudit(auditId, () => !disposed && sequence === navigationSequence);
+}, destroy() {
+  disposed = true;
+  state.auditDialogRequest++; state.findingRequestSequence++; state.validationRequestSequence++; state.sourceOptionsRequestSequence++;
+  state.auditController?.abort(); state.auditDetailController?.abort();
+  state.eventSource?.close(); state.validationEventSource?.close();
+  for (const key of ["auditSearchTimer", "findingSearchTimer", "liveRefresh", "validationLiveRefresh", "terminalRefresh", "terminalResize"]) window.clearTimeout(state[key]);
+  state.terminalObserver?.disconnect();
+  window.removeEventListener("resize", scheduleTerminalResize);
+  memoryUI.destroy();
+  document.querySelectorAll("dialog[open]").forEach(dialog => dialog.close());
+} };
+}
+
+if (globalThis.document?.querySelector('body > .app-shell #view-dashboard')) mountWorkbench();

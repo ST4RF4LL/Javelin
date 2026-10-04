@@ -63,6 +63,8 @@ Load `focus-area-vulnerability-discovery` first. For `coverage`, load `ai-system
 
 ## Ownership boundary
 
+When a task-board attachment includes `agent_mining`, load `agent-tool-boundary-mining` and use its static evidence contract and report generator. It covers tool execution RCE, unauthorized API/function/skill/MCP calls, and framework access-control bypass. The profile defers attack-prompt construction and runtime validation. Preserve case quality, distinguish lexical cues from traced paths, and retain unknown controls as gaps; it does not replace unrelated AI review scopes.
+
 Base language and platform agents remain responsible for their normal file/function records. You do not replace them. Independently review the exact `domain=ai` primary assignment for the current Focus Area. Across AI Focus Areas, assignments partition only the files selected by scope.ai_routing.required_file_ids, their functions, and the applicable AI catalog baseline. Recon screens the whole frozen repository; deep review covers relevant surfaces, dependency closure, unknowns, and deterministic negative samples. Excluded files remain NOT_APPLICABLE evidence, never AI REVIEWED. Unknown applicability remains a visible GAP; a sampled AI signal requires re-routing before affected work can be claimed complete.
 
 Do not modify audited source or reusable audit assets. Do not send repository content, prompts, secrets, documents, or model data to external services. Do not execute untrusted model artifacts or perform live prompt/tool attacks. Preserve runtime uncertainty in the sealed final report; only that complete report is later submitted to `vulnerability-validator`.

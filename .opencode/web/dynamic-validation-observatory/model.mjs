@@ -2,6 +2,7 @@ import { lstat, readFile, readdir, realpath, stat } from "node:fs/promises";
 import { isAbsolute, join, relative, resolve, sep } from "node:path";
 import { normalizeBrowserExchangeV2 } from "./http-exchange.mjs";
 import { webValidationCapability } from "./web-validation-policy.mjs";
+import { redactJsonText } from "../../lib/json-text-redaction.mjs";
 import { validateExternalRuntimeValidationRequest } from "../../skills/common-subagent/finding-evidence-contract/scripts/external-runtime-validation-contract.mjs";
 
 const MAX_JSON_BYTES = 2 * 1024 * 1024;
@@ -70,7 +71,14 @@ function redactString(value) {
 
 export function sanitizeForWeb(value, key = "") {
   if (SECRET_KEYS.has(key.toLowerCase())) return "[REDACTED]";
-  if (typeof value === "string") return redactString(value);
+  if (typeof value === "string") {
+    // JSON bodies are text evidence: preserve numeric literals and escaping,
+    // and replace complete credential values instead of matching partial quotes.
+    try { return redactJsonText(value, {
+      sensitiveKey: name => SECRET_KEYS.has(name.toLowerCase()) || /(?:authorization|cookie|password|passwd|secret|token|apikey|credentials|session|sessionid)$/i.test(name.replace(/[^a-z0-9]/gi, "")),
+      redactString,
+    }); } catch { return redactString(value); }
+  }
   if (Array.isArray(value)) {
     if (key === "headers") {
       return value.map(header => {
@@ -94,12 +102,14 @@ function publicArtifactPath(path, runtimeRoot) {
   return rel === null ? null : rel.split(sep).join("/");
 }
 
-async function artifactJson(artifact, runtimeRoot) {
+async function artifactJson(artifact, evidenceRoot, auditRoot) {
   if (!artifact || artifact.media_type !== "application/json" || artifact.sanitized !== true) return null;
-  const rel = publicArtifactPath(artifact.path, runtimeRoot);
+  const rel = publicArtifactPath(artifact.path, evidenceRoot);
   if (!rel) return null;
   try {
-    return sanitizeForWeb(await readJson(join(runtimeRoot, rel), runtimeRoot));
+    const [realAudit, realEvidence] = await Promise.all([realpath(auditRoot), realpath(evidenceRoot)]);
+    if (realEvidence !== resolve(realAudit, relative(auditRoot, evidenceRoot))) return null;
+    return sanitizeForWeb(await readJson(join(evidenceRoot, rel), evidenceRoot));
   } catch {
     return null;
   }
@@ -126,10 +136,14 @@ function runSummary(detail) {
 }
 
 function normalizeExchange(exchange, reference) {
-  return normalizeBrowserExchangeV2(sanitizeForWeb(exchange), reference);
+  const safe = sanitizeForWeb(exchange), normalized = normalizeBrowserExchangeV2(safe, reference);
+  // Keep explicit legacy ownership fields for the activity reader to check;
+  // normalizing v1 must not erase a conflicting source declaration.
+  const ownership = value => Object.fromEntries(["repository_id", "audit_id", "finding_id"].filter(key => value?.[key] != null).map(key => [key, value[key]]));
+  return { ...normalized, ...ownership(safe), evidence_binding: { ...normalized.evidence_binding, ...ownership(safe.evidence_binding) } };
 }
 
-async function loadNetwork(result, artifactById, runtimeRoot) {
+async function loadNetwork(result, artifactById, evidenceRoot, auditRoot) {
   const trace = result.network_trace;
   if (!isObject(trace) || trace.schema_version !== 1 || !Array.isArray(trace.exchanges)) {
     return {
@@ -144,7 +158,7 @@ async function loadNetwork(result, artifactById, runtimeRoot) {
   const exchanges = [];
   for (const reference of trace.exchanges) {
     const artifact = artifactById.get(reference.artifact_id);
-    const value = await artifactJson(artifact, runtimeRoot);
+    const value = await artifactJson(artifact, evidenceRoot, auditRoot);
     if (value) exchanges.push(normalizeExchange(value, reference));
   }
   exchanges.sort((left, right) => (left.sequence ?? 0) - (right.sequence ?? 0));
@@ -160,8 +174,14 @@ async function loadNetwork(result, artifactById, runtimeRoot) {
 async function buildDetail(runtimeRoot, auditId, resultFile) {
   const auditRoot = join(runtimeRoot, auditId);
   const resultPath = join(auditRoot, resultFile);
-  const result = await readJson(resultPath, runtimeRoot);
-  const findingId = result.finding_id ?? resultFile.slice(0, -".result.json".length);
+  const result = await readJson(resultPath, auditRoot);
+  const findingId = resultFile.slice(0, -".result.json".length);
+  if (!findingId || result.finding_id != null && result.finding_id !== findingId || result.audit_id != null && result.audit_id !== auditId) {
+    throw new Error("validation-result-source-binding-mismatch");
+  }
+  // Legacy validator contract: <audit>/<finding>/evidence/**. Missing source
+  // fields in v1 exchanges may only be filled from this verified directory.
+  const evidenceRoot = join(auditRoot, findingId, "evidence");
   const [target, request, envelope, resultStat] = await Promise.all([
     readOptionalJson(join(auditRoot, `${findingId}.target.json`), runtimeRoot),
     readOptionalJson(join(auditRoot, "request.json"), runtimeRoot),
@@ -170,7 +190,7 @@ async function buildDetail(runtimeRoot, auditId, resultFile) {
   ]);
   const artifacts = Array.isArray(result.evidence_artifacts) ? result.evidence_artifacts : [];
   const artifactById = new Map(artifacts.map(artifact => [artifact.artifact_id, artifact]));
-  const network = await loadNetwork(result, artifactById, runtimeRoot);
+  const network = await loadNetwork(result, artifactById, evidenceRoot, auditRoot);
   const observations = [];
   for (const observation of result.observations ?? []) {
     const evidence = [];
@@ -178,8 +198,8 @@ async function buildDetail(runtimeRoot, auditId, resultFile) {
       const artifact = artifactById.get(artifactId);
       evidence.push({
         artifact_id: artifactId,
-        path: publicArtifactPath(artifact?.path, runtimeRoot),
-        data: await artifactJson(artifact, runtimeRoot),
+        path: publicArtifactPath(artifact?.path, evidenceRoot) === null ? null : publicArtifactPath(artifact?.path, runtimeRoot),
+        data: await artifactJson(artifact, evidenceRoot, auditRoot),
       });
     }
     observations.push(sanitizeForWeb({ ...observation, evidence }));

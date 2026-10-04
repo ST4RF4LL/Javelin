@@ -11,7 +11,7 @@ import { tmpdir } from "node:os";
 import { basename, dirname, join, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
 import { promisify } from "node:util";
-import { AuditRunner } from "../web/dynamic-validation-observatory/audit-runner.mjs";
+import { AuditRunner as CurrentAuditRunner } from "../web/dynamic-validation-observatory/audit-runner.mjs";
 import { DynamicValidationRunner, validateAuthorization } from "../web/dynamic-validation-observatory/validation-runner.mjs";
 import { EnvironmentHealthService } from "../web/dynamic-validation-observatory/environment-health.mjs";
 import { OpenCodeTmuxMonitor } from "../web/dynamic-validation-observatory/tmux-monitor.mjs";
@@ -21,6 +21,13 @@ import { auditsFromArtifacts, buildWorkspaceSnapshot, findingsFromArtifacts, mat
 import { createAuditWorkbenchServer, paginateFindings, parseArgs } from "../web/dynamic-validation-observatory/server.mjs";
 import { finalReportModelDigest, renderFinalReport } from "../skills/common-subagent/audit-coverage-accounting/scripts/final-report-model-core.mjs";
 import { buildWebXssInputEnvelope, buildWebXssRuntimeRequest } from "./fixtures/web-xss-runtime-fixture.mjs";
+
+// Keep the existing workflow regression fixtures pinned to their version.
+// task-board.v1 creation, dispatch and finalization have their own tests.
+class AuditRunner extends CurrentAuditRunner {
+  createAudit(input, key) { return super.createAudit({ task_protocol: "local-todo.v1", ...input }, key); }
+  createAuditFromTarget(input, key) { return super.createAuditFromTarget({ task_protocol: "local-todo.v1", ...input }, key); }
+}
 
 const OPENCODE = resolve(dirname(fileURLToPath(import.meta.url)), "..");
 const execFileAsync = promisify(execFile);
@@ -1526,6 +1533,19 @@ if (mode === "run") {
     assert.equal(runner.getAudit(created.id).execution_transport, "opencode-run+terminal-multiplexer");
     assert.equal(runner.getAudit(created.id).terminal.live, true);
 
+    const productPage = await (await fetch(`${base}/api/v2/products/product-undefined/audits?tab=all&live=1`)).json();
+    assert.ok(productPage.items.some(item => item.id === created.id));
+    for (const item of productPage.items) {
+      assert.equal(typeof item.stage, "string");
+      assert.ok(Number.isFinite(item.progress));
+      assert.ok(Number.isFinite(item.finding_count));
+    }
+    const productDetail = await (await fetch(`${base}/api/v2/products/product-undefined/audits/${encodeURIComponent(created.id)}?live=1`)).json();
+    const productSummary = await (await fetch(`${base}/api/v1/audits/${encodeURIComponent(created.id)}?live=1`)).json();
+    assert.deepEqual(productDetail.stages, productSummary.stages);
+    assert.equal(productDetail.progress, productSummary.progress);
+    assert.equal(productDetail.finding_count, productSummary.finding_count);
+
     const activeDeleteResponse = await fetch(`${base}/api/v1/audits/${created.id}`, {
       method: "DELETE",
       headers: { "Content-Type": "application/json", "If-Match": `"${runner.getAudit(created.id).version}"` },
@@ -1991,7 +2011,7 @@ if (mode === "run") {
     assert.match(indexHtml, /人工补充验证需逐次授权并保存独立结果/);
     assert.doesNotMatch(indexHtml, /共享环境准备 240 秒、每报告 180 秒快速动态/);
     assert.match(indexHtml, /id="export-selected-bruno"/);
-    assert.match(indexHtml, /导出所选 OpenCollection/);
+    assert.match(indexHtml, /导出 Bruno 集合（JSON）/);
     assert.match(indexHtml, /人工发包请使用 Bruno/);
     assert.doesNotMatch(indexHtml, /HTTP 请求工作台/);
     assert.doesNotMatch(indexHtml, />发送请求</);

@@ -1,0 +1,53 @@
+{
+  "name": "deephole-workbench",
+  "private": true,
+  "type": "module",
+  "scripts": {
+    "dev": "node scripts/dev.mjs",
+    "dev:web": "react-router dev --host 127.0.0.1 --port 5180",
+    "build": "react-router build && tsc -p tsconfig.server.json",
+    "typecheck": "react-router typegen && tsc --noEmit && tsc -p tsconfig.server.json --noEmit",
+    "start": "node build/api/server/main.js",
+    "test": "node --test tests/*.test.mjs",
+    "start:integrated": "node scripts/start-integrated.mjs",
+    "start:preview:baseline": "node .releases/preview-20261001/build/api/server/main.js",
+    "start:platform": "node scripts/start-platform.mjs",
+    "test:tasks": "node --test tests/task-control.test.mjs tests/task-kernel.test.mjs tests/task-client.test.mjs tests/upstream-transport.test.mjs tests/read-pages.test.mjs tests/task-launch.test.mjs tests/local-models.test.mjs tests/feature-parity.test.mjs"
+  },
+  "engines": {
+    "node": ">=22.22.3"
+  },
+  "dependencies": {
+    "@nestjs/common": "^12.1.2",
+    "@nestjs/core": "^12.1.2",
+    "@nestjs/platform-fastify": "^12.1.2",
+    "@fastify/static": "^10.1.2",
+    "@radix-ui/react-dialog": "^1.1.15",
+    "@radix-ui/react-slot": "^1.2.3",
+    "@radix-ui/react-tabs": "^1.1.13",
+    "@react-router/node": "7.18.4",
+    "@tanstack/react-query": "^5.90.0",
+    "class-variance-authority": "^0.7.1",
+    "clsx": "^2.1.1",
+    "fastify": "^5.12.5",
+    "lucide-react": "^0.468.0",
+    "react": "^19.2.0",
+    "react-dom": "^19.2.0",
+    "react-router": "7.18.4",
+    "reflect-metadata": "^0.2.2",
+    "rxjs": "^7.8.2",
+    "sonner": "^2.0.7",
+    "tailwind-merge": "^3.3.1",
+    "isbot": "^5"
+  },
+  "devDependencies": {
+    "@react-router/dev": "7.18.4",
+    "@tailwindcss/vite": "^4.1.0",
+    "@types/node": "^24.0.0",
+    "@types/react": "^19.2.0",
+    "@types/react-dom": "^19.2.0",
+    "tailwindcss": "^4.1.0",
+    "typescript": "^5.9.3",
+    "vite": "^8.3.2"
+  }
+}

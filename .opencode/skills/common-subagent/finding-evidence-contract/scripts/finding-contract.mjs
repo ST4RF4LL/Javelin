@@ -304,8 +304,14 @@ export function validateFinding(finding, context = {}) {
   if (!isObject(routing)) {
     errors.push("routing-missing");
   } else {
-    if (!nonEmptyString(routing.focus_area_id)) errors.push("routing-focus-area-missing");
-    if (!nonEmptyString(routing.primary_check_id)) errors.push("routing-primary-check-missing");
+    if (routing.protocol === "task-board.v1") {
+      if (!nonEmptyString(routing.task_id)) errors.push("routing-task-missing");
+      if (!nonEmptyString(routing.attempt_id)) errors.push("routing-attempt-missing");
+      if (routing.focus_area_id != null || routing.primary_check_id != null) errors.push("routing-task-legacy-mixed");
+    } else {
+      if (!nonEmptyString(routing.focus_area_id)) errors.push("routing-focus-area-missing");
+      if (!nonEmptyString(routing.primary_check_id)) errors.push("routing-primary-check-missing");
+    }
     if (!nonEmptyString(routing.domain)) errors.push("routing-domain-missing");
     if (!nonEmptyUniqueStringArray(routing.threat_ids)) errors.push("routing-threat-ids-invalid");
   }
@@ -355,7 +361,13 @@ export function validateFinding(finding, context = {}) {
   if (!isObject(finding.provenance) || !validDigest(finding.provenance.source_report_sha256)) errors.push("provenance-source-report-digest-invalid");
 
   const check = context.check;
+  if (context.task) {
+    if (routing?.protocol !== "task-board.v1" || routing.task_id !== context.task.task_id) errors.push("finding-task-mismatch");
+    if (routing?.attempt_id !== context.task.attempt_id) errors.push("finding-attempt-mismatch");
+    if (routing?.domain !== context.task.domain) errors.push("finding-domain-mismatch");
+  }
   if (check) {
+    if (routing?.protocol === "task-board.v1") errors.push("finding-routing-protocol-mismatch");
     if (routing?.primary_check_id !== check.check_id) errors.push("finding-primary-check-mismatch");
     if (routing?.focus_area_id !== check.focus_area_id) errors.push("finding-focus-area-mismatch");
     if (routing?.domain !== check.domain) errors.push("finding-domain-mismatch");

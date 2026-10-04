@@ -1,0 +1,1802 @@
+{
+  "schema_version": 1,
+  "snapshot_date": "2026-09-30",
+  "generated_at": "2026-09-30T07:36:48.092Z",
+  "scope": "current workspace source including uncommitted changes; not a live deployment inventory",
+  "head_revision": "946fcd6a09e3e7ee9aeab38d0ca090769c114629",
+  "default_protocol": "task-board.v1",
+  "counts": {
+    "static_agents": 19,
+    "static_primary": 2,
+    "static_subagents": 17,
+    "runtime_role_types": 11,
+    "skill_collections": 14,
+    "skills": 56,
+    "mcp_configured": 6,
+    "mcp_config_enabled": 1,
+    "mcp_runtime_gateways": 1
+  },
+  "agents": [
+    {
+      "name": "security-audit-orchestrator",
+      "mode": "primary",
+      "description": "Coordinates threat-led, Focus-Area-partitioned Tri-Lens source, platform, and AI-overlay audits with deterministic structural and semantic coverage.",
+      "source": ".opencode/agents/security-audit-orchestrator.md"
+    },
+    {
+      "name": "security-intel-collector",
+      "mode": "subagent",
+      "description": "Collects attack-surface context and produces five normalized inventories, including AI surfaces, for Tri-Lens source, platform, and AI-overlay audits.",
+      "source": ".opencode/agents/security-intel-collector.md"
+    },
+    {
+      "name": "security-threat-modeler",
+      "mode": "subagent",
+      "description": "Builds and refines an evidence-backed project threat model, then partitions every threat and entry point into deterministic Focus Areas for Tri-Lens discovery.",
+      "source": ".opencode/agents/security-threat-modeler.md"
+    },
+    {
+      "name": "c-cpp-source-auditor",
+      "mode": "subagent",
+      "description": "Reviews C and C++ source for memory safety, native attack surface, unsafe APIs, and privilege boundary issues.",
+      "source": ".opencode/agents/c-cpp-source-auditor.md"
+    },
+    {
+      "name": "java-source-auditor",
+      "mode": "subagent",
+      "description": "Reviews Java and JVM source for deserialization, injection, SSRF, authz, framework, and dependency security issues.",
+      "source": ".opencode/agents/java-source-auditor.md"
+    },
+    {
+      "name": "web-source-auditor",
+      "mode": "subagent",
+      "description": "Reviews browser-side JavaScript/TypeScript, JSP, HTML, and template source through one Tri-Lens strategy with deterministic file and function coverage.",
+      "source": ".opencode/agents/web-source-auditor.md"
+    },
+    {
+      "name": "python-source-auditor",
+      "mode": "subagent",
+      "description": "Reviews Python source for deserialization, command execution, web framework, dependency, and data exposure issues.",
+      "source": ".opencode/agents/python-source-auditor.md"
+    },
+    {
+      "name": "platform-security-auditor",
+      "mode": "subagent",
+      "description": "Audits language-neutral build, dependency, CI/CD, container, orchestration, gateway, and IaC surfaces in one Tri-Lens strategy per session.",
+      "source": ".opencode/agents/platform-security-auditor.md"
+    },
+    {
+      "name": "ai-security-auditor",
+      "mode": "subagent",
+      "description": "Reviews one deterministic Focus Area assignment at a time as part of the complete AI/LLM/agent/RAG/MCP overlay, with coverage, blind, and seeded-variant discovery tracks.",
+      "source": ".opencode/agents/ai-security-auditor.md"
+    },
+    {
+      "name": "security-evidence-correlator",
+      "mode": "subagent",
+      "description": "Normalizes Focus-Area Tri-Lens and discovery evidence, canonicalizes system attack chains, exposes contradictions and residual gaps, and emits targeted follow-up work packets.",
+      "source": ".opencode/agents/security-evidence-correlator.md"
+    },
+    {
+      "name": "security-attack-chain-hunter",
+      "mode": "subagent",
+      "description": "Performs the independent system-level discovery pass across Focus Areas, trust boundaries, assets, and partition findings to identify cross-module attack chains.",
+      "source": ".opencode/agents/security-attack-chain-hunter.md"
+    },
+    {
+      "name": "security-finding-adjudicator",
+      "mode": "subagent",
+      "description": "Independently adjudicates packet-backed Finding v2 candidates before attack-chain construction and final synthesis.",
+      "source": ".opencode/agents/security-finding-adjudicator.md"
+    },
+    {
+      "name": "vulnerability-validator",
+      "mode": "subagent",
+      "description": "编排 共享环境准备 240 秒、每报告 180 秒快速动态分流与本地正方、反方、Moderator 静态真实性挑战。",
+      "source": ".opencode/agents/vulnerability-validator.md"
+    },
+    {
+      "name": "quick-dynamic-validator",
+      "mode": "subagent",
+      "description": "对已显式启用测试环境的任务执行共享环境准备最多 240 秒、每报告最多 180 秒、仅限 loopback 的快速动态确认。",
+      "source": ".opencode/agents/quick-dynamic-validator.md"
+    },
+    {
+      "name": "vulnerability-affirmative",
+      "mode": "subagent",
+      "description": "根据版本化契约，对源码与运行候选进行独立正方举证，核查真实性、可达性与影响。",
+      "source": ".opencode/agents/vulnerability-affirmative.md"
+    },
+    {
+      "name": "vulnerability-negative",
+      "mode": "subagent",
+      "description": "独立重建候选证据并对正方结论提出最强反证和误报挑战。",
+      "source": ".opencode/agents/vulnerability-negative.md"
+    },
+    {
+      "name": "vulnerability-moderator",
+      "mode": "subagent",
+      "description": "独立复核正反双方证据并对每个候选给出终局真实性裁定。",
+      "source": ".opencode/agents/vulnerability-moderator.md"
+    },
+    {
+      "name": "dynamic-vulnerability-validator",
+      "mode": "primary",
+      "description": "Explicitly validates sealed Web findings against an authorized localhost application in a managed Chrome DevTools MCP session and emits digest-bound runtime evidence.",
+      "source": ".opencode/agents/dynamic-vulnerability-validator.md"
+    },
+    {
+      "name": "security-skill-optimizer",
+      "mode": "subagent",
+      "description": "Optimizes audit skills, Joern rules, vulnerability cases, and false-positive cases from digest-bound local truth-validation routing.",
+      "source": ".opencode/agents/security-skill-optimizer.md"
+    }
+  ],
+  "runtime_roles": [
+    {
+      "name": "task-board-java-worker",
+      "mode": "primary",
+      "launch": "TaskBoardService"
+    },
+    {
+      "name": "task-board-web-worker",
+      "mode": "primary",
+      "launch": "TaskBoardService"
+    },
+    {
+      "name": "task-board-python-worker",
+      "mode": "primary",
+      "launch": "TaskBoardService"
+    },
+    {
+      "name": "task-board-c-cpp-worker",
+      "mode": "primary",
+      "launch": "TaskBoardService"
+    },
+    {
+      "name": "task-board-platform-worker",
+      "mode": "primary",
+      "launch": "TaskBoardService"
+    },
+    {
+      "name": "task-board-ai-worker",
+      "mode": "primary",
+      "launch": "TaskBoardService"
+    },
+    {
+      "name": "runtime-testing-worker",
+      "mode": "primary",
+      "launch": "RuntimeTestingService"
+    },
+    {
+      "name": "security-cross-repo-analyzer",
+      "mode": "primary",
+      "launch": "ProductAuditService"
+    },
+    {
+      "name": "cross-repo-affirmative",
+      "mode": "primary",
+      "launch": "ProductAuditService"
+    },
+    {
+      "name": "cross-repo-negative",
+      "mode": "primary",
+      "launch": "ProductAuditService"
+    },
+    {
+      "name": "cross-repo-moderator",
+      "mode": "primary",
+      "launch": "ProductAuditService"
+    }
+  ],
+  "collections": [
+    {
+      "name": "security-intel-subagent",
+      "owner_agent": "security-intel-collector",
+      "count": 1,
+      "source": ".opencode/skills/security-intel-subagent/collection.json"
+    },
+    {
+      "name": "threat-modeling-subagent",
+      "owner_agent": "security-threat-modeler",
+      "count": 2,
+      "source": ".opencode/skills/threat-modeling-subagent/collection.json"
+    },
+    {
+      "name": "common-subagent",
+      "owner_agent": "shared",
+      "count": 7,
+      "source": ".opencode/skills/common-subagent/collection.json"
+    },
+    {
+      "name": "c-cpp-subagent",
+      "owner_agent": "c-cpp-source-auditor",
+      "count": 3,
+      "source": ".opencode/skills/c-cpp-subagent/collection.json"
+    },
+    {
+      "name": "java-subagent",
+      "owner_agent": "java-source-auditor",
+      "count": 26,
+      "source": ".opencode/skills/java-subagent/collection.json"
+    },
+    {
+      "name": "web-subagent",
+      "owner_agent": "web-source-auditor",
+      "count": 1,
+      "source": ".opencode/skills/web-subagent/collection.json"
+    },
+    {
+      "name": "python-subagent",
+      "owner_agent": "python-source-auditor",
+      "count": 4,
+      "source": ".opencode/skills/python-subagent/collection.json"
+    },
+    {
+      "name": "platform-subagent",
+      "owner_agent": "platform-security-auditor",
+      "count": 1,
+      "source": ".opencode/skills/platform-subagent/collection.json"
+    },
+    {
+      "name": "ai-subagent",
+      "owner_agent": "ai-security-auditor",
+      "count": 2,
+      "source": ".opencode/skills/ai-subagent/collection.json"
+    },
+    {
+      "name": "evidence-correlation-subagent",
+      "owner_agent": "security-evidence-correlator",
+      "count": 1,
+      "source": ".opencode/skills/evidence-correlation-subagent/collection.json"
+    },
+    {
+      "name": "attack-chain-subagent",
+      "owner_agent": "security-attack-chain-hunter",
+      "count": 1,
+      "source": ".opencode/skills/attack-chain-subagent/collection.json"
+    },
+    {
+      "name": "vulnerability-validator-subagent",
+      "owner_agent": "vulnerability-validator",
+      "count": 1,
+      "source": ".opencode/skills/vulnerability-validator-subagent/collection.json"
+    },
+    {
+      "name": "dynamic-vulnerability-validator-subagent",
+      "owner_agent": "dynamic-vulnerability-validator",
+      "count": 3,
+      "source": ".opencode/skills/dynamic-vulnerability-validator-subagent/collection.json"
+    },
+    {
+      "name": "security-skill-optimizer-subagent",
+      "owner_agent": "security-skill-optimizer",
+      "count": 3,
+      "source": ".opencode/skills/security-skill-optimizer-subagent/collection.json"
+    }
+  ],
+  "skills": [
+    {
+      "name": "security-recon",
+      "collection": "security-intel-subagent",
+      "owner_agent": "security-intel-collector",
+      "description": "Evidence-backed reconnaissance for Tri-Lens security audits. Use to build the attack-surface map plus entry-point, sink, sensitive-operation, config-surface, and AI-surface inventories before source, platform, or AI overlay auditors run.",
+      "brief_zh": "五层攻击面、入口、sink、敏感操作、配置与 AI 表面清单",
+      "source": ".opencode/skills/security-intel-subagent/security-recon/SKILL.md"
+    },
+    {
+      "name": "evidence-backed-threat-modeling",
+      "collection": "threat-modeling-subagent",
+      "owner_agent": "security-threat-modeler",
+      "description": "Build or refine a durable project threat model from code, Recon inventories, owner knowledge, security history, and explicit trust assumptions; then produce deterministic Focus Areas for Tri-Lens vulnerability discovery. Use before source, platform, or AI audits when entry points, assets, actors, trust boundaries, project-specific threat classes, or discovery partitions must be defined and covered.",
+      "brief_zh": "资产、主体、安全不变量、信任边界、攻击故事和风险规划",
+      "source": ".opencode/skills/threat-modeling-subagent/evidence-backed-threat-modeling/SKILL.md"
+    },
+    {
+      "name": "extract-acp-quadruples",
+      "collection": "threat-modeling-subagent",
+      "owner_agent": "security-threat-modeler",
+      "description": "Infer evidence-backed intended database access policies as exact D/O/R/AC quadruples in an independent bounded policy session for the platform BAC analysis workflow.",
+      "brief_zh": "独立恢复预期数据库访问策略的 D/O/R/AC 四元组，不扩展原模型",
+      "source": ".opencode/skills/threat-modeling-subagent/extract-acp-quadruples/SKILL.md"
+    },
+    {
+      "name": "audit-coverage-accounting",
+      "collection": "common-subagent",
+      "owner_agent": "shared",
+      "description": "Build and verify deterministic structural coverage for scope/files/functions/catalog plus semantic coverage for entry points, threats, Focus Areas, blind/seeded discovery tracks, and the system attack-chain pass. Use whenever an audit must prove both exact entity assignment and threat-led discovery coverage rather than relying on sampled or prose claims.",
+      "brief_zh": "范围、文件、函数、接口、目录和语义覆盖的构建与校验；全量覆盖账本主要用于旧流程",
+      "source": ".opencode/skills/common-subagent/audit-coverage-accounting/SKILL.md"
+    },
+    {
+      "name": "audit-artifact-management",
+      "collection": "common-subagent",
+      "owner_agent": "shared",
+      "description": "Manage threat-led Focus Area Tri-Lens artifacts, including enforced eight-stage deliveries, sealed threat/Focus manifests, coverage and discovery JSON, local finding truth-validation routing, system attack-chain reports, SARIF, deterministic final reports, and manual-only tmp retention/promotion rules.",
+      "brief_zh": "制品路径、摘要、阶段与角色交付、报告留存；包含旧八阶段契约",
+      "source": ".opencode/skills/common-subagent/audit-artifact-management/SKILL.md"
+    },
+    {
+      "name": "secure-code-review-common",
+      "collection": "common-subagent",
+      "owner_agent": "shared",
+      "description": "Universal threat-led Focus Area Tri-Lens secure-code-review methodology. Use for every source, platform, or AI coverage audit to examine each applicable D1-D10 dimension with sink-driven, control-driven, and config-driven evidence while preserving threat, Focus Area, provenance, and gap rules.",
+      "brief_zh": "通用审查方法，围绕威胁、输入到影响、有效守卫及证据分析",
+      "source": ".opencode/skills/common-subagent/secure-code-review-common/SKILL.md"
+    },
+    {
+      "name": "focus-area-vulnerability-discovery",
+      "collection": "common-subagent",
+      "owner_agent": "shared",
+      "description": "Execute Focus-Area-scoped vulnerability discovery using deterministic Tri-Lens coverage, checklist-light blind discovery, and history/case-seeded variant hunting without conflating discovery artifacts with coverage closure. Use by source, platform, and AI auditors whenever a work packet carries a focus_area_id or discovery_track.",
+      "brief_zh": "Focus 内的覆盖、盲审和案例引导变体挖掘，区分发现与覆盖闭合",
+      "source": ".opencode/skills/common-subagent/focus-area-vulnerability-discovery/SKILL.md"
+    },
+    {
+      "name": "finding-evidence-contract",
+      "collection": "common-subagent",
+      "owner_agent": "shared",
+      "description": "Validate and bind security finding artifacts before they enter coverage accounting, correlation, or a final audit report. Use when a source-audit agent emits a candidate finding, when a completed local packet report is handed off, or when a verifier must reject incomplete, misclassified, or unproven finding evidence.",
+      "brief_zh": "Finding 结构、证据绑定和外部运行验证交接契约",
+      "source": ".opencode/skills/common-subagent/finding-evidence-contract/SKILL.md"
+    },
+    {
+      "name": "finding-adjudication",
+      "collection": "common-subagent",
+      "owner_agent": "shared",
+      "description": "Independently adjudicate accepted Finding v2 coverage candidates before attack-chain construction or final reporting. Use when a candidate must be checked for real framework semantics, reachability, guards, a tested counterclaim, and an explicit SUPPORTED_STATIC, SUPPORTED_RUNTIME, REJECTED, INCONCLUSIVE, or RECLASSIFIED outcome.",
+      "brief_zh": "候选的独立语义裁决、守卫与反例；主要对应旧 Finding v2 流程",
+      "source": ".opencode/skills/common-subagent/finding-adjudication/SKILL.md"
+    },
+    {
+      "name": "detect-bac-risks",
+      "collection": "common-subagent",
+      "owner_agent": "shared",
+      "description": "Compare intended database access policies with evidenced entry-to-database paths inside a BAC-enabled source audit packet, preserving unknown facts and adapting static candidates to the platform Finding v2 review chain.",
+      "brief_zh": "比较预期数据库访问策略与实际路径，保留未知并转为静态候选",
+      "source": ".opencode/skills/common-subagent/detect-bac-risks/SKILL.md"
+    },
+    {
+      "name": "c-cpp-memory-safety-review",
+      "collection": "c-cpp-subagent",
+      "owner_agent": "c-cpp-source-auditor",
+      "description": "Review C/C++ code for memory safety including buffer overflow, use-after-free, double free, integer overflow, format string, and stack safety.",
+      "brief_zh": "越界、UAF、double free、整数溢出、格式化与栈安全",
+      "source": ".opencode/skills/c-cpp-subagent/c-cpp-memory-safety-review/SKILL.md"
+    },
+    {
+      "name": "c-cpp-native-boundary-review",
+      "collection": "c-cpp-subagent",
+      "owner_agent": "c-cpp-source-auditor",
+      "description": "Review native C/C++ interfaces, IPC, syscalls, plugins, and FFI boundaries for unsafe trust and privilege transitions.",
+      "brief_zh": "原生接口、IPC、系统调用、插件与 FFI 信任边界",
+      "source": ".opencode/skills/c-cpp-subagent/c-cpp-native-boundary-review/SKILL.md"
+    },
+    {
+      "name": "c-cpp-file-privilege-review",
+      "collection": "c-cpp-subagent",
+      "owner_agent": "c-cpp-source-auditor",
+      "description": "Review C/C++ filesystem, process execution, temporary file, symlink, and privilege-handling code for security issues.",
+      "brief_zh": "文件、进程、临时文件、符号链接与权限处理",
+      "source": ".opencode/skills/c-cpp-subagent/c-cpp-file-privilege-review/SKILL.md"
+    },
+    {
+      "name": "java-web-comprehensive-review",
+      "collection": "java-subagent",
+      "owner_agent": "java-source-auditor",
+      "description": "Deterministic Java/JVM and server-side Web review across every scoped file and AST/CPG function, D1-D10, all three separately assigned lenses, and the unified application/AI vulnerability catalog. Use as the mandatory umbrella skill for Java audit sessions before loading weakness-specific packs.",
+      "brief_zh": "Java/JVM 与服务端 Web 的综合审查入口，组织适用风险与证据",
+      "source": ".opencode/skills/java-subagent/java-web-comprehensive-review/SKILL.md"
+    },
+    {
+      "name": "java-deserialization-review",
+      "collection": "java-subagent",
+      "owner_agent": "java-source-auditor",
+      "description": "Review Java/JVM deserialization and object-mapping code for gadget chains, polymorphic typing, and unsafe type resolution.",
+      "brief_zh": "对象映射、gadget 链、多态类型和类型解析综合检查",
+      "source": ".opencode/skills/java-subagent/java-deserialization-review/SKILL.md"
+    },
+    {
+      "name": "java-injection-review",
+      "collection": "java-subagent",
+      "owner_agent": "java-source-auditor",
+      "description": "Review Java/JVM code for SQL, JPQL, LDAP, XPath, template, expression, command, and class-loading injection issues.",
+      "brief_zh": "SQL、JPQL、LDAP、XPath、模板、表达式、命令与类加载注入总览",
+      "source": ".opencode/skills/java-subagent/java-injection-review/SKILL.md"
+    },
+    {
+      "name": "java-web-security-review",
+      "collection": "java-subagent",
+      "owner_agent": "java-source-auditor",
+      "description": "Review Java web applications for authentication, authorization, Spring Security, SSRF, file handling, and framework configuration issues.",
+      "brief_zh": "Web 认证授权、Spring Security、文件、SSRF 与框架配置",
+      "source": ".opencode/skills/java-subagent/java-web-security-review/SKILL.md"
+    },
+    {
+      "name": "java-sql-injection",
+      "collection": "java-subagent",
+      "owner_agent": "java-source-auditor",
+      "description": "Detect Java SQL injection by locating attacker-controlled input reaching SQL/JPA/MyBatis query sinks without effective parameterization or allowlisting. Use for Java SQLi audits, CWE-89 review, JDBC/MyBatis/Hibernate/JPA/Spring Data query analysis, order-by/column-name injection, and second-order SQL injection. Keywords: SQL injection, SQLi, CWE-89, JDBC, PreparedStatement, Statement.execute, MyBatis ${}, Hibernate createQuery, JPA native query, Spring JdbcTemplate, order by injection, second-order SQLi.",
+      "brief_zh": "JDBC、MyBatis、JPA 等 SQL/查询拼接、动态标识符与二次注入",
+      "source": ".opencode/skills/java-subagent/java-sql-injection/SKILL.md"
+    },
+    {
+      "name": "java-nosql-injection",
+      "collection": "java-subagent",
+      "owner_agent": "java-source-auditor",
+      "description": "Detect Java NoSQL injection by locating attacker-controlled input reaching MongoDB/Spring Data MongoDB query construction without effective API query builders or operator sanitization. Use for Java NoSQL audits, CWE-943 review, MongoDB Document.parse/BasicDBObject/$where injection, JSON operator injection ($gt/$ne/$where), Filters.eq misuse, Spring Data MongoDB @Query SpEL/concat, and Redis EVAL script fragment injection when relevant. Keywords: NoSQL injection, MongoDB injection, CWE-943, Document.parse, BasicDBObject, $where, $gt, $ne, operator injection, Filters.eq, Bson, Spring Data MongoDB, @Query, JSON query injection.",
+      "brief_zh": "MongoDB 查询、JSON 操作符、SpEL 和相关脚本输入",
+      "source": ".opencode/skills/java-subagent/java-nosql-injection/SKILL.md"
+    },
+    {
+      "name": "java-ldap-injection",
+      "collection": "java-subagent",
+      "owner_agent": "java-source-auditor",
+      "description": "Detect Java LDAP injection by locating attacker-controlled input reaching LDAP filter or DN construction without effective encoding or parameterized filters. Use for Java LDAP audits, CWE-90 review, JNDI DirContext.search filter analysis, Spring LDAP LdapQuery/LdapTemplate filter building, DN injection, and authentication-bypass via filter metacharacters. Keywords: LDAP injection, CWE-90, DirContext.search, NamingEnumeration, filter concat, Spring LdapEncoder, LdapQueryBuilder, SearchControls, distinguished name injection, JNDI LDAP.",
+      "brief_zh": "LDAP filter 与 DN 的输入编码、拼接和参数化",
+      "source": ".opencode/skills/java-subagent/java-ldap-injection/SKILL.md"
+    },
+    {
+      "name": "java-xpath-injection",
+      "collection": "java-subagent",
+      "owner_agent": "java-source-auditor",
+      "description": "Detect Java XPath injection (CWE-643) by locating attacker-controlled input reaching XPath compile/evaluate sinks without XPath Variable Resolver or parameterized $var binding. Use for Java XPath audits, javax.xml.xpath / Saxon query analysis, XML node selection injection, and OWASP Java Security CS XPath guidance. Keywords: XPath injection, CWE-643, XPath.compile, XPath.evaluate, XPathExpression, XPathVariableResolver, DocumentBuilder XPath, parameterized XPath, $bookId.",
+      "brief_zh": "XPath 查询构造和变量绑定",
+      "source": ".opencode/skills/java-subagent/java-xpath-injection/SKILL.md"
+    },
+    {
+      "name": "java-command-injection",
+      "collection": "java-subagent",
+      "owner_agent": "java-source-auditor",
+      "description": "Detect Java OS command injection by locating attacker-controlled input reaching Runtime.exec/ProcessBuilder/Commons Exec without effective argument separation or allowlisting. Use for Java CMDI audits, CWE-78 review, Runtime.exec concat, ProcessBuilder shell wrappers, and OS command construction analysis. Keywords: command injection, CMDi, CWE-78, Runtime.exec, ProcessBuilder, /bin/sh -c, Apache Commons Exec, OS command, shell metacharacter.",
+      "brief_zh": "Runtime.exec、ProcessBuilder 等命令与参数边界",
+      "source": ".opencode/skills/java-subagent/java-command-injection/SKILL.md"
+    },
+    {
+      "name": "java-spel-injection",
+      "collection": "java-subagent",
+      "owner_agent": "java-source-auditor",
+      "description": "Detect Java SpEL / Spring Expression Language injection by locating attacker-controlled strings reaching SpelExpressionParser.parseExpression, Expression.getValue/setValue, or dynamic @Value/#{...} evaluation without SimpleEvaluationContext or allowlisting. Use for Java SpEL audits, CWE-917/CWE-94 review, StandardEvaluationContext abuse, template ParserContext, and Spring EL sink analysis. Keywords: SpEL injection, Spring Expression Language, CWE-917, CWE-94, SpelExpressionParser, parseExpression, Expression.getValue, StandardEvaluationContext, SimpleEvaluationContext, @Value, TemplateParserContext.",
+      "brief_zh": "SpEL 求值上下文、表达式输入与允许范围",
+      "source": ".opencode/skills/java-subagent/java-spel-injection/SKILL.md"
+    },
+    {
+      "name": "java-xss",
+      "collection": "java-subagent",
+      "owner_agent": "java-source-auditor",
+      "description": "Detect Java server-side Cross-Site Scripting (XSS) by locating attacker-controlled input reaching HTTP response writers, JSP/Thymeleaf/FreeMarker unescaped outputs, or wrong-context encoding without effective output encoding/sanitization. Use for Java XSS audits, CWE-79 review, JSP EL, Thymeleaf th:utext, FreeMarker ?no_esc, Spring MVC response body/writer analysis, HTML/JS/CSS context encoding, OWASP Java Encoder, and HTML Sanitizer. Keywords: XSS, cross-site scripting, CWE-79, reflected XSS, stored XSS, JSP, ${}, th:utext, response.getWriter, PrintWriter, Encode.forHtml, HtmlPolicyBuilder, context-aware encoding.",
+      "brief_zh": "响应、JSP 与模板输出的上下文编码和净化",
+      "source": ".opencode/skills/java-subagent/java-xss/SKILL.md"
+    },
+    {
+      "name": "java-xxe",
+      "collection": "java-subagent",
+      "owner_agent": "java-source-auditor",
+      "description": "Detect Java XXE (CWE-611) by locating untrusted XML input reaching XML parsers without secure feature flags (external entities, DTD, XInclude disabled). Use for DocumentBuilderFactory, SAXParserFactory, XMLInputFactory, TransformerFactory, SchemaFactory, JAXB Unmarshaller audits. Keywords: XXE, CWE-611, CWE-827, CWE-776, external entity, disallow-doctype-decl, FEATURE_SECURE_PROCESSING, ACCESS_EXTERNAL_DTD, billion laughs, XInclude, StAX, SAX, DOM.",
+      "brief_zh": "XML 外部实体、DTD、XInclude 与解析器安全配置",
+      "source": ".opencode/skills/java-subagent/java-xxe/SKILL.md"
+    },
+    {
+      "name": "java-jwt-misuse",
+      "collection": "java-subagent",
+      "owner_agent": "java-source-auditor",
+      "description": "Detect Java JWT/JOSE misuse by locating alg=none acceptance, missing signature verification, weak/hardcoded HMAC secrets, algorithm confusion (RS→HS), and missing exp/aud/iss claim validation (CWE-347/CWE-345). Use for JWT audits, jjwt/nimbus-jose-jwt/auth0 java-jwt/Spring OAuth2 Resource Server review, parseClaimsJws without verify, JWT parser allow none, HS256 secret hardcoded, RSA public key as HMAC secret, and unvalidated claims. Keywords: JWT, JOSE, JWS, alg=none, CWE-347, CWE-345, jjwt, nimbus-jose-jwt, auth0 java-jwt, Spring Security OAuth2 Resource Server, algorithm confusion, hardcoded secret, missing exp, audience validation, signature bypass.",
+      "brief_zh": "JWT 签名、算法混淆、密钥及 exp/aud/iss 等声明验证",
+      "source": ".opencode/skills/java-subagent/java-jwt-misuse/SKILL.md"
+    },
+    {
+      "name": "java-csrf",
+      "collection": "java-subagent",
+      "owner_agent": "java-source-auditor",
+      "description": "Detect Java Cross-Site Request Forgery (CSRF) by locating state-changing endpoints that accept cookie-authenticated browser requests without effective CSRF defenses (token, SameSite, custom header, double-submit). Use for Java CSRF audits, CWE-352 review, Spring Security csrf().disable(), cookie-session JSON APIs without CSRF header, GET-based mutations, form POST without token, and token-not-bound-to-session analysis. Keywords: CSRF, CWE-352, A01:2021, csrf().disable(), CsrfFilter, _csrf, X-CSRF-TOKEN, SameSite, Cookie auth, session fixation adjacent, state-changing GET.",
+      "brief_zh": "Cookie 认证的状态修改入口与 CSRF 防护",
+      "source": ".opencode/skills/java-subagent/java-csrf/SKILL.md"
+    },
+    {
+      "name": "java-idor",
+      "collection": "java-subagent",
+      "owner_agent": "java-source-auditor",
+      "description": "Detect Java Insecure Direct Object Reference (IDOR) / Broken Object Level Authorization (BOLA) by locating object identifiers from requests used to load, update, or delete resources without ownership, tenant, role, or parent-child relationship checks. Use for Java IDOR/BOLA audits, CWE-639/CWE-862/CWE-284 review, Spring MVC path variables and request params as resource keys, Spring Data findById/delete without ownership filter, multi-tenant tenantId from client, horizontal/vertical privilege on object IDs, missing authorization on mutations, and child B CRUD that is not bound to authorization on parent A. Keywords: IDOR, BOLA, CWE-639, CWE-862, CWE-284, A01:2021, object-level authorization, parent-child authorization, nested resource, ownership check, tenant isolation, findById, PathVariable id, horizontal privilege, vertical privilege, mass assignment of tenant.",
+      "brief_zh": "对象、租户、角色和父子资源的授权绑定",
+      "source": ".opencode/skills/java-subagent/java-idor/SKILL.md"
+    },
+    {
+      "name": "java-deserialization",
+      "collection": "java-subagent",
+      "owner_agent": "java-source-auditor",
+      "description": "Detect Java unsafe deserialization by locating untrusted data reaching ObjectInputStream/XMLDecoder/Fastjson/Jackson/SnakeYAML/XStream/Hessian/Kryo without type allowlisting or safe constructors. Use for CWE-502 audits, polymorphic typing, autoType, gadget-adjacent sinks. Keywords: deserialization, CWE-502, ObjectInputStream, Fastjson autoType, Jackson enableDefaultTyping, SnakeYAML SafeConstructor, XStream, Hessian, Kryo, XMLDecoder, gadget chain.",
+      "brief_zh": "ObjectInputStream、Fastjson、Jackson、YAML 等危险对象重建",
+      "source": ".opencode/skills/java-subagent/java-deserialization/SKILL.md"
+    },
+    {
+      "name": "java-path-traversal",
+      "collection": "java-subagent",
+      "owner_agent": "java-source-auditor",
+      "description": "Detect Java path traversal / Zip Slip / unsafe file path use when attacker-controlled path segments reach file read/write/delete/extract without normalize + base-dir confinement. Use for CWE-22 audits, ZipEntry.getName extract loops, multipart getOriginalFilename, download-by-filename, Paths.get/resolve, and File I/O. Keywords: path traversal, Zip Slip, CWE-22, directory traversal, ../, ZipEntry, getOriginalFilename, Path.normalize, startsWith baseDir, FileInputStream.",
+      "brief_zh": "文件读写删除、归档解压、Zip Slip 与根目录约束",
+      "source": ".opencode/skills/java-subagent/java-path-traversal/SKILL.md"
+    },
+    {
+      "name": "java-file-upload",
+      "collection": "java-subagent",
+      "owner_agent": "java-source-auditor",
+      "description": "Detect Java unsafe file upload (CWE-434) when attacker-controlled files are accepted without effective type/extension allowlisting, Content-Type-only trust, double-extension bypass, or storage of dangerous types under web-accessible paths. Use for unrestricted upload, executable-in-webroot, MIME-only validation, SVG/HTML stored content, servlet/Spring/Commons multipart. Keywords: file upload, CWE-434, unrestricted upload, getOriginalFilename, Content-Type, double extension, webroot, MultipartFile, transferTo, .jsp acceptance, MIME validation, SVG XSS stored.",
+      "brief_zh": "上传类型、命名、存储和 Web 可访问位置",
+      "source": ".opencode/skills/java-subagent/java-file-upload/SKILL.md"
+    },
+    {
+      "name": "java-ssrf",
+      "collection": "java-subagent",
+      "owner_agent": "java-source-auditor",
+      "description": "Detect Java Server-Side Request Forgery (SSRF) by locating attacker-controlled network destination data reaching server-side HTTP/URL open operations without effective host/protocol/port allowlisting. Use for Java SSRF audits, CWE-918 review, RestTemplate/WebClient/OkHttp/HttpClient/URLConnection destination control, cloud metadata access, and redirect-bypass analysis. Keywords: SSRF, CWE-918, A10:2021, RestTemplate, WebClient, OkHttp, Apache HttpClient, URL.openConnection, HttpURLConnection, 169.254.169.254, open redirect vs SSRF, host allowlist, protocol smuggling.",
+      "brief_zh": "服务端目标地址、协议、端口、重定向与允许列表",
+      "source": ".opencode/skills/java-subagent/java-ssrf/SKILL.md"
+    },
+    {
+      "name": "java-resource-exhaustion",
+      "collection": "java-subagent",
+      "owner_agent": "java-source-auditor",
+      "description": "Detect Java resource exhaustion where attacker-controlled numeric parameters reach memory allocation, collection capacity, pagination, batches, fan-out, recursion, worker pools, queues, or expensive reads without effective lower and upper bounds. Use for Java CWE-400/CWE-770/CWE-789 review of size, limit, count, pageSize, capacity, repeat, depth, workers, parallelism, and timeout parameters.",
+      "brief_zh": "分配、分页、批量、递归、队列与并发参数的上下限",
+      "source": ".opencode/skills/java-subagent/java-resource-exhaustion/SKILL.md"
+    },
+    {
+      "name": "java-open-redirect",
+      "collection": "java-subagent",
+      "owner_agent": "java-source-auditor",
+      "description": "Detect Java Open Redirect / Unvalidated Redirects (CWE-601) by locating attacker-controlled redirect targets reaching sendRedirect, Location headers, Spring redirect: prefix, or RedirectView without effective destination allowlisting. Use for Java open-redirect audits, unvalidated redirect review, phishing redirect paths, protocol-relative bypass, path-relative URL bypass, and weak startsWith checks on redirect URLs. Keywords: open redirect, unvalidated redirect, CWE-601, A01:2021, sendRedirect, setHeader Location, redirect:, RedirectView, protocol-relative //evil.example, startsWith bypass, returnUrl, next, continue, callback.",
+      "brief_zh": "重定向目的地验证与编码、相对路径等绕过条件",
+      "source": ".opencode/skills/java-subagent/java-open-redirect/SKILL.md"
+    },
+    {
+      "name": "java-weak-cryptography",
+      "collection": "java-subagent",
+      "owner_agent": "java-source-auditor",
+      "description": "Detect Java weak cryptography misuse by locating broken algorithms, insecure modes, static IVs, hardcoded keys, insecure random, and weak password hashing (CWE-327/328/330/916). Use for Java crypto audits, JCA/JCE review, Cipher.getInstance analysis, AES/ECB or static-IV GCM, MD5/SHA1 password storage, DES/3DES/RC4, RSA without OAEP, java.util.Random for secrets, and SecureRandom misuse. Keywords: weak crypto, CWE-327, CWE-328, CWE-330, AES/ECB, static IV, MessageDigest MD5, DES, 3DES, RC4, hardcoded key, insecure random, bcrypt, argon2, password hashing, Cipher.getInstance.",
+      "brief_zh": "算法、模式、IV、随机数与口令哈希",
+      "source": ".opencode/skills/java-subagent/java-weak-cryptography/SKILL.md"
+    },
+    {
+      "name": "java-hardcoded-secrets",
+      "collection": "java-subagent",
+      "owner_agent": "java-source-auditor",
+      "description": "Detect hardcoded secrets in Java and config (API keys, passwords, private keys, JWT secrets, DB credentials, cloud access keys) under CWE-798/259/321. Use for secret scanning, credential-in-source audits, application.yml/properties plaintext passwords, SecretKeySpec literals, AKIA* keys, PEM private keys in repo, JWT signing secrets, JDBC URLs with embedded passwords. Boundary: weak algorithms → java-weak-cryptography; this skill = secret material in source/config. Keywords: hardcoded secret, CWE-798, CWE-259, CWE-321, API key, password literal, private key, JWT secret, datasource password, AWS access key, SecretKeySpec, application.yml.",
+      "brief_zh": "源码与配置中的密码、密钥、JWT secret 和云凭证",
+      "source": ".opencode/skills/java-subagent/java-hardcoded-secrets/SKILL.md"
+    },
+    {
+      "name": "java-log-injection",
+      "collection": "java-subagent",
+      "owner_agent": "java-source-auditor",
+      "description": "Detect Java log injection and CRLF log forging by locating attacker-controlled input reaching logging sinks without structured logging or newline sanitization. Use for Java log injection audits, CWE-117/CWE-93 review, Log4j2/Logback/SLF4J string-concat log messages, forged log entries, and log viewer XSS risk. Keywords: log injection, CRLF injection, CWE-117, CWE-93, log forging, Log4j2, Logback, SLF4J, logger.info concat, parameterized logging, JsonTemplateLayout, structured logging. Not primary for Log4Shell/JNDI lookup (adjacent boundary only).",
+      "brief_zh": "日志换行、伪造记录和输出边界",
+      "source": ".opencode/skills/java-subagent/java-log-injection/SKILL.md"
+    },
+    {
+      "name": "java-mass-assignment",
+      "collection": "java-subagent",
+      "owner_agent": "java-source-auditor",
+      "description": "Detect Java Mass Assignment / over-posting (CWE-915) where HTTP binding or JSON deserialization maps attacker-controlled fields onto domain entities, allowing privilege, role, balance, ownership, or status overwrite. Use for Spring MVC @ModelAttribute/@RequestBody entity binding, Jackson sensitive-field binding, entity-as-DTO patterns, nested object privilege escalation, PATCH without allowlist, Spring Data REST exposure, and CWE-915 audits. Keywords: mass assignment, over-posting, CWE-915, @ModelAttribute, @RequestBody, isAdmin, role, balance, @JsonIgnore, @JsonProperty(access), DTO, BeanUtils.copyProperties, @InitBinder allowedFields, Spring Data REST, PATCH merge.",
+      "brief_zh": "HTTP/JSON 自动绑定对权限、归属、余额和状态字段的覆盖",
+      "source": ".opencode/skills/java-subagent/java-mass-assignment/SKILL.md"
+    },
+    {
+      "name": "java-access-path-analysis",
+      "collection": "java-subagent",
+      "owner_agent": "java-source-auditor",
+      "description": "Recover evidenced Java entry-to-database paths and effective role/owner controls for BAC-enabled audit packets, including Spring security composition, ORM predicates, RPC, messages, and scheduled triggers.",
+      "brief_zh": "入口到数据库路径、角色和归属控制，供 BAC 差分分析",
+      "source": ".opencode/skills/java-subagent/java-access-path-analysis/SKILL.md"
+    },
+    {
+      "name": "web-source-security-review",
+      "collection": "web-subagent",
+      "owner_agent": "web-source-auditor",
+      "description": "Deterministic Tri-Lens review of browser JavaScript/TypeScript and server-rendered Web templates across all scoped files, functions, D1-D10, and the unified application/AI vulnerability catalog. Use for JS/TS, HTML, JSP, FreeMarker, Velocity, Handlebars, Vue, Svelte, and related browser assets.",
+      "brief_zh": "JS/TS、HTML、JSP 及各类模板的输出、浏览器行为与安全边界",
+      "source": ".opencode/skills/web-subagent/web-source-security-review/SKILL.md"
+    },
+    {
+      "name": "python-deserialization-review",
+      "collection": "python-subagent",
+      "owner_agent": "python-source-auditor",
+      "description": "Review Python deserialization for pickle, YAML, jsonpickle, and other unsafe object reconstruction risks.",
+      "brief_zh": "pickle、YAML、jsonpickle 等对象重建",
+      "source": ".opencode/skills/python-subagent/python-deserialization-review/SKILL.md"
+    },
+    {
+      "name": "python-execution-review",
+      "collection": "python-subagent",
+      "owner_agent": "python-source-auditor",
+      "description": "Review Python code for command execution, dynamic code execution, plugin loading, import abuse, and template expression risks.",
+      "brief_zh": "命令、动态代码、插件、import 与模板求值",
+      "source": ".opencode/skills/python-subagent/python-execution-review/SKILL.md"
+    },
+    {
+      "name": "python-web-framework-review",
+      "collection": "python-subagent",
+      "owner_agent": "python-source-auditor",
+      "description": "Review Django, Flask, FastAPI, and Starlette applications for auth, CSRF/CORS, SSRF, file handling, and framework misconfiguration.",
+      "brief_zh": "Django、Flask、FastAPI、Starlette 的认证、CSRF/CORS、文件和配置",
+      "source": ".opencode/skills/python-subagent/python-web-framework-review/SKILL.md"
+    },
+    {
+      "name": "python-dependency-config-review",
+      "collection": "python-subagent",
+      "owner_agent": "python-source-auditor",
+      "description": "Review Python dependencies, configuration loading, secrets handling, logging, and deployment defaults for security weaknesses.",
+      "brief_zh": "依赖、配置加载、密钥、日志与部署默认值",
+      "source": ".opencode/skills/python-subagent/python-dependency-config-review/SKILL.md"
+    },
+    {
+      "name": "platform-security-review",
+      "collection": "platform-subagent",
+      "owner_agent": "platform-security-auditor",
+      "description": "Tri-Lens review guidance for dependency, build, CI/CD, container, orchestration, gateway, secret, network, and IaC artifacts. Use when auditing language-neutral platform surfaces across D1-D10.",
+      "brief_zh": "依赖、构建、CI/CD、网关、密钥、网络、IaC 与部署制品",
+      "source": ".opencode/skills/platform-subagent/platform-security-review/SKILL.md"
+    },
+    {
+      "name": "ai-system-security-review",
+      "collection": "ai-subagent",
+      "owner_agent": "ai-security-auditor",
+      "description": "Audit AI, LLM, agentic, RAG, vector, memory, MCP/tool, model-provider, training, evaluation, and model-artifact security as a full-repository Tri-Lens overlay. Use when reviewing any repository for AI-specific attack paths, including projects where AI applicability must be proven absent rather than assumed.",
+      "brief_zh": "AI/LLM、Agent、RAG/vector、记忆、工具/MCP、模型供应链与评估风险",
+      "source": ".opencode/skills/ai-subagent/ai-system-security-review/SKILL.md"
+    },
+    {
+      "name": "agent-tool-boundary-mining",
+      "collection": "ai-subagent",
+      "owner_agent": "ai-security-auditor",
+      "description": "Statically mine Agent tool execution RCE, unauthorized API/function/skill/MCP invocation, and framework access-control bypass from source with case-grounded trust-boundary evidence. Use for task-board ai tasks selecting agent-tool-boundaries.v1; does not build attack prompts or execute validation.",
+      "brief_zh": "API/function/skill/MCP 导致的工具执行 RCE、越权调用、框架访问控制绕过；只做证据驱动的静态挖掘",
+      "source": ".opencode/skills/ai-subagent/agent-tool-boundary-mining/SKILL.md"
+    },
+    {
+      "name": "tri-lens-evidence-correlation",
+      "collection": "evidence-correlation-subagent",
+      "owner_agent": "security-evidence-correlator",
+      "description": "Deterministically normalize Focus-Area Tri-Lens coverage plus blind, seeded-variant, and system-chain evidence; deduplicate candidates, merge evidence facets, expose contradictions and gaps, and generate targeted follow-up packets after an audit round.",
+      "brief_zh": "旧流程覆盖归一、去重、冲突、缺口和后续工作包",
+      "source": ".opencode/skills/evidence-correlation-subagent/tri-lens-evidence-correlation/SKILL.md"
+    },
+    {
+      "name": "system-attack-chain-hunting",
+      "collection": "attack-chain-subagent",
+      "owner_agent": "security-attack-chain-hunter",
+      "description": "Hunt cross-module and cross-trust-boundary attack chains after Focus Area Tri-Lens, blind, and seeded-variant discovery finishes. Use when partition findings must be recombined into system-level hypotheses and every Focus Area, trust boundary, and asset must receive an explicit chain-review state.",
+      "brief_zh": "跨模块和信任边界组合攻击链，核查每个连接条件",
+      "source": ".opencode/skills/attack-chain-subagent/system-attack-chain-hunting/SKILL.md"
+    },
+    {
+      "name": "vulnerability-validation",
+      "collection": "vulnerability-validator-subagent",
+      "owner_agent": "vulnerability-validator",
+      "description": "按任务显式协议消费贯穿式运行证据或旧版 quick 结果，编排独立正方、反方与 Moderator 复核，输出版本化真实性 routing。新协议动态支持不免除复核，缺少环境自动跳过动态。",
+      "brief_zh": "按版本消费运行或旧 quick 证据，组织独立三方真实性复核",
+      "source": ".opencode/skills/vulnerability-validator-subagent/vulnerability-validation/SKILL.md"
+    },
+    {
+      "name": "web-runtime-validation",
+      "collection": "dynamic-vulnerability-validator-subagent",
+      "owner_agent": "dynamic-vulnerability-validator",
+      "description": "Validate a sealed non-XSS Web vulnerability request against an explicitly authorized loopback test application with Chrome DevTools MCP and emit sanitized digest-bound runtime evidence. Use for catalog types whose applies_to includes web; use web-xss-runtime-validation instead for JW-INJECT-06.",
+      "brief_zh": "显式人工请求的非 XSS Web 验证，保留 loopback 旧契约",
+      "source": ".opencode/skills/dynamic-vulnerability-validator-subagent/web-runtime-validation/SKILL.md"
+    },
+    {
+      "name": "web-xss-runtime-validation",
+      "collection": "dynamic-vulnerability-validator-subagent",
+      "owner_agent": "dynamic-vulnerability-validator",
+      "description": "Validate an explicitly requested JW-INJECT-06 Web XSS finding against a user-authorized localhost application through an isolated Chrome DevTools MCP session. Use when runtime proof must distinguish a CDP-only DOM probe, application-rendered XSS, stored XSS surviving refresh, and stored XSS executing for a second authorized test account, while preserving sanitized digest-bound evidence and cleanup failures.",
+      "brief_zh": "授权 localhost XSS 验证，强调应用提交、重访和隔离身份",
+      "source": ".opencode/skills/dynamic-vulnerability-validator-subagent/web-xss-runtime-validation/SKILL.md"
+    },
+    {
+      "name": "winapp-ui-automation",
+      "collection": "dynamic-vulnerability-validator-subagent",
+      "owner_agent": "dynamic-vulnerability-validator",
+      "description": "Inspect and control authorized local Windows test applications through winapp CLI UI Automation, using scoped HWNDs, selectors, state checks and minimized screenshots. Use for Windows desktop automation planning and, only when the repository enables a Windows runtime controller, execution. Browser validation continues to use Chrome DevTools MCP.",
+      "brief_zh": "授权 Windows 测试程序的控件、窗口、状态检查与最小截图",
+      "source": ".opencode/skills/dynamic-vulnerability-validator-subagent/winapp-ui-automation/SKILL.md"
+    },
+    {
+      "name": "audit-skill-optimization",
+      "collection": "security-skill-optimizer-subagent",
+      "owner_agent": "security-skill-optimizer",
+      "description": "Improve threat-led Focus Area Tri-Lens security audit skills from completed digest-bound local truth-validation routing, tagged by threat, Focus Area, dimension, lens, and discovery track without bloating prompts or changing agent role boundaries.",
+      "brief_zh": "根据已裁决结果调整方法和提示，保持角色边界",
+      "source": ".opencode/skills/security-skill-optimizer-subagent/audit-skill-optimization/SKILL.md"
+    },
+    {
+      "name": "joern-rule-maintenance",
+      "collection": "security-skill-optimizer-subagent",
+      "owner_agent": "security-skill-optimizer",
+      "description": "Maintain dimension-and-lens-tagged Joern static-analysis rules and metadata from completed digest-bound local truth-validation TRUE_POSITIVE and FALSE_POSITIVE results.",
+      "brief_zh": "从真假裁决维护 Joern 规则和元数据",
+      "source": ".opencode/skills/security-skill-optimizer-subagent/joern-rule-maintenance/SKILL.md"
+    },
+    {
+      "name": "audit-casebase-maintenance",
+      "collection": "security-skill-optimizer-subagent",
+      "owner_agent": "security-skill-optimizer",
+      "description": "Maintain dimension-and-lens-tagged vulnerability and false-positive cases used to improve future Tri-Lens source and platform security audits.",
+      "brief_zh": "维护带维度、视角和反例的漏洞与误报案例",
+      "source": ".opencode/skills/security-skill-optimizer-subagent/audit-casebase-maintenance/SKILL.md"
+    }
+  ],
+  "mcp": [
+    {
+      "name": "chrome-devtools",
+      "enabled": true,
+      "status": "enabled-local",
+      "source": ".opencode/opencode.json",
+      "command": [
+        "npx",
+        "-y",
+        "chrome-devtools-mcp@1.8.0",
+        "--isolated=true",
+        "--redact-network-headers=true",
+        "--no-usage-statistics",
+        "--no-performance-crux"
+      ]
+    },
+    {
+      "name": "cpp_index",
+      "enabled": false,
+      "status": "placeholder",
+      "source": ".opencode/opencode.json",
+      "command": null
+    },
+    {
+      "name": "jvm_index",
+      "enabled": false,
+      "status": "placeholder",
+      "source": ".opencode/opencode.json",
+      "command": null
+    },
+    {
+      "name": "python_index",
+      "enabled": false,
+      "status": "placeholder",
+      "source": ".opencode/opencode.json",
+      "command": null
+    },
+    {
+      "name": "audit_lab",
+      "enabled": false,
+      "status": "placeholder",
+      "source": ".opencode/opencode.json",
+      "command": null
+    },
+    {
+      "name": "windows-control",
+      "enabled": false,
+      "status": "experimental-disabled",
+      "source": ".opencode/opencode.json",
+      "command": [
+        "node",
+        ".opencode/scripts/windows-control-mcp.mjs"
+      ]
+    }
+  ],
+  "runtime_mcp": [
+    {
+      "name": "runtime-browser",
+      "source": ".opencode/lib/runtime-testing/worker-mcp.mjs",
+      "tools": [
+        "register_sensitive_values",
+        "configure_environment",
+        "browser_tools",
+        "browser_call",
+        "submit_result"
+      ]
+    }
+  ],
+  "diagrams": [
+    {
+      "nodes": [
+        {
+          "id": "U",
+          "label": "工作台页面与产品 API"
+        },
+        {
+          "id": "P",
+          "label": "ProductStore 产品与测试对象"
+        },
+        {
+          "id": "R",
+          "label": "AuditRunner 队列与执行工作区"
+        },
+        {
+          "id": "C",
+          "label": "ProductAuditService 多 Repo 批次"
+        },
+        {
+          "id": "O",
+          "label": "Orchestrator 与 Recon Threat subagents"
+        },
+        {
+          "id": "T",
+          "label": "TaskBoard 发布 调度 回执"
+        },
+        {
+          "id": "W",
+          "label": "六类独立静态 Worker"
+        },
+        {
+          "id": "D",
+          "label": "授权运行测试控制器与 Worker"
+        },
+        {
+          "id": "V",
+          "label": "报告质量复核与独立三方"
+        },
+        {
+          "id": "F",
+          "label": "确定性中文报告与漏洞列表"
+        },
+        {
+          "id": "K",
+          "label": "只读 KnowledgeWorkFlow"
+        },
+        {
+          "id": "M",
+          "label": "产品与 Repo 长期记忆"
+        }
+      ],
+      "edges": [
+        {
+          "from": "U",
+          "to": "P",
+          "label": "",
+          "dashed": false
+        },
+        {
+          "from": "U",
+          "to": "R",
+          "label": "",
+          "dashed": false
+        },
+        {
+          "from": "P",
+          "to": "C",
+          "label": "",
+          "dashed": false
+        },
+        {
+          "from": "C",
+          "to": "R",
+          "label": "",
+          "dashed": false
+        },
+        {
+          "from": "R",
+          "to": "O",
+          "label": "",
+          "dashed": false
+        },
+        {
+          "from": "O",
+          "to": "T",
+          "label": "",
+          "dashed": false
+        },
+        {
+          "from": "T",
+          "to": "W",
+          "label": "",
+          "dashed": false
+        },
+        {
+          "from": "R",
+          "to": "D",
+          "label": "",
+          "dashed": false
+        },
+        {
+          "from": "W",
+          "to": "V",
+          "label": "",
+          "dashed": false
+        },
+        {
+          "from": "D",
+          "to": "V",
+          "label": "",
+          "dashed": false
+        },
+        {
+          "from": "V",
+          "to": "F",
+          "label": "",
+          "dashed": false
+        },
+        {
+          "from": "K",
+          "to": "O",
+          "label": "根因 案例 检测器",
+          "dashed": true
+        },
+        {
+          "from": "K",
+          "to": "W",
+          "label": "按需检索",
+          "dashed": true
+        },
+        {
+          "from": "M",
+          "to": "O",
+          "label": "历史事实 人工理由 待办",
+          "dashed": true
+        },
+        {
+          "from": "W",
+          "to": "M",
+          "label": "本轮观察",
+          "dashed": false
+        },
+        {
+          "from": "F",
+          "to": "M",
+          "label": "结论与留存制品",
+          "dashed": false
+        },
+        {
+          "from": "M",
+          "to": "C",
+          "label": "",
+          "dashed": false
+        }
+      ]
+    },
+    {
+      "nodes": [
+        {
+          "id": "A",
+          "label": "创建任务 产品与 Repo 选择"
+        },
+        {
+          "id": "B",
+          "label": "排队 冻结源码与范围 创建执行工作区"
+        },
+        {
+          "id": "C",
+          "label": "Recon 范围 入口 技术栈 函数与接口清单"
+        },
+        {
+          "id": "D",
+          "label": "Threat Modeler 高风险 Focus 或用户 API 规划"
+        },
+        {
+          "id": "E",
+          "label": "Orchestrator 分批 publish 然后 seal"
+        },
+        {
+          "id": "F",
+          "label": "平台 Monitor 分派六类独立静态 Worker"
+        },
+        {
+          "id": "G",
+          "label": "源码追踪 按需扫描 知识与记忆 BAC或AI专项"
+        },
+        {
+          "id": "H",
+          "label": "接收报告和回执 全部 REPORTED 或显式 GAP"
+        },
+        {
+          "id": "I",
+          "label": "review-input 全任务报告质量复核"
+        },
+        {
+          "id": "J",
+          "label": "有候选时 独立正方 反方 Moderator"
+        },
+        {
+          "id": "K",
+          "label": "review与finalize 中文报告 漏洞列表 记忆留存"
+        }
+      ],
+      "edges": [
+        {
+          "from": "A",
+          "to": "B",
+          "label": "",
+          "dashed": false
+        },
+        {
+          "from": "B",
+          "to": "C",
+          "label": "",
+          "dashed": false
+        },
+        {
+          "from": "C",
+          "to": "D",
+          "label": "",
+          "dashed": false
+        },
+        {
+          "from": "D",
+          "to": "E",
+          "label": "",
+          "dashed": false
+        },
+        {
+          "from": "E",
+          "to": "F",
+          "label": "",
+          "dashed": false
+        },
+        {
+          "from": "F",
+          "to": "G",
+          "label": "",
+          "dashed": false
+        },
+        {
+          "from": "G",
+          "to": "H",
+          "label": "",
+          "dashed": false
+        },
+        {
+          "from": "H",
+          "to": "I",
+          "label": "",
+          "dashed": false
+        },
+        {
+          "from": "I",
+          "to": "J",
+          "label": "",
+          "dashed": false
+        },
+        {
+          "from": "J",
+          "to": "K",
+          "label": "",
+          "dashed": false
+        }
+      ]
+    },
+    {
+      "nodes": [
+        {
+          "id": "A",
+          "label": "创建并冻结 单Repo源码与明确动态授权"
+        },
+        {
+          "id": "B",
+          "label": "Recon Threat与任务规划"
+        },
+        {
+          "id": "C",
+          "label": "publish seal Monitor与静态Worker"
+        },
+        {
+          "id": "D",
+          "label": "静态报告接收 mining_complete"
+        },
+        {
+          "id": "E",
+          "label": "动态Agent理解私有环境 登记后CONTACT"
+        },
+        {
+          "id": "F",
+          "label": "控制器串行 EXPLORE与CONFIRM"
+        },
+        {
+          "id": "G",
+          "label": "动态收尾 close或cancel 清理与证据封存"
+        },
+        {
+          "id": "H",
+          "label": "review-input 合并源码与运行候选"
+        },
+        {
+          "id": "I",
+          "label": "逐任务报告质量复核"
+        },
+        {
+          "id": "J",
+          "label": "有候选时 独立正方 反方 Moderator"
+        },
+        {
+          "id": "K",
+          "label": "review与finalize 中文报告 漏洞与清理缺口"
+        }
+      ],
+      "edges": [
+        {
+          "from": "A",
+          "to": "B",
+          "label": "",
+          "dashed": false
+        },
+        {
+          "from": "B",
+          "to": "C",
+          "label": "",
+          "dashed": false
+        },
+        {
+          "from": "C",
+          "to": "D",
+          "label": "",
+          "dashed": false
+        },
+        {
+          "from": "A",
+          "to": "E",
+          "label": "",
+          "dashed": false
+        },
+        {
+          "from": "E",
+          "to": "B",
+          "label": "正常访问与登录基线",
+          "dashed": true
+        },
+        {
+          "from": "E",
+          "to": "F",
+          "label": "",
+          "dashed": false
+        },
+        {
+          "from": "C",
+          "to": "F",
+          "label": "runtime_requests 经Orchestrator授权入队",
+          "dashed": false
+        },
+        {
+          "from": "D",
+          "to": "G",
+          "label": "",
+          "dashed": false
+        },
+        {
+          "from": "F",
+          "to": "G",
+          "label": "",
+          "dashed": false
+        },
+        {
+          "from": "D",
+          "to": "H",
+          "label": "",
+          "dashed": false
+        },
+        {
+          "from": "G",
+          "to": "H",
+          "label": "",
+          "dashed": false
+        },
+        {
+          "from": "H",
+          "to": "I",
+          "label": "",
+          "dashed": false
+        },
+        {
+          "from": "I",
+          "to": "J",
+          "label": "",
+          "dashed": false
+        },
+        {
+          "from": "J",
+          "to": "K",
+          "label": "",
+          "dashed": false
+        }
+      ]
+    },
+    {
+      "nodes": [
+        {
+          "id": "A",
+          "label": "绑定产品根目录或模块目录"
+        },
+        {
+          "id": "B",
+          "label": "递归识别Git与无Git Repo 人工修正边界"
+        },
+        {
+          "id": "C",
+          "label": "选择范围 冻结Repo集合 版本 配置与记忆水位"
+        },
+        {
+          "id": "D",
+          "label": "产品批次调度 默认同时2个Repo"
+        },
+        {
+          "id": "E",
+          "label": "各Repo执行单Repo静态TaskBoard完整流程"
+        },
+        {
+          "id": "F",
+          "label": "报告与观察入库 本轮子任务终态"
+        },
+        {
+          "id": "G",
+          "label": "跨Repo Analyzer 回源核查关系与候选"
+        },
+        {
+          "id": "H",
+          "label": "有候选时 跨Repo正方 反方 Moderator"
+        },
+        {
+          "id": "I",
+          "label": "关系建议与TODO 寻入口 查同类 验修复 补链"
+        },
+        {
+          "id": "J",
+          "label": "产品报告 跨Repo裁决 去重统计 剩余缺口"
+        }
+      ],
+      "edges": [
+        {
+          "from": "A",
+          "to": "B",
+          "label": "",
+          "dashed": false
+        },
+        {
+          "from": "B",
+          "to": "C",
+          "label": "",
+          "dashed": false
+        },
+        {
+          "from": "C",
+          "to": "D",
+          "label": "",
+          "dashed": false
+        },
+        {
+          "from": "D",
+          "to": "E",
+          "label": "",
+          "dashed": false
+        },
+        {
+          "from": "E",
+          "to": "F",
+          "label": "",
+          "dashed": false
+        },
+        {
+          "from": "F",
+          "to": "G",
+          "label": "",
+          "dashed": false
+        },
+        {
+          "from": "G",
+          "to": "H",
+          "label": "",
+          "dashed": false
+        },
+        {
+          "from": "H",
+          "to": "I",
+          "label": "",
+          "dashed": false
+        },
+        {
+          "from": "I",
+          "to": "D",
+          "label": "full模式且范围与预算允许",
+          "dashed": false
+        },
+        {
+          "from": "I",
+          "to": "J",
+          "label": "",
+          "dashed": false
+        }
+      ]
+    }
+  ],
+  "document": {
+    "path": "docs/workbench-project-design.md",
+    "sha256": "24e8b7a87dce27965b461fc9a8354dd1b82fb25ca07f925005b40f0f11737424"
+  },
+  "evidence": [
+    {
+      "path": ".opencode/agent-manifest/mcp-map.json",
+      "sha256": "230074d1955fc2c3c06752bf657992864f075f2538e6e443fdf499353b454df7"
+    },
+    {
+      "path": ".opencode/agent-manifest/roles.json",
+      "sha256": "1122c5579d109eea6610ac09a66319f95bddda4a72206081b54c0c80e873f137"
+    },
+    {
+      "path": ".opencode/agent-manifest/skill-map.json",
+      "sha256": "0c66759ed01f294af7a69b4b348f92183b8dd5eb4ee3f2a69e00ebcb148fa78b"
+    },
+    {
+      "path": ".opencode/agents/ai-security-auditor.md",
+      "sha256": "400b644d03ecfe4625f8399e2e201e49e5a0d807b2269319571ac919af878b5c"
+    },
+    {
+      "path": ".opencode/agents/c-cpp-source-auditor.md",
+      "sha256": "b8c558cea62237123bc3c5273e7b71fd6b38bb82235acb39e773ec8ee40e7794"
+    },
+    {
+      "path": ".opencode/agents/dynamic-vulnerability-validator.md",
+      "sha256": "3819f2a5f5b3f626ca575233a23e7a969acb8c50fc5cf50b0557afd731e64be4"
+    },
+    {
+      "path": ".opencode/agents/java-source-auditor.md",
+      "sha256": "2b21fe880779b837b68843aabb158cb6d2ac41482d307e5127c51b1b0bd1f325"
+    },
+    {
+      "path": ".opencode/agents/platform-security-auditor.md",
+      "sha256": "859cc8ae640ddcb8c87e0c492e973977ba2ce4d3560c543592d3ace0c43406c5"
+    },
+    {
+      "path": ".opencode/agents/python-source-auditor.md",
+      "sha256": "80b1b5c661776087e3acd6494d987c52943a077b3ddda8a250b4c04a98504e2a"
+    },
+    {
+      "path": ".opencode/agents/quick-dynamic-validator.md",
+      "sha256": "b574f61959a32a84a7128740d96d3d919f12e47cec3b61c13b02f5729b4117ef"
+    },
+    {
+      "path": ".opencode/agents/security-attack-chain-hunter.md",
+      "sha256": "09d2a45ac1b660b2e7f1a98ab15496ce65939c1f4943f68a1660711505124769"
+    },
+    {
+      "path": ".opencode/agents/security-audit-orchestrator.md",
+      "sha256": "17e5cf1b2b02d084ce16d0fd1d55506299f5b175aa748b78f7ec0596798f27a4"
+    },
+    {
+      "path": ".opencode/agents/security-evidence-correlator.md",
+      "sha256": "e40aec77fe8765bb69389d2b781c0d9ff8886e2294dbcb7b6ce1ab4344743c28"
+    },
+    {
+      "path": ".opencode/agents/security-finding-adjudicator.md",
+      "sha256": "dc96c397499845d44eb404ae1bbf87e05f66503745b1c5282ecced63070f56de"
+    },
+    {
+      "path": ".opencode/agents/security-intel-collector.md",
+      "sha256": "599d7836b34ac946b866f12bcff119d20ed874a173bbef85816cd9a14796d725"
+    },
+    {
+      "path": ".opencode/agents/security-skill-optimizer.md",
+      "sha256": "9b4afc6605dc943a84a1b6f6d5cb08b7aa2a5a9c2515264b943bd6908b23e152"
+    },
+    {
+      "path": ".opencode/agents/security-threat-modeler.md",
+      "sha256": "637951bfa2640c2510a5f58c50ce0deaa288601b72fcb91b4eb42df36ab29572"
+    },
+    {
+      "path": ".opencode/agents/vulnerability-affirmative.md",
+      "sha256": "c318fbd3bb519c077bdfe08c50ec14de0eafb7fe4dbd449d08d17183b3427ea4"
+    },
+    {
+      "path": ".opencode/agents/vulnerability-moderator.md",
+      "sha256": "097546da3f178f6f7d630c09144c398a156ffcb1e3869d6401898440c529663a"
+    },
+    {
+      "path": ".opencode/agents/vulnerability-negative.md",
+      "sha256": "bdb511b64ee6319d27db9180eb59f2f575cc305726963e3648103c9f35d660a5"
+    },
+    {
+      "path": ".opencode/agents/vulnerability-validator.md",
+      "sha256": "bfcd68de9fa1d973256845dbf49c52b4405f2c99222bbdea74a12274b24d01df"
+    },
+    {
+      "path": ".opencode/agents/web-source-auditor.md",
+      "sha256": "533f61a2008736aeb4102df1c0ae4299a21a594742c6f0651efa2eae3c0c10a7"
+    },
+    {
+      "path": ".opencode/lib/agent-mining/service.mjs",
+      "sha256": "7d47a4b493548c3a853f947aa9f150ea35b22823d6789d8faa11615d662b3e5a"
+    },
+    {
+      "path": ".opencode/lib/agent-slots.mjs",
+      "sha256": "cb2f51970ae154a41e2c12b7decf707eec3869ce6e7a697961d86ad69079a76a"
+    },
+    {
+      "path": ".opencode/lib/bac/workflow.md",
+      "sha256": "7bf4c3c958588a02f982f9cc41a436f7396ac8e4f96e3f993254676b5987b6ac"
+    },
+    {
+      "path": ".opencode/lib/knowledge-workflow.md",
+      "sha256": "51dcdeb0a9086cd31d1e8e9c66fdf15ac2f291b0ad8cfd6b71ea331dd5281daf"
+    },
+    {
+      "path": ".opencode/lib/knowledge-workflow.mjs",
+      "sha256": "07c1120aa8fc99e5ab2b65a9af89e5c1f6c633fe5012fce48d88c3b0d952a574"
+    },
+    {
+      "path": ".opencode/lib/product-memory/campaign.mjs",
+      "sha256": "b424a4a0db8d11471cfe300dfc4019991105566ef94425ab37a1511da43495df"
+    },
+    {
+      "path": ".opencode/lib/product-memory/cross-worker.md",
+      "sha256": "80955a9ecf6eb31dfd47b605417c20d0c51cbe60054e79e881fb0ae34cc56078"
+    },
+    {
+      "path": ".opencode/lib/product-memory/cross-worker.mjs",
+      "sha256": "577432adad7b668d28f3e2b0d59eb2a780b60280aa68821e5d8e4bf1d8d4ce0b"
+    },
+    {
+      "path": ".opencode/lib/product-memory/schema.mjs",
+      "sha256": "bd1119d4d15c798ba5157cb8f22adbeaf17d9a628fa0bdf4d6571f23dbae17b4"
+    },
+    {
+      "path": ".opencode/lib/product-memory/store.mjs",
+      "sha256": "8e1904a2eb309c5334dca91d9bf6b925679b21f8c799c6404a69c0033d67f744"
+    },
+    {
+      "path": ".opencode/lib/product-memory/topology.mjs",
+      "sha256": "d56f012688e08458dbe829da3ed6f4a90d4baf974bfda1ff8c701c2286c16f81"
+    },
+    {
+      "path": ".opencode/lib/runtime-testing/browser.mjs",
+      "sha256": "5152901f1fd1424a4eacb9bef03bc58bd90b4dbe8ccbad4ae57b81c987a0d4a1"
+    },
+    {
+      "path": ".opencode/lib/runtime-testing/environment-prompt.mjs",
+      "sha256": "5072253f5987596ee10cceb4e9235903f42e856d668831a4a1fc641cf3ec9976"
+    },
+    {
+      "path": ".opencode/lib/runtime-testing/service.mjs",
+      "sha256": "b1104e985d839845886eb0d5bf926c7044651451ae09a93ae978a4512f55ebdc"
+    },
+    {
+      "path": ".opencode/lib/runtime-testing/worker-mcp.mjs",
+      "sha256": "e81567b1dd636a42027a16c7f997c7f83f62e1dd8a294d4ca41ce5248b541036"
+    },
+    {
+      "path": ".opencode/lib/runtime-testing/workflow.md",
+      "sha256": "16fdcfb9047557914df7047965d25d8f971dfe2d740a5d9fb8120afbed522fa8"
+    },
+    {
+      "path": ".opencode/lib/task-board/contract.mjs",
+      "sha256": "191ae13936742d7503624764a5cb36142a5101177f6a3086bdc15c435094239d"
+    },
+    {
+      "path": ".opencode/lib/task-board/review.mjs",
+      "sha256": "682f13869109c5ce52917551752ce8f581d586787a5b91823a6723b0b7cc997a"
+    },
+    {
+      "path": ".opencode/lib/task-board/service.mjs",
+      "sha256": "c790874eba12b3e63f9524311b714becc98892b329adf165987a6d75c110fd84"
+    },
+    {
+      "path": ".opencode/lib/task-board/worker.md",
+      "sha256": "261e564e61a06b1d06d74fe8467553bd03bf41b10ba8d5236ee6a39d6d6205a0"
+    },
+    {
+      "path": ".opencode/lib/task-board/workflow.md",
+      "sha256": "483cf8de0af24250703a8e5025c972d44270eadddaac2116ed02bc33ea4a9526"
+    },
+    {
+      "path": ".opencode/opencode.json",
+      "sha256": "73cbc16a12cf29cd81bb1fc399354b4f7fdda13f9f9ae534c3f4a7e19969a8fb"
+    },
+    {
+      "path": ".opencode/opencode.json.bak",
+      "sha256": "73cbc16a12cf29cd81bb1fc399354b4f7fdda13f9f9ae534c3f4a7e19969a8fb"
+    },
+    {
+      "path": ".opencode/scripts/static-scan.mjs",
+      "sha256": "4bbd150286fa47d017e1b23c355189ef3416b745c000d0d4814538663efda9e0"
+    },
+    {
+      "path": ".opencode/scripts/windows-control-mcp.mjs",
+      "sha256": "1541915d429fb33db42b279548f6e9d7c14e9d30fbaea2161563e26f222585c8"
+    },
+    {
+      "path": ".opencode/skills/ai-subagent/agent-tool-boundary-mining/SKILL.md",
+      "sha256": "aea36818cdd4667caf67ba45d16f4295d1cabee909bae3a5d012f5334159ffbc"
+    },
+    {
+      "path": ".opencode/skills/ai-subagent/ai-system-security-review/SKILL.md",
+      "sha256": "7d0f373f47d74fc684f60c4b51bfd73d59f2d4bf8fecc26f52f2841ee7d466c2"
+    },
+    {
+      "path": ".opencode/skills/ai-subagent/collection.json",
+      "sha256": "7f83b7f23bc577da70fc29baab5a3eec2627523bb281d85588b61c01ef2e8ed8"
+    },
+    {
+      "path": ".opencode/skills/attack-chain-subagent/collection.json",
+      "sha256": "1f0ccc30b98737a9fe01fdabb303b23a6699713b50bb7dbca39953019ed65809"
+    },
+    {
+      "path": ".opencode/skills/attack-chain-subagent/system-attack-chain-hunting/SKILL.md",
+      "sha256": "700117fe7a7a80ec3c77839fdfe4b5253a924c49956669f8317dd5285bfabbab"
+    },
+    {
+      "path": ".opencode/skills/c-cpp-subagent/c-cpp-file-privilege-review/SKILL.md",
+      "sha256": "22d84d509787fe8720b8a85100e1f4fb9f0caa177753def7cf4f85c33678d076"
+    },
+    {
+      "path": ".opencode/skills/c-cpp-subagent/c-cpp-memory-safety-review/SKILL.md",
+      "sha256": "f80124533558349b6dd083b57cadca2d0553e31b90af86cafdf54ef73dd34ca7"
+    },
+    {
+      "path": ".opencode/skills/c-cpp-subagent/c-cpp-native-boundary-review/SKILL.md",
+      "sha256": "d02c8df0c0fe5d9b27b5ea32bcb8359410b1f8022f061ab454da7aaaf56e2bf5"
+    },
+    {
+      "path": ".opencode/skills/c-cpp-subagent/collection.json",
+      "sha256": "eb469c1534dbd6e7ca7eb67b94dface7d90158d80d0c6eec805cddab099cc9c8"
+    },
+    {
+      "path": ".opencode/skills/common-subagent/audit-artifact-management/SKILL.md",
+      "sha256": "b20d5d9da810b3f96f8d8b1528ca068f848be8f54cee88ab86cd85dfa4eccc03"
+    },
+    {
+      "path": ".opencode/skills/common-subagent/audit-coverage-accounting/SKILL.md",
+      "sha256": "f4255f8968609667c5f294f015e6f673e62f6a4cc2884fd192ac2f1d8484c1a1"
+    },
+    {
+      "path": ".opencode/skills/common-subagent/audit-coverage-accounting/scripts/build-function-manifests.mjs",
+      "sha256": "93d9e5bbcf80901973cb2bf5a7a569a94e604f103a2d46abb260c5280127bcc2"
+    },
+    {
+      "path": ".opencode/skills/common-subagent/collection.json",
+      "sha256": "38dfaa13d99d43e376e6d607984aa2e9e2f5dd321d912e08317978a08ce5b5e6"
+    },
+    {
+      "path": ".opencode/skills/common-subagent/detect-bac-risks/SKILL.md",
+      "sha256": "6c5485d1cbfa6074e6bbc581ab6bdf868d35e3d10f3e6c2ccdeb2ff114fa398f"
+    },
+    {
+      "path": ".opencode/skills/common-subagent/finding-adjudication/SKILL.md",
+      "sha256": "6df9f581cb087d9f055b7d49f43e9e01ba36a1e5007d25f3e21e1496d904adf6"
+    },
+    {
+      "path": ".opencode/skills/common-subagent/finding-evidence-contract/SKILL.md",
+      "sha256": "6c0e5e4f026866be70d5879370f1dfe3c131e3cedc16e47b76bd0a7fcf4aa897"
+    },
+    {
+      "path": ".opencode/skills/common-subagent/focus-area-vulnerability-discovery/SKILL.md",
+      "sha256": "71aab187b07f5f909dea8a109cadf822c6809200f7c9c95e9def46c355140e9d"
+    },
+    {
+      "path": ".opencode/skills/common-subagent/secure-code-review-common/SKILL.md",
+      "sha256": "1a07ead661e59c81f2eb733c9e54ac401ab4be727ee45ebedb2f8d7d828b65c9"
+    },
+    {
+      "path": ".opencode/skills/dynamic-vulnerability-validator-subagent/collection.json",
+      "sha256": "b235bd7757b34734a110d73bb8ea33ed206132ae1d0bf1aa667efa8e09c2a3ab"
+    },
+    {
+      "path": ".opencode/skills/dynamic-vulnerability-validator-subagent/web-runtime-validation/SKILL.md",
+      "sha256": "7434e0f34a4411db7e4dd48ca38e79539e3630574d27d043733f62eaa23f0d36"
+    },
+    {
+      "path": ".opencode/skills/dynamic-vulnerability-validator-subagent/web-xss-runtime-validation/SKILL.md",
+      "sha256": "f9e36b42c87c1c76244910033f438726a9698e4d0ff07154e998460b437ff638"
+    },
+    {
+      "path": ".opencode/skills/dynamic-vulnerability-validator-subagent/winapp-ui-automation/SKILL.md",
+      "sha256": "440f87e3843742136b90ae0f8b2bc91eceaada9f937bf9a3d1d1990c05b2492b"
+    },
+    {
+      "path": ".opencode/skills/evidence-correlation-subagent/collection.json",
+      "sha256": "01b274085232ac5c7363a4e28cfeaf8679837a68aa9c56ca014dea8cdb76149a"
+    },
+    {
+      "path": ".opencode/skills/evidence-correlation-subagent/tri-lens-evidence-correlation/SKILL.md",
+      "sha256": "b5acb3577bec2e225f08dfa8dbd17fea2d4c1de38e6ba7dab1ee7a7df1c9af68"
+    },
+    {
+      "path": ".opencode/skills/java-subagent/collection.json",
+      "sha256": "f0faac533bcc9ce1740c143238d369f05a95d83284268feba2216bd772542c11"
+    },
+    {
+      "path": ".opencode/skills/java-subagent/java-access-path-analysis/SKILL.md",
+      "sha256": "f5ae2d949344a18e68a2dc1f6da5b10601b2ccdd1d8e0a1136535b3107a842ed"
+    },
+    {
+      "path": ".opencode/skills/java-subagent/java-command-injection/SKILL.md",
+      "sha256": "ef884874c573da64912a53bbfb786916b47df4c7745210d6fbafbf1c89d4434e"
+    },
+    {
+      "path": ".opencode/skills/java-subagent/java-csrf/SKILL.md",
+      "sha256": "92ba38d5bd05e2d45a44e84b95b883663669b6af3a3b277827781a81b954159e"
+    },
+    {
+      "path": ".opencode/skills/java-subagent/java-deserialization-review/SKILL.md",
+      "sha256": "a48f6975041c38ca9d4f318d5407f19c8ab44f152b3eb792ee75a06138968942"
+    },
+    {
+      "path": ".opencode/skills/java-subagent/java-deserialization/SKILL.md",
+      "sha256": "2ef3b3914c8e3df188b8371b131f7ef9857a1157b5d83d87a8baa468c304972f"
+    },
+    {
+      "path": ".opencode/skills/java-subagent/java-file-upload/SKILL.md",
+      "sha256": "d4b39d4a86ec205ab5f02635c266f6b26b70945426c921b63749b08f084b9293"
+    },
+    {
+      "path": ".opencode/skills/java-subagent/java-hardcoded-secrets/SKILL.md",
+      "sha256": "dcddee52ba9ea487cd852d8d9e362dee3519af0a53452fc2ef1dec41d479f5c4"
+    },
+    {
+      "path": ".opencode/skills/java-subagent/java-idor/SKILL.md",
+      "sha256": "0ff60536b01dfaf781e60f55ac988e2e091c06a1b0057ccb300961c98a6b8768"
+    },
+    {
+      "path": ".opencode/skills/java-subagent/java-injection-review/SKILL.md",
+      "sha256": "d44f2ba39af3feb8873159f50ae739f9dc1040f25d3d5bde505ccd4b1d06be03"
+    },
+    {
+      "path": ".opencode/skills/java-subagent/java-jwt-misuse/SKILL.md",
+      "sha256": "a4721d3ee1bb2e257529b1faae387625d4ca4ac48afb0fdbf743b2e2a181362a"
+    },
+    {
+      "path": ".opencode/skills/java-subagent/java-ldap-injection/SKILL.md",
+      "sha256": "a8b25f2a82e656edb94ae461db7642f4673bc09a033c4476a542892713fb3b3e"
+    },
+    {
+      "path": ".opencode/skills/java-subagent/java-log-injection/SKILL.md",
+      "sha256": "0210a68270150d730e2da44000cf4d7a4dae9121aa80c7f068b70443a8b4f8f1"
+    },
+    {
+      "path": ".opencode/skills/java-subagent/java-mass-assignment/SKILL.md",
+      "sha256": "a18f4a8af3f9d0f245cdd42b812cdf72938af461347da1de20a7ef9f436e70eb"
+    },
+    {
+      "path": ".opencode/skills/java-subagent/java-nosql-injection/SKILL.md",
+      "sha256": "c3f46189bcb7fc6055d4114ad6fb12a28fae4ae5884509ff7105be24b1f2d349"
+    },
+    {
+      "path": ".opencode/skills/java-subagent/java-open-redirect/SKILL.md",
+      "sha256": "e941f08c51fddf129348eba34d3e1345406b94af005f29692a0b5e62db26fd76"
+    },
+    {
+      "path": ".opencode/skills/java-subagent/java-path-traversal/SKILL.md",
+      "sha256": "dc77422a5679e7fcd7020ea4e918af4c8affc050117f99bf8b36c519854d0f1e"
+    },
+    {
+      "path": ".opencode/skills/java-subagent/java-resource-exhaustion/SKILL.md",
+      "sha256": "175b17ea1c7dd710120f9710c50ba6c0ad3b6234d1460484f5b1d9fbddaaab32"
+    },
+    {
+      "path": ".opencode/skills/java-subagent/java-spel-injection/SKILL.md",
+      "sha256": "a21666a1d6d2c03e1d9e98daf0e679d2ff0bf6c6a6636a1d09ec5329a452fa6f"
+    },
+    {
+      "path": ".opencode/skills/java-subagent/java-sql-injection/SKILL.md",
+      "sha256": "fdba9088e22ad907e85e43e2fb20f0d8bb6056e48a9ca383809168067f75e0e1"
+    },
+    {
+      "path": ".opencode/skills/java-subagent/java-ssrf/SKILL.md",
+      "sha256": "34921e9dfc38a34889622ff6dcc430a3da40857611154f199cf9afa1497c24cf"
+    },
+    {
+      "path": ".opencode/skills/java-subagent/java-weak-cryptography/SKILL.md",
+      "sha256": "58bf8871c4acf46bf4152cdaae2c4340cba1c2d7da8567382a916a19ce326d3f"
+    },
+    {
+      "path": ".opencode/skills/java-subagent/java-web-comprehensive-review/SKILL.md",
+      "sha256": "d9c6a7c48bae87bef257904d51f497faff234169ade25913b936c1209760d5ea"
+    },
+    {
+      "path": ".opencode/skills/java-subagent/java-web-security-review/SKILL.md",
+      "sha256": "6adb54c50cc99a018d0dbef842184bdcfe3e49c9ffdc79c672e4526abf163079"
+    },
+    {
+      "path": ".opencode/skills/java-subagent/java-xpath-injection/SKILL.md",
+      "sha256": "f0cef88552cf57f2cefca71a53f4f1645a240dcb1cacd54ebff753236656b3d8"
+    },
+    {
+      "path": ".opencode/skills/java-subagent/java-xss/SKILL.md",
+      "sha256": "a76aad7c44da9cd345a7dbefe034f9187933627121bb4548eb3900d7e77cc280"
+    },
+    {
+      "path": ".opencode/skills/java-subagent/java-xxe/SKILL.md",
+      "sha256": "e23df93f1ffacb6db7dbf86d8dc9b882a7512cbac1962c2c266c11ae3981f4a7"
+    },
+    {
+      "path": ".opencode/skills/platform-subagent/collection.json",
+      "sha256": "4ccb46743705330123aa531b4c8b2f78d17a1df41dc258045522554583c82fb2"
+    },
+    {
+      "path": ".opencode/skills/platform-subagent/platform-security-review/SKILL.md",
+      "sha256": "e0a2568c4fcc2825603984230654d145fa5c6ab4506fe4e5c0e7bc8ddffa879e"
+    },
+    {
+      "path": ".opencode/skills/python-subagent/collection.json",
+      "sha256": "798bd6ee8884b353c2068b702214542206e82fc64c9a3b5467963cd02f234510"
+    },
+    {
+      "path": ".opencode/skills/python-subagent/python-dependency-config-review/SKILL.md",
+      "sha256": "22ae526045dc1bc5434ef14373336b77f9ae282100047a5bed39865cc3ca7228"
+    },
+    {
+      "path": ".opencode/skills/python-subagent/python-deserialization-review/SKILL.md",
+      "sha256": "ea8dde23b46f15ebc26ec22af78844cd8378601f2966620e5d46d51a6b846947"
+    },
+    {
+      "path": ".opencode/skills/python-subagent/python-execution-review/SKILL.md",
+      "sha256": "198e94e366e646d9665214aedc7215d73d5f705c4b436e9eaf62a52057281abe"
+    },
+    {
+      "path": ".opencode/skills/python-subagent/python-web-framework-review/SKILL.md",
+      "sha256": "36a97c439e529b5ed43677eaccfb1ed80c2afbbe76d5bfcb31f96157185ceca9"
+    },
+    {
+      "path": ".opencode/skills/security-intel-subagent/collection.json",
+      "sha256": "e53f71a0cd277e8e8de8c0e78f6b0ef4b0624166b882fbd56a0df539104818e2"
+    },
+    {
+      "path": ".opencode/skills/security-intel-subagent/security-recon/SKILL.md",
+      "sha256": "096358f5eeb5b6bf41d45f1b5f37e95267e48a9cd131668bd0774c89c6247158"
+    },
+    {
+      "path": ".opencode/skills/security-skill-optimizer-subagent/audit-casebase-maintenance/SKILL.md",
+      "sha256": "1acfced28338b05fa54611851bc4eb6bdc406435b6b291c1cf72872c9434380f"
+    },
+    {
+      "path": ".opencode/skills/security-skill-optimizer-subagent/audit-skill-optimization/SKILL.md",
+      "sha256": "d2ea30149ad8a0a532df9577039744660204b5aa824906beb93be16f06d4b414"
+    },
+    {
+      "path": ".opencode/skills/security-skill-optimizer-subagent/collection.json",
+      "sha256": "f431fa0aa6398f121aa0aaedfbe4ad5d1f4e980002ef0a33ed97513c85b2660a"
+    },
+    {
+      "path": ".opencode/skills/security-skill-optimizer-subagent/joern-rule-maintenance/SKILL.md",
+      "sha256": "cdf0f7afefbb79406e59d38df8aa61034dc75ce1933a5d8f844c2bd49d1bdf55"
+    },
+    {
+      "path": ".opencode/skills/threat-modeling-subagent/collection.json",
+      "sha256": "b0b5b960066313e13e75d29cb65adbe98619d03d75f5df0faa5ac429eba88f5e"
+    },
+    {
+      "path": ".opencode/skills/threat-modeling-subagent/evidence-backed-threat-modeling/SKILL.md",
+      "sha256": "8640b1fcf6179bb7241af8568323d039bf96f8e19575b4e95e05d12c6938179b"
+    },
+    {
+      "path": ".opencode/skills/threat-modeling-subagent/extract-acp-quadruples/SKILL.md",
+      "sha256": "ff42677cd9952a329c873c175b23160fa4109ff940f6ea46a75fdbc4dfa5a495"
+    },
+    {
+      "path": ".opencode/skills/vulnerability-validator-subagent/collection.json",
+      "sha256": "37eb4f228c90c7f4b8032afdac8d6cc4931cf41a572f4ecdd76229152df84415"
+    },
+    {
+      "path": ".opencode/skills/vulnerability-validator-subagent/vulnerability-validation/SKILL.md",
+      "sha256": "0f07b04484bd6a506062b8fdacaeefb1f56ea481510409a7e94bfcc0a41de48a"
+    },
+    {
+      "path": ".opencode/skills/web-subagent/collection.json",
+      "sha256": "8c244f1d24e20400d1ac006a0f67351d2dcc4fc4ec50de117b101c0cb5b21222"
+    },
+    {
+      "path": ".opencode/skills/web-subagent/web-source-security-review/SKILL.md",
+      "sha256": "51eb4bad064943819f80592028b695c2d3b21597d0a7de40e099147b3dc24cdb"
+    },
+    {
+      "path": ".opencode/web/dynamic-validation-observatory/audit-runner.mjs",
+      "sha256": "0b1bf0dfbe401d6f0f60492000aa949e273a4d1cd112d205fcf329d15a3a34ae"
+    },
+    {
+      "path": ".opencode/web/dynamic-validation-observatory/product-store.mjs",
+      "sha256": "17f341186cb8b85b98a698297b931910a6f12bcad6018d25780c36e631bd425c"
+    },
+    {
+      "path": "AGENTS.md",
+      "sha256": "58c003d3c06adbd8230d69931db92bb118fea51c3d8796fff90386125a502b18"
+    },
+    {
+      "path": "docs/agent-vulnerability-mining.md",
+      "sha256": "9b5f22557b0220777a3b75632589cec32205af5b2ed8a3e63b6586a43b3bffe7"
+    },
+    {
+      "path": "docs/product-memory-implementation.md",
+      "sha256": "6241480adbc1f462a99481fe0a2476f43cfe43bde5f4898149586eb3e55ff64d"
+    }
+  ]
+}

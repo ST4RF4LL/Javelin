@@ -11,17 +11,29 @@ import { AuditQueueScheduler, QueueSettingsStore } from "./audit-queue-scheduler
 import { AuditRunner } from "./audit-runner.mjs";
 import { EnvironmentHealthService } from "./environment-health.mjs";
 import { FindingWorkflowStore } from "./finding-workflow.mjs";
+import { createProvenanceIndex, matchesProvenance } from "./provenance.mjs";
 import { listValidationRequests, listValidationRunDetails, listValidationRuns } from "./model.mjs";
 import { DEFAULT_MODEL_SELECTION, normalizeOpenCodeModel, OpenCodeModelCatalog, OpenCodeModelSettingsStore } from "./opencode-model-settings.mjs";
-import { buildWorkspaceSnapshot } from "./workspace-model.mjs";
+import { auditsFromArtifacts, buildWorkspaceSnapshot } from "./workspace-model.mjs";
+import { applyAuditProgress, mergeAuditPresentation } from "./audit-progress.mjs";
 import { paginateAudits, compactWorkspaceAudits } from "./audit-list.mjs";
 import { createSnapshotCache } from "./snapshot-cache.mjs";
 import { DynamicValidationRunner } from "./validation-runner.mjs";
 import { RequestHistoryStore } from "./request-history-store.mjs";
-import { buildOpenCollectionArchive } from "./bruno-exporter.mjs";
+import { buildOpenCollectionArchive, buildBrunoCollection } from "./bruno-exporter.mjs";
+import { readRuntimeTestingActivity } from "./runtime-testing-activity.mjs";
+import { buildValidationActivity, filterValidationActivity } from "./validation-activity.mjs";
 import { buildHar } from "./har-exporter.mjs";
 import { materializeManualValidationRequests } from "./manual-validation-request-materializer.mjs";
+import { ProductMemoryService } from "../../lib/product-memory/service.mjs";
+import { ProductAuditService } from "../../lib/product-memory/campaign.mjs";
+import { productMemoryRoute } from "../../lib/product-memory/routes.mjs";
 import { ProductStore, UNDEFINED_PRODUCT_ID } from "./product-store.mjs";
+import { controlledBytes } from "../../lib/task-board/contract.mjs";
+import { renderBoardReport } from "../../lib/task-board/review.mjs";
+import { renderStructuredBoardReport } from "../../lib/task-board/report.mjs";
+import { createWorkbenchUiHandler, normalizeModernOrigin } from "./workbench-ui.mjs";
+import { runtimeBuild } from "./runtime-build.mjs";
 
 const HERE = dirname(fileURLToPath(import.meta.url));
 const PROJECT_ROOT = resolve(HERE, "../../..");
@@ -32,7 +44,7 @@ const DEFAULT_OPENCODE_CONFIG = join(PROJECT_ROOT, ".opencode", "opencode.json")
 const DEFAULT_STAGE_REGISTRY = join(PROJECT_ROOT, ".opencode", "skills", "common-subagent", "audit-artifact-management", "contracts", "stage-agent-contracts.json");
 const DEFAULT_ROLES = join(PROJECT_ROOT, ".opencode", "agent-manifest", "roles.json");
 const BIND_HOSTS = new Set(["localhost", "127.0.0.1", "::1", "[::1]", "0.0.0.0"]);
-const MAX_REQUEST_BODY = 64 * 1024;
+const MAX_REQUEST_BODY = 1024 * 1024;
 const MAX_REPORT_BODY = 8 * 1024 * 1024;
 const FINDINGS_PAGE_SIZE = 50;
 const AUDIT_ACTIVE_WORK_STATES = new Set(["queued", "preparing", "recovering", "running", "pausing", "paused", "cancelling"]);
@@ -49,6 +61,7 @@ const STATIC_FILES = new Map([
   ["/", ["index.html", "text/html; charset=utf-8"]],
   ["/index.html", ["index.html", "text/html; charset=utf-8"]],
   ["/app.js", ["app.js", "text/javascript; charset=utf-8"]],
+  ["/product-memory-ui.js", ["product-memory-ui.js", "text/javascript; charset=utf-8"]],
   ["/styles.css", ["styles.css", "text/css; charset=utf-8"]],
   ["/logo_DJ.png", ["logo_DJ.png", "image/png"]],
 ]);
@@ -205,9 +218,10 @@ function filterFindings(findings, url) {
   const severity = url.searchParams.get("severity")?.toUpperCase();
   const query = url.searchParams.get("q")?.trim().toLowerCase();
   return findings.filter(finding => {
+    if (!matchesProvenance(finding, url.searchParams)) return false;
     if (auditId && finding.audit_id !== auditId) return false;
     if (severity && finding.severity !== severity) return false;
-    if (query && !`${finding.id} ${finding.title} ${finding.description ?? ""} ${finding.repository_name ?? ""} ${finding.repository_id ?? ""} ${finding.audit_id ?? ""} ${finding.location?.path ?? ""} ${(finding.evidence ?? []).map(item => item.text ?? "").join(" ")}`.toLowerCase().includes(query)) return false;
+    if (query && !`${finding.id} ${finding.title} ${finding.description ?? ""} ${finding.repository_name ?? ""} ${finding.repository_id ?? ""} ${finding.audit_id ?? ""} ${finding.provenance?.product_name ?? ""} ${finding.provenance?.audit_name ?? ""} ${finding.provenance?.reports.map(report => report.name).join(" ") ?? ""} ${finding.location?.path ?? ""} ${(finding.evidence ?? []).map(item => item.text ?? "").join(" ")}`.toLowerCase().includes(query)) return false;
     return true;
   });
 }
@@ -334,7 +348,9 @@ export function createAuditWorkbenchServer({
   requestHistoryStore: suppliedRequestHistoryStore = null,
   productCatalogPath = null,
   productStore: suppliedProductStore = null,
+  modernWorkbenchOrigin = null,
 } = {}) {
+  const workbenchUi = createWorkbenchUiHandler(modernWorkbenchOrigin);
   const resolvedRuntimeRoot = resolve(runtimeRoot);
   const runner = suppliedRunner ?? new AuditRunner({ stateRoot, platformRoot: PROJECT_ROOT, repositories, configPath: platformConfigPath, enabled: runnerEnabled });
   const queueSettingsStore = suppliedQueueSettingsStore ?? new QueueSettingsStore({
@@ -376,6 +392,12 @@ export function createAuditWorkbenchServer({
     path: productCatalogPath ?? join(dirname(resolve(stateRoot)), "product-catalog.sqlite"),
     platformRoot: PROJECT_ROOT,
   });
+  const productMemory = new ProductMemoryService({ products: productStore, runner, stateRoot: join(dirname(resolve(stateRoot)), "product-memory") });
+  const productAudits = new ProductAuditService({ memory: productMemory, runner, products: productStore, stateRoot: join(dirname(resolve(stateRoot)), "product-audits"),
+    createAudit: (input, key) => withTargetOperationLock(input.target_id, () => runner.createAuditFromTarget(input, key)) });
+  runner.memoryProvider = (audit, repository, paths) => productMemory.prepare(audit, repository, paths);
+  runner.productCampaignGuard = id => productAudits.canDispatch(id);
+  runner.productCampaignState = id => productMemory.store.db?.prepare('SELECT status FROM pm_campaigns WHERE id=?').get(id)?.status;
   const targetOperationLocks = new Map();
 
   async function withTargetOperationLock(targetId, operation) {
@@ -400,7 +422,21 @@ export function createAuditWorkbenchServer({
       await productStore.linkAudit({ auditId: audit.id, productId: UNDEFINED_PRODUCT_ID, targetId: target.id, snapshot: snapshot.snapshot, snapshotDigest: snapshot.digest });
     }
   });
+  productCatalogReady.then(() => productAudits.ready).then(() => { productMemory.start(); productAudits.start(); }).catch(error => { productAudits.lastError = error.message; });
   runner.setTargetOperationGuard?.((audit, operation) => withTargetOperationLock(audit.execution_spec?.target_id ?? audit.repository_id, operation));
+
+  function recordOwnership(record) {
+    const auditId = record.audit_id ?? record.id;
+    const managed = runner.getAudit(auditId);
+    const audit = managed?.repository_id === record.repository_id ? managed : null;
+    const link = audit ? productStore.auditLink(auditId) : null;
+    const target = productStore.targetById(link?.target_id ?? record.repository_id);
+    const product = target ? productStore.assertProduct(target.product_id) : null;
+    return { product_id: product?.id ?? null, product_name: product?.name ?? "未关联产品",
+      product_name_at_creation: link?.product_name_at_creation ?? null,
+      target_id: target?.id ?? null, target_name: target?.name ?? record.repository_name ?? "未关联测试对象",
+      audit_managed: Boolean(audit && link), audit_product_id: audit && link ? product?.id ?? null : null };
+  }
 
   function runtimeSources() {
     const artifacts = new Map(runner.artifactSources().map(source => [source.repository_id, source.reports_root]));
@@ -424,6 +460,7 @@ export function createAuditWorkbenchServer({
       });
     }
     const jobs = new Map(dynamicRunner.listRuns().map(run => [run.id, run]));
+    const attachSource = createProvenanceIndex(await snapshot(), recordOwnership);
     return Promise.all(values.map(async request => {
       const legacyJob = jobs.get(request.id);
       const audit = runner.getAudit(request.audit_id);
@@ -434,7 +471,7 @@ export function createAuditWorkbenchServer({
         "validation-type-unsupported": "该漏洞类型不属于当前 Web 动态验证范围。",
         "validation-result-exists": "该漏洞已有动态验证结果，默认拒绝覆盖。",
       };
-      return {
+      return attachSource({
         ...request,
         artifact_dispatch_ready: request.dispatch_ready,
         audit_managed: auditManaged,
@@ -444,7 +481,7 @@ export function createAuditWorkbenchServer({
           ? "动态验证请求不属于当前工作台受管审计。"
           : request.dispatch_ready ? null : request.dispatch_blockers.map(code => blockerMessages[code] ?? code).join(" "),
         job: jobs.get(request.job_id) ?? (legacyJob?.repository_id === request.repository_id ? legacyJob : null),
-      };
+      }, { findingId: request.finding_id });
     }));
   }
 
@@ -458,23 +495,52 @@ export function createAuditWorkbenchServer({
         repository_name: repository.name,
       });
     }
-    return values.sort((a, b) => String(b.recorded_at ?? "").localeCompare(String(a.recorded_at ?? "")));
+    const attachSource = createProvenanceIndex(await snapshot(), recordOwnership);
+    return values.map(run => attachSource(run, { findingId: run.finding_id })).sort((a, b) => String(b.recorded_at ?? "").localeCompare(String(a.recorded_at ?? "")));
   }
 
   async function httpExchanges() {
-    const records = new Map((await requestHistory.list({ limit: 500 })).map(exchange => [exchange.exchange_id, exchange]));
-    for (const { repository, root } of runtimeSources()) {
-      for (const run of await listValidationRunDetails(root)) {
-        for (const exchange of run.network?.exchanges ?? []) records.set(exchange.exchange_id, {
-          ...exchange,
-          audit_id: run.audit_id,
-          finding_id: run.finding?.id ?? null,
-          repository_id: repository.id,
-          repository_name: repository.name,
-        });
-      }
+    const activity = await validationActivity();
+    return [...activity.exchanges].sort((left, right) => String(right.started_at ?? "").localeCompare(String(left.started_at ?? "")));
+  }
+
+  let validationActivityInFlight = null;
+  function validationActivity() {
+    // Share only concurrent reads; a later request always reads current state.
+    if (!validationActivityInFlight) validationActivityInFlight = readValidationActivity().finally(() => { validationActivityInFlight = null; });
+    return validationActivityInFlight;
+  }
+
+  async function readValidationActivity() {
+    // This display path does not reconcile jobs, materialize requests, or write
+    // audit state. Read existing evidence and current in-memory Runner metadata.
+    await Promise.all([runner.ready, productCatalogReady]);
+    const sources = runner.artifactSources(), audits = runner.listAudits(), snapshots = [];
+    for (const source of sources) {
+      const value = await buildWorkspaceSnapshot({ reportsRoot: source.reports_root, runnerAudits: audits.filter(audit => audit.repository_id === source.repository_id) });
+      for (const key of ["audits", "findings", "reports"]) value[key] = value[key].map(row => ({ ...row,
+        repository_id: source.repository_id, repository_name: source.repository_name,
+        ...(key === "reports" ? { id: scopedResourceId(source.repository_id, row.id) } : {}),
+        ...(key === "findings" ? { resource_id: scopedResourceId(source.repository_id, `${row.audit_id}\0${row.id}`) } : {}) }));
+      snapshots.push(value);
     }
-    return [...records.values()].sort((left, right) => String(right.started_at ?? "").localeCompare(String(left.started_at ?? "")));
+    const data = mergeSnapshots(snapshots), attachSource = createProvenanceIndex(data, recordOwnership);
+    const runtimeCases = [], runtimeExchanges = [], manualRuns = [], requests = [];
+    for (const source of sources) for (const audit of data.audits.filter(row => row.repository_id === source.repository_id && (row.runtime_testing_state || row.runtime_testing))) {
+      const activity = await readRuntimeTestingActivity({ reportsRoot: source.reports_root, repositoryId: source.repository_id, audit });
+      runtimeCases.push(...activity.cases); runtimeExchanges.push(...activity.exchanges);
+    }
+    const jobs = new Map(dynamicRunner.listRuns().map(run => [run.id, run]));
+    for (const { repository, root } of runtimeSources()) {
+      const identity = { repository_id: repository.id, repository_name: repository.name };
+      for (const run of await listValidationRunDetails(root)) manualRuns.push({ ...run, ...identity });
+      for (const request of await listValidationRequests(root)) requests.push({ ...request, ...identity,
+        job: jobs.get(scopedResourceId(repository.id, request.id)) ?? null });
+    }
+    const historicalExchanges = await requestHistory.list({ limit: 500 });
+    const historyCount = requestHistory.records instanceof Map ? requestHistory.records.size : historicalExchanges.length;
+    return { ...buildValidationActivity({ runtimeCases, runtimeExchanges, manualRuns, requests, historicalExchanges, attachSource }),
+      history_window: { limit: 500, returned: historicalExchanges.length, total: historyCount, has_more: historyCount > historicalExchanges.length } };
   }
 
   async function httpExchange(exchangeId) {
@@ -482,15 +548,16 @@ export function createAuditWorkbenchServer({
   }
 
   async function validationRun(resourceId) {
+    const attachSource = createProvenanceIndex(await snapshot(), recordOwnership);
     for (const { repository, root } of runtimeSources()) {
       for (const run of await listValidationRunDetails(root)) {
         const scopedId = scopedResourceId(repository.id, run.id);
-        if (resourceId === scopedId || resourceId === run.id) return {
+        if (resourceId === scopedId || resourceId === run.id) return attachSource({
           ...run,
           resource_id: scopedId,
           repository_id: repository.id,
           repository_name: repository.name,
-        };
+        }, { findingId: run.finding?.id });
       }
     }
     return null;
@@ -532,9 +599,10 @@ export function createAuditWorkbenchServer({
   }
 
   function targetHasRunningWork(targetId) {
+    const campaignBusy = productMemory.store.db?.prepare("SELECT 1 FROM pm_nodes n JOIN pm_jobs j ON j.repo_id=n.id JOIN pm_campaigns c ON c.id=j.campaign_id WHERE n.target_id=? AND c.status IN ('RUNNING','PAUSED','CANCELLING') LIMIT 1").get(targetId);
     const auditBusy = runner.listAudits().some(audit => audit.repository_id === targetId && AUDIT_ACTIVE_WORK_STATES.has(audit.status));
     const validationBusy = dynamicRunner.listRuns().some(run => run.repository_id === targetId && VALIDATION_RUNNING_STATES.has(run.status));
-    return auditBusy || validationBusy;
+    return Boolean(campaignBusy || auditBusy || validationBusy);
   }
 
   async function assertProductCanArchive(productId) {
@@ -563,7 +631,7 @@ export function createAuditWorkbenchServer({
   // Display reads share a bounded snapshot with live Runner state overlaid.
   async function buildSnapshot() {
     const operation = (async () => {
-      await Promise.all([runner.ready, findingWorkflow.ready, queueScheduler.ready, modelSettingsStore.ready]);
+      await Promise.all([runner.ready, findingWorkflow.ready, queueScheduler.ready, modelSettingsStore.ready, productCatalogReady]);
       await runner.reconcileTerminalCompletions("workspace-watchdog");
       const runnerAudits = await runner.listAuditsWithTodo();
       const validationByRepository = new Map();
@@ -582,7 +650,7 @@ export function createAuditWorkbenchServer({
         }));
         value.findings = value.findings.map(finding => {
           const resourceId = scopedResourceId(source.repository_id, `${finding.audit_id}\0${finding.id}`);
-          return { ...finding, resource_id: resourceId, repository_id: source.repository_id, repository_name: source.repository_name, workflow: findingWorkflow.get(resourceId) };
+          return { ...finding, resource_id: resourceId, repository_id: source.repository_id, repository_name: source.repository_name, workflow: findingWorkflow.get(resourceId), memory: productMemory.findingSummary(productStore.targetById(source.repository_id)?.product_id, resourceId, finding) };
         });
         value.reports = value.reports.map(report => ({
           ...report,
@@ -598,6 +666,10 @@ export function createAuditWorkbenchServer({
         snapshots.push(value);
       }
       const merged = mergeSnapshots(snapshots);
+      const attachSource = createProvenanceIndex(merged, recordOwnership);
+      merged.audits = merged.audits.map(audit => attachSource(audit));
+      merged.findings = merged.findings.map(finding => attachSource(finding, { findingId: finding.id }));
+      merged.reports = merged.reports.map(report => attachSource(report));
       merged.queue = await queueScheduler.snapshot();
       return merged;
     })();
@@ -614,13 +686,14 @@ export function createAuditWorkbenchServer({
       const previous = audits.get(current.id);
       const audit = { ...previous };
       const fields = ["id", "name", "repository_id", "repository_name", "commit", "status", "version", "event_sequence", "created_at", "updated_at", "terminal", "queue", "paths", "provider_session_id", "task_context", "todo", "model", "error", "exit_code", "recovery_count", "last_recovered_at", "interrupted_at", "interruption_reason", "todo_completion", "stage_delivery", "context_window_recovery", "completion_source"];
+      fields.push("task_protocol", "task_board", "mining_strategy", "runtime_testing", "runtime_testing_state", "bac_analysis");
       for (const field of fields) audit[field] = current[field] ?? null;
       if (!previous) Object.assign(audit, { stages: [], progress: 0, stage: "等待调度", finding_count: 0, artifact_count: 0, runtime_validation_count: 0 });
       if (current.stage_delivery_enforcement === "TODO_ENFORCED" && current.todo?.total > 0) {
         audit.progress = current.todo.progress ?? 0;
         audit.progress_source = "local-audit-todo";
       }
-      audits.set(current.id, audit);
+      audits.set(current.id, applyAuditProgress({ ...audit, provenance: { ...audit.provenance, ...recordOwnership(current), audit_id: current.id, audit_name: current.name } }));
     }
     const items = [...audits.values()].sort((a, b) => String(b.updated_at ?? "").localeCompare(String(a.updated_at ?? "")));
     return { ...data, audits: items, queue: await queueScheduler.snapshot(), summary: {
@@ -630,7 +703,7 @@ export function createAuditWorkbenchServer({
     } };
   }
 
-  async function reportContent(reportId) {
+  async function reportContent(reportId, { original = false } = {}) {
     const data = await snapshot();
     const report = data.reports.find(item => item.id === reportId);
     if (!report) throw Object.assign(new Error("没有找到最终报告。"), { statusCode: 404, code: "report-not-found" });
@@ -643,8 +716,25 @@ export function createAuditWorkbenchServer({
     if (!isWithin(root, candidate)) throw Object.assign(new Error("报告路径越出受控制品目录。"), { statusCode: 409, code: "report-path-invalid" });
     const info = await stat(candidate);
     if (!info.isFile() || info.size > MAX_REPORT_BODY) throw Object.assign(new Error("报告文件不可读取或超过大小限制。"), { statusCode: 413, code: "report-body-too-large" });
-    const bytes = await readFile(candidate);
-    return { report, bytes };
+    const sourceBytes = await readFile(candidate);
+    let bytes = sourceBytes, format = "original";
+    if (!original && report.path === `final/security-audit-report.${report.audit_id}.md`) {
+      try {
+        const model = JSON.parse((await controlledBytes(root, `final/task-board-report-model.${report.audit_id}.json`, MAX_REPORT_BODY)).toString("utf8"));
+        // A reading edition must reproduce the existing artifact before using its model.
+        // The sealed bytes and their verification contract are never overwritten.
+        if (model.protocol === "task-board.v1" && model.artifact_type === "task-board-final-report"
+          && model.audit_id === report.audit_id && [1, 2, 3].includes(model.report_version ?? 1)
+          && renderBoardReport(model) === sourceBytes.toString("utf8")) {
+          const structured = Buffer.from(renderStructuredBoardReport(model), "utf8");
+          if (structured.length <= MAX_REPORT_BODY) { bytes = structured; format = "structured-v3"; }
+        }
+      } catch {
+        // Other report protocols or unavailable models continue to show the sealed original.
+      }
+    }
+    const sha256 = value => createHash("sha256").update(value).digest("hex");
+    return { report, bytes, presentation: { format, source_sha256: sha256(sourceBytes), sha256: sha256(bytes), derived: !bytes.equals(sourceBytes) } };
   }
 
   async function repositoriesSnapshot(url = null) {
@@ -671,17 +761,34 @@ export function createAuditWorkbenchServer({
     }
     try {
       const url = new URL(request.url ?? "/", "http://127.0.0.1");
+      if (workbenchUi(request, response, url)) return;
       // v2 product-space APIs deliberately use the catalog as the authority.
       // v1 continues to expose the historical repository adapter unchanged.
       if (url.pathname.startsWith("/api/v2/products")) {
         await productCatalogReady;
+        if (await productMemoryRoute({ request, response, url, memory: productMemory, campaigns: productAudits, json, requestJson, assertSafeMutation,
+          validateModel: async body => {
+            const settings = await modelSettingsStore.get(); const model = normalizeOpenCodeModel(Object.hasOwn(body, "model") ? body.model : settings.model);
+            const catalog = await modelCatalog.snapshot();
+            if (model && !catalog.models.includes(model)) throw Object.assign(new Error("所选模型不在当前配置中。"), { statusCode: 422 }); return model;
+          } })) return;
+        const findingMemoryPath = url.pathname.match(/^\/api\/v2\/products\/([^/]+)\/findings\/([^/]+)\/memory$/);
+        if (request.method === "GET" && findingMemoryPath) {
+          const productId = decodeURIComponent(findingMemoryPath[1]), findingId = decodeURIComponent(findingMemoryPath[2]);
+          const finding = (await snapshot()).findings.find(row => row.resource_id === findingId);
+          if (!finding || recordOwnership(finding).product_id !== productId) throw Object.assign(new Error("当前产品内没有该发现。"), { statusCode: 404 });
+          json(response, 200, await productMemory.issueForFinding(productId, finding, findingWorkflow.get(findingId))); return;
+        }
         if (request.method === "GET" && url.pathname === "/api/v2/products") {
           json(response, 200, await productStore.listProducts(Object.fromEntries(url.searchParams)));
           return;
         }
         if (request.method === "POST" && url.pathname === "/api/v2/products") {
           assertSafeMutation(request);
-          const product = await productStore.createProduct(await requestJson(request));
+          const body = await requestJson(request);
+          if (body.root_path) await productStore.canonicalScope({ name: "product-root", path: body.root_path }, 0);
+          const product = await productStore.createProduct(body);
+          if (body.root_path) product.root = await productMemory.store.bindRoot(product.id, { path: body.root_path });
           json(response, 201, product, { Location: `/api/v2/products/${encodeURIComponent(product.id)}`, ETag: `"${product.version}"` });
           return;
         }
@@ -791,7 +898,10 @@ export function createAuditWorkbenchServer({
         if (auditsCollection) {
           const scopedProductId = decodeURIComponent(auditsCollection[1]);
           if (request.method === "GET") {
-            json(response, 200, targetAuditPage(await auditsForProduct(scopedProductId), url.searchParams));
+            const current = await auditsForProduct(scopedProductId);
+            const data = await displaySnapshot(url);
+            const summaries = new Map(data.audits.map(audit => [audit.id, audit]));
+            json(response, 200, targetAuditPage(current.map(audit => mergeAuditPresentation(audit, summaries.get(audit.id) ?? auditsFromArtifacts([], [], [audit])[0])), url.searchParams));
             return;
           }
           if (request.method === "POST") {
@@ -810,6 +920,12 @@ export function createAuditWorkbenchServer({
             json(response, 202, audit, { Location: `/api/v2/products/${encodeURIComponent(scopedProductId)}/audits/${encodeURIComponent(audit.id)}`, ETag: `"${audit.version}"` });
             return;
           }
+        }
+        const productTaskBoard = matchProductAuditPath(url.pathname, "task-board");
+        if (request.method === "GET" && productTaskBoard) {
+          await auditForProduct(productTaskBoard.productId, productTaskBoard.auditId);
+          json(response, 200, await runner.taskBoardPage(productTaskBoard.auditId, Object.fromEntries(url.searchParams)));
+          return;
         }
         const productAuditRetryDraft = matchProductAuditPath(url.pathname, "retry-draft");
         if (request.method === "POST" && productAuditRetryDraft) {
@@ -871,12 +987,13 @@ export function createAuditWorkbenchServer({
         const productAudit = matchProductAuditPath(url.pathname);
         if (request.method === "GET" && productAudit) {
           const audit = await auditForProduct(productAudit.productId, productAudit.auditId);
-          json(response, 200, audit, { ETag: `"${audit.version}"` });
+          const data = await displaySnapshot(url);
+          json(response, 200, mergeAuditPresentation(audit, data.audits.find(item => item.id === audit.id) ?? auditsFromArtifacts([], [], [audit])[0]), { ETag: `"${audit.version}"` });
           return;
         }
       }
       if (request.method === "GET" && (url.pathname === "/api/health" || url.pathname === "/api/v1/runtime/health")) {
-        json(response, 200, { ok: true, service: "opencode-audit-workbench", runner: runner.health(), dynamic_runner: dynamicRunner.health(), request_history: { mode: "read_only" } });
+        json(response, 200, { ok: true, service: "opencode-audit-workbench", runtime_build: runtimeBuild, runner: runner.health(), dynamic_runner: dynamicRunner.health(), request_history: { mode: "read_only" }, workbench_ui: { modernUrl: modernWorkbenchOrigin ? "/workbench" : null } });
         return;
       }
       if (request.method === "GET" && url.pathname === "/api/v1/environment") {
@@ -1013,9 +1130,16 @@ export function createAuditWorkbenchServer({
       }
       if (request.method === "GET" && auditId) {
         const data = await displaySnapshot(url);
-        const audit = data.audits.find(item => item.id === auditId);
+        const repositoryId = url.searchParams.get("repository_id");
+        const audit = data.audits.find(item => item.id === auditId && (!repositoryId || item.repository_id === repositoryId));
         if (!audit) json(response, 404, { error: "audit-not-found" });
         else json(response, 200, audit, { ETag: `"${audit.version}"` });
+        return;
+      }
+      const boardAuditId = matchAuditPath(url.pathname, "task-board");
+      if (request.method === "GET" && boardAuditId) {
+        await assertLegacyUndefinedAudit(boardAuditId);
+        json(response, 200, await runner.taskBoardPage(boardAuditId, Object.fromEntries(url.searchParams)));
         return;
       }
       const actionAuditId = matchAuditPath(url.pathname, "actions");
@@ -1069,17 +1193,42 @@ export function createAuditWorkbenchServer({
         return;
       }
       if (request.method === "GET" && url.pathname === "/api/v1/findings") {
-        const data = await snapshot();
+        const data = await displaySnapshot(url);
         json(response, 200, paginateFindings(data.findings, url));
         return;
       }
-      const findingWorkflowId = matchFindingWorkflowPath(url.pathname);
+      if (request.method === "GET" && url.pathname === "/api/v1/provenance/options") {
+        const data = await snapshot();
+        const products = new Map();
+        for (const record of [...data.audits, ...data.reports, ...data.findings]) {
+          const source = record.provenance;
+          if (source?.product_id) products.set(source.product_id, { id: source.product_id, name: source.product_name });
+        }
+        json(response, 200, { products: [...products.values()],
+          audits: data.audits.map(audit => ({ id: audit.id, name: audit.name, product_id: audit.provenance?.product_id, repository_id: audit.repository_id })),
+          reports: data.reports.map(report => ({ id: report.id, name: report.name, audit_id: report.audit_id, product_id: report.provenance?.product_id })) });
+        return;
+      }
+      const findingDetail = url.pathname.match(/^\/api\/v1\/findings\/([^/]+)$/);
+      if (request.method === "GET" && findingDetail) {
+        const data = await snapshot();
+        const finding = data.findings.find(item => item.resource_id === decodeURIComponent(findingDetail[1]));
+        if (!finding) throw Object.assign(new Error("没有找到对应漏洞。"), { statusCode: 404, code: "finding-not-found" });
+        json(response, 200, finding);
+        return;
+      }
+      const productFindingWorkflow = url.pathname.match(/^\/api\/v2\/products\/([^/]+)\/findings\/([^/]+)\/workflow$/);
+      const findingWorkflowId = productFindingWorkflow ? decodeURIComponent(productFindingWorkflow[2]) : matchFindingWorkflowPath(url.pathname);
       if (request.method === "POST" && findingWorkflowId) {
         assertSafeMutation(request);
         const data = await snapshot();
         const finding = data.findings.find(item => item.resource_id === findingWorkflowId);
         if (!finding) throw Object.assign(new Error("没有找到对应漏洞。"), { statusCode: 404, code: "finding-not-found" });
-        await assertLegacyUndefinedAudit(finding.audit_id);
+        if (productFindingWorkflow) {
+          const productId = decodeURIComponent(productFindingWorkflow[1]);
+          productStore.assertProduct(productId);
+          if (recordOwnership(finding).product_id !== productId) throw Object.assign(new Error("产品空间内没有该漏洞。"), { statusCode: 404, code: "product-finding-not-found" });
+        } else await assertLegacyUndefinedAudit(finding.audit_id);
         const body = await requestJson(request);
         const expected = String(request.headers["if-match"] ?? "0").replaceAll('"', "");
         const workflow = await findingWorkflow.update({
@@ -1089,6 +1238,9 @@ export function createAuditWorkbenchServer({
           expectedVersion: expected,
           idempotencyKey: request.headers["idempotency-key"],
         });
+        const owner = recordOwnership(finding).product_id;
+        if (owner) await productMemory.syncLegacyFeedback(owner, finding, workflow);
+        snapshotCache.invalidate();
         json(response, 200, workflow, { ETag: `"${workflow.version}"` });
         return;
       }
@@ -1099,8 +1251,8 @@ export function createAuditWorkbenchServer({
       }
       const reportDownloadId = matchReportPath(url.pathname, "download");
       if (request.method === "GET" && reportDownloadId) {
-        const { report, bytes } = await reportContent(reportDownloadId);
-        const fileName = `security-audit-report.${String(report.audit_id).replaceAll(/[^A-Za-z0-9._-]/g, "-")}.md`;
+        const { report, bytes, presentation } = await reportContent(reportDownloadId, { original: url.searchParams.get("format") === "original" });
+        const fileName = `security-audit-report.${String(report.audit_id).replaceAll(/[^A-Za-z0-9._-]/g, "-")}${presentation.derived ? ".structured" : ""}.md`;
         response.writeHead(200, {
           "Content-Type": "text/markdown; charset=utf-8",
           "Content-Length": bytes.length,
@@ -1112,19 +1264,32 @@ export function createAuditWorkbenchServer({
       }
       const reportId = matchReportPath(url.pathname);
       if (request.method === "GET" && reportId) {
-        const { report, bytes } = await reportContent(reportId);
+        const { report, bytes, presentation } = await reportContent(reportId);
         const body = bytes.toString("utf8");
-        json(response, 200, { ...report, body, rendered_html: markdownRenderer.render(body), rendering: "markdown-it-html-disabled" });
+        json(response, 200, { ...report, body, presentation, rendered_html: markdownRenderer.render(body), rendering: "markdown-it-html-disabled" });
         return;
       }
       if (request.method === "GET" && url.pathname === "/api/v1/validation-requests") {
-        const items = await validationRequests();
+        const items = (await validationRequests()).filter(item => matchesProvenance(item, url.searchParams));
         json(response, 200, { items, count: items.length });
+        return;
+      }
+      if (request.method === "GET" && url.pathname === "/api/v1/runtime-audits") {
+        const data = await displaySnapshot(new URL("/api/v1/workspace?live=1", url));
+        const items = data.audits.filter(audit => audit.runtime_testing_state)
+          .map(audit => ({ ...audit, audit_id: audit.id }))
+          .filter(audit => matchesProvenance(audit, url.searchParams));
+        json(response, 200, { items, count: items.length });
+        return;
+      }
+      if (request.method === "GET" && url.pathname === "/api/v1/validation-activity") {
+        const activity = await validationActivity();
+        json(response, 200, filterValidationActivity(activity, url.searchParams));
         return;
       }
       if (request.method === "GET" && url.pathname === "/api/v1/http-exchanges") {
         const limit = Math.max(1, Math.min(Number(url.searchParams.get("limit")) || 100, 500));
-        const items = (await httpExchanges()).slice(0, limit);
+        const items = (await httpExchanges()).filter(item => matchesProvenance(item, url.searchParams)).slice(0, limit);
         json(response, 200, { items, count: items.length });
         return;
       }
@@ -1144,8 +1309,11 @@ export function createAuditWorkbenchServer({
         if (missingIndex >= 0) {
           throw Object.assign(new Error(`没有找到 HTTP exchange：${ids[missingIndex]}`), { statusCode: 404, code: "exchange-not-found" });
         }
-        const archive = buildOpenCollectionArchive(exchanges);
-        binary(response, 200, archive.bytes, "application/zip", archive.filename);
+        if (body.format != null && !["bruno-json", "opencollection"].includes(body.format)) {
+          throw Object.assign(new Error("导出格式必须为 bruno-json 或 opencollection。"), { statusCode: 422, code: "bruno-export-format-invalid" });
+        }
+        const archive = body.format === "opencollection" ? buildOpenCollectionArchive(exchanges) : buildBrunoCollection(exchanges);
+        binary(response, 200, archive.bytes, archive.mime_type ?? "application/zip", archive.filename);
         return;
       }
       if (request.method === "POST" && url.pathname === "/api/v1/http-exchanges/export/har") {
@@ -1171,15 +1339,18 @@ export function createAuditWorkbenchServer({
         else json(response, 200, { exchange: value });
         return;
       }
-      if (request.method === "POST" && url.pathname === "/api/v1/validations") {
+      const productValidation = url.pathname.match(/^\/api\/v2\/products\/([^/]+)\/validations$/);
+      if (request.method === "POST" && (url.pathname === "/api/v1/validations" || productValidation)) {
         assertSafeMutation(request);
         const input = await requestJson(request);
-        await assertLegacyUndefinedTarget(input.repository_id);
+        if (!productValidation) await assertLegacyUndefinedTarget(input.repository_id);
+        else productStore.getTarget(decodeURIComponent(productValidation[1]), input.repository_id);
         const repository = runner.runtimeRepositories().find(item => item.id === input.repository_id);
         if (!repository) throw Object.assign(new Error("仓库不在服务端白名单中。"), { statusCode: 422, code: "repository-not-allowed" });
         const requests = await validationRequests();
         const descriptor = requests.find(item => item.id === input.validation_request_id && item.repository_id === repository.id);
         if (!descriptor) throw Object.assign(new Error("没有找到动态验证请求。"), { statusCode: 404, code: "validation-request-not-found" });
+        if (productValidation) await auditForProduct(decodeURIComponent(productValidation[1]), descriptor.audit_id);
         if (!descriptor.artifact_dispatch_ready) throw Object.assign(new Error("没有找到可调度的密封动态验证请求。"), { statusCode: 422, code: "validation-request-not-ready" });
         const source = runner.artifactSources().find(item => item.repository_id === repository.id);
         const root = runtimeSources().find(item => item.repository.id === repository.id)?.root;
@@ -1211,7 +1382,7 @@ export function createAuditWorkbenchServer({
         return;
       }
       if (request.method === "GET" && url.pathname === "/api/runs") {
-        const runs = await validationRuns();
+        const runs = (await validationRuns()).filter(run => matchesProvenance(run, url.searchParams));
         json(response, 200, { runs, count: runs.length });
         return;
       }
@@ -1230,10 +1401,13 @@ export function createAuditWorkbenchServer({
     }
   });
   server.shutdownRunners = async () => {
+    await productAudits.shutdown();
     await queueScheduler.shutdown();
     await Promise.all([runner.shutdown(), dynamicRunner.shutdown()]);
+    await productMemory.shutdown(); await productStore.writeQueue;
     productStore.close();
   };
+  server.productMemory = productMemory; server.productAudits = productAudits;
   server.productStore = productStore;
   server.productCatalogReady = productCatalogReady;
   return server;
@@ -1255,12 +1429,17 @@ export function parseArgs(argv) {
     stateRoot: process.env.AUDIT_WORKBENCH_STATE_ROOT ?? DEFAULT_STATE_ROOT,
     runnerEnabled: false,
     dynamicRunnerEnabled: false,
+    modernWorkbenchOrigin: normalizeModernOrigin(process.env.AUDIT_WORKBENCH_MODERN_ORIGIN),
     repositories: [],
   };
   for (let index = 0; index < argv.length; index += 1) {
     const option = argv[index];
     if (option === "--host") options.host = argv[++index];
     else if (option === "--port") options.port = Number(argv[++index]);
+    else if (option === "--modern-ui-origin") {
+      if (!argv[index + 1]) throw new Error("--modern-ui-origin 需要 HTTP(S) origin。");
+      options.modernWorkbenchOrigin = normalizeModernOrigin(argv[++index]);
+    }
     else if (option === "--runtime-root") options.runtimeRoot = argv[++index];
     else if (option === "--state-root") options.stateRoot = argv[++index];
     else if (option === "--enable-runner") options.runnerEnabled = true;

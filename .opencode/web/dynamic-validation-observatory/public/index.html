@@ -19,7 +19,7 @@
           <button data-view="findings"><span>!</span>漏洞发现 <em id="finding-badge">0</em></button>
           <button data-view="reports"><span>▤</span>审计报告</button>
           <p>验证与运行</p>
-          <button data-view="validation"><span>⌘</span>完整动态验证</button>
+          <button data-view="validation"><span>⌘</span>动态验证</button>
           <button data-view="runtime"><span>◉</span>运行环境</button>
           <button data-view="settings"><span>⚙</span>设置</button>
         </nav>
@@ -29,7 +29,7 @@
       <div class="workspace">
         <header class="topbar">
           <div><p id="breadcrumb">安全态势 / 概览</p><h1 id="page-title">源码审计工作台</h1></div>
-          <div class="topbar-actions"><button id="refresh" class="button secondary">刷新制品</button><button id="new-audit" class="button primary">＋ 新建审计</button></div>
+          <div class="topbar-actions"><a id="modern-workbench-link" class="button secondary" href="/workbench" hidden>新版工作台 ↗</a><button id="refresh" class="button secondary">刷新制品</button><button id="new-audit" class="button primary">＋ 新建审计</button></div>
         </header>
 
         <main>
@@ -43,21 +43,22 @@
             </div>
           </section>
 
-          <section id="view-projects" class="view"><div class="page-heading"><div><p class="eyebrow">PRODUCT SPACES / AUDIT TARGETS</p><h2>产品与测试对象</h2><p>产品提供独立空间；一个测试对象可指向单个非 Git 目录，后续也可保存多个源码范围。</p></div><div class="topbar-actions"><button id="add-product" class="button secondary">＋ 新建产品</button><button id="add-project" class="button primary">＋ 新建对象</button></div></div><article class="panel"><div class="section-title"><div><p class="eyebrow">ACTIVE PRODUCT</p><h2>当前产品空间</h2></div><div class="topbar-actions"><label>产品 <select id="product-selector"></select></label><button id="transfer-selected-targets" class="button secondary" disabled>批量修改归属</button><button id="product-archive" class="button secondary">归档产品</button></div></div><div id="project-table" class="data-table"></div></article></section>
+          <section id="view-projects" class="view"><div class="page-heading"><div><p class="eyebrow">PRODUCT SPACES / AUDIT TARGETS</p><h2>产品与测试对象</h2><p>绑定产品目录，自动管理多级模块与 Git / 无 Git Repo，并复用历次审计经验。</p></div><div class="topbar-actions"><button id="add-product" class="button secondary">＋ 新建产品</button><button id="add-project" class="button primary">＋ 新建对象</button></div></div><article class="panel"><div class="section-title"><div><p class="eyebrow">ACTIVE PRODUCT</p><h2>当前产品空间</h2></div><div class="topbar-actions"><label>产品 <select id="product-selector"></select></label><button id="transfer-selected-targets" class="button secondary" disabled>批量修改归属</button><button id="product-archive" class="button secondary">归档产品</button></div></div><div id="project-table" class="data-table"></div></article><div id="product-memory-workspace"></div></section>
 
           <section id="view-audits" class="view">
             <div class="page-heading"><div><p class="eyebrow">END-TO-END RUNS</p><h2>审计任务</h2><p>查看每个 audit_id 的阶段、制品、覆盖率与运行状态。</p></div><button id="dispatch-queue" class="button secondary">立即调度队列</button></div>
             <div class="audit-list-controls">
               <div class="audit-tabs" role="group" aria-label="审计任务分类">
-                <button type="button" class="button secondary primary" data-audit-tab="running" aria-pressed="true">运行中</button>
-                <button type="button" class="button secondary" data-audit-tab="completed" aria-pressed="false">已完成</button>
-                <button type="button" class="button secondary" data-audit-tab="all" aria-pressed="false">全部</button>
+                <button type="button" class="button secondary" data-audit-tab="running" aria-pressed="false">运行中</button>
+                <button type="button" class="button secondary" data-audit-tab="completed" aria-pressed="false">非运行任务</button>
+                <button type="button" class="button secondary primary" data-audit-tab="all" aria-pressed="true">全部</button>
               </div>
+              <label>产品 <select id="audit-product-selector"></select></label>
               <label>搜索任务 <input id="audit-query" type="search" placeholder="任务名称、ID、仓库或提交" /></label>
               <span id="audit-list-status" role="status"></span>
             </div>
-            <p class="audit-list-hint">“已完成”沿用历史命名，实际是“非运行”分组：包括中断、取消、失败、排队中和已暂停的任务。</p>
-            <div class="split"><article class="panel">
+            <p class="audit-list-hint">点击任务展开详情。非运行任务包括已完成、失败、中断、取消、排队和暂停的任务。</p>
+            <article class="panel">
               <div id="audit-table" class="data-table"></div>
               <nav id="audit-pagination" class="finding-pagination" aria-label="审计任务分页" hidden>
                 <label>每页 <select id="audit-page-size"><option value="20">20</option><option value="30">30</option><option value="50">50</option><option value="100">100</option></select> 条</label>
@@ -65,16 +66,33 @@
                 <span id="audit-page-info"></span>
                 <button id="audit-next" type="button" class="button secondary">下一页</button>
               </nav>
-            </article><aside id="audit-detail" class="panel detail-panel"><div class="empty-state">选择一个审计任务查看阶段详情。</div></aside></div>
+            </article>
           </section>
 
-          <section id="view-findings" class="view"><div class="page-heading"><div><p class="eyebrow">FINDING LEDGER</p><h2>漏洞发现</h2><p>按结论、源码定位、关键证据、影响与修复展示；缺失定位会明确标记，而不会显示空白。</p></div><label class="search"><span>⌕</span><input id="finding-query" placeholder="搜索漏洞、文件、证据或 ID"></label></div><article class="panel"><div id="finding-table" class="finding-list"></div></article></section>
+          <section id="view-findings" class="view"><div class="page-heading"><div><p class="eyebrow">FINDING LEDGER</p><h2>漏洞发现</h2><p>按产品和任务查看发现，追溯报告、源码证据与复核结论。</p></div><label class="search"><span>⌕</span><input id="finding-query" placeholder="搜索漏洞、产品、任务或代码"></label></div><label class="finding-risk-filter">风险等级 <select id="finding-severity"><option value="">全部等级</option><option value="CRITICAL">严重</option><option value="HIGH">高危</option><option value="MEDIUM">中危</option><option value="LOW">低危</option><option value="INFO">信息</option><option value="UNKNOWN">未评级</option></select></label><div id="finding-source-filters" class="source-filters" aria-label="漏洞来源筛选"></div><article class="panel"><div id="finding-table" class="finding-list"></div></article></section>
 
-          <section id="view-reports" class="view"><div class="page-heading"><div><p class="eyebrow">REPORT DELIVERY</p><h2>审计报告</h2><p>最终中文 Markdown 报告、模型绑定状态与内容摘要记录。</p></div></div><div id="report-grid" class="report-grid"></div></section>
+          <section id="view-reports" class="view"><div class="page-heading"><div><p class="eyebrow">REPORT DELIVERY</p><h2>审计报告</h2><p>查看产品与审计任务对应的报告和执行结果。</p></div></div><div id="report-source-filters" class="source-filters" aria-label="报告来源筛选"></div><div id="report-grid" class="report-grid"></div></section>
 
           <section id="view-validation" class="view">
-            <div class="page-heading"><div><p class="eyebrow">AUTHORIZED RUNTIME EVIDENCE</p><h2>完整动态验证</h2><p>任务创建时未填写测试环境也可在本页补录并逐次授权；人工发包请使用 Bruno，平台仅展示和导出脱敏发包记录。</p></div></div>
-            <article class="panel request-history-panel">
+            <div class="page-heading"><div><p class="eyebrow">VULNERABILITY VALIDATION</p><h2>动态验证</h2><p>从漏洞追溯每一步验证动作，查看实际请求与响应，导出到 Bruno 继续分析。</p></div></div>
+            <div id="validation-source-filters" class="source-filters" aria-label="动态验证来源筛选"></div>
+            <div class="audit-tabs validation-tabs" role="tablist" aria-label="动态验证内容">
+              <button id="validation-tab-activity" type="button" class="button secondary primary" role="tab" aria-controls="validation-activity-panel" aria-selected="true" data-validation-tab="activity">验证动作</button>
+              <button id="validation-tab-requests" type="button" class="button secondary" role="tab" aria-controls="validation-requests-panel" aria-selected="false" data-validation-tab="requests">补充验证</button>
+              <button id="validation-tab-results" type="button" class="button secondary" role="tab" aria-controls="validation-results-panel" aria-selected="false" data-validation-tab="results">执行结果</button>
+              <button id="validation-tab-exchanges" type="button" class="button secondary" role="tab" aria-controls="validation-exchanges-panel" aria-selected="false" data-validation-tab="exchanges">HTTP 证据</button>
+            </div>
+            <div id="validation-activity-panel" role="tabpanel" aria-labelledby="validation-tab-activity">
+              <div id="validation-activity-metrics" class="validation-activity-metrics" aria-label="验证记录概况"></div>
+              <article class="panel validation-activity-workspace">
+                <div class="request-filters"><label>搜索验证记录<input id="validation-activity-query" type="search" placeholder="漏洞、任务、动作或 ID"></label><label>记录范围<select id="validation-activity-status"><option value="all">全部记录</option><option value="http">有 HTTP 证据</option><option value="actions">有验证动作</option><option value="blocked">受阻 / 失败</option><option value="pending">待执行 / 已跳过</option></select></label><span id="validation-activity-count" role="status"></span></div>
+                <div id="validation-activity-error" class="notice error" hidden></div>
+                <div id="validation-activity-window" class="notice" hidden></div>
+                <div class="validation-activity-layout"><nav id="validation-case-list" class="validation-case-list" aria-label="漏洞与验证记录"></nav><section id="validation-case-detail" class="validation-case-detail" aria-label="验证动作详情"></section></div>
+              </article>
+              <details class="panel validation-import-guide"><summary>如何在 Bruno 中打开导出记录？</summary><ol><li>选择一条验证记录，点击“导出 Bruno 集合（JSON）”。</li><li>在 Bruno 中选择 Import Collection，选择下载的 JSON 文件；如出现格式选项，选择 Bruno Collection。</li><li>历史响应保存在请求示例中；运行前补全凭据变量，并确认目标仍在授权范围内。</li></ol><p>HAR 用于保留通用 HTTP 证据。只有捕获到实际请求的动作才可导出；未记录的响应或请求正文会明确标注。</p><p><a href="https://docs.usebruno.com/get-started/import-export-data/import-collections" target="_blank" rel="noopener noreferrer">Bruno 导入文档 ↗</a> · <a href="https://github.com/usebruno/bruno-mcp" target="_blank" rel="noopener noreferrer">官方 Bruno MCP ↗</a></p></details>
+            </div>
+            <article id="validation-exchanges-panel" class="panel request-history-panel" role="tabpanel" aria-labelledby="validation-tab-exchanges" hidden>
               <div class="section-title request-history-title">
                 <div><p class="eyebrow">READ-ONLY HTTP EVIDENCE</p><h2>发包记录</h2><p>记录来自动态验证的 Chrome DevTools MCP 网络证据；平台不提供发送、改包或重放功能。</p></div>
                 <div class="request-export-toolbar">
@@ -87,14 +105,14 @@
                   <button id="clear-exchange-selection" type="button" class="button secondary">清空</button>
                   <button id="compare-selected-exchanges" type="button" class="button secondary" disabled>比较 2 条</button>
                   <button id="export-selected-har" type="button" class="button secondary" disabled>导出 HAR</button>
-                  <button id="export-selected-bruno" type="button" class="button primary" disabled>导出所选 OpenCollection</button>
+                  <button id="export-selected-bruno" type="button" class="button primary" disabled>导出 Bruno 集合（JSON）</button>
                 </div>
               </div>
               <div id="exchange-diff-panel" class="exchange-diff-panel" hidden></div>
               <div id="request-exchange-list" class="exchange-list"></div>
             </article>
-            <article class="panel request-panel"><div class="section-title"><div><p class="eyebrow">SEALED REQUESTS</p><h2>待人工验证请求</h2></div><span id="dynamic-runner-caption" class="status">读取中</span></div><div id="validation-request-list" class="request-list"></div></article>
-            <div class="split validation-split"><article class="panel"><div class="section-title"><div><p class="eyebrow">RESULTS</p><h2>完整验证结果</h2></div></div><div id="validation-list" class="audit-list"></div></article><aside id="validation-detail" class="panel detail-panel"><div class="empty-state">选择一次验证查看环境和脱敏 HTTP 证据。</div></aside></div>
+            <article id="validation-requests-panel" class="panel request-panel" role="tabpanel" aria-labelledby="validation-tab-requests" hidden><div class="section-title"><div><p class="eyebrow">VALIDATION REQUESTS</p><h2>补充验证请求</h2><p class="muted">每条请求保留来源；尚未执行的请求不代表漏洞已经动态证实。</p></div><span id="dynamic-runner-caption" class="status">读取中</span></div><div class="request-filters"><label>执行状态 <select id="validation-status-filter"><option value="all">全部状态</option><option value="pending">待验证</option><option value="running">执行中</option><option value="completed">已有结果</option><option value="blocked">不可执行</option></select></label><label>搜索 <input id="validation-query" type="search" placeholder="漏洞标题、请求摘要或 ID"></label><span id="validation-request-count" role="status"></span></div><div id="validation-request-list" class="request-list"></div></article>
+            <div id="validation-results-panel" role="tabpanel" aria-labelledby="validation-tab-results" hidden><article class="panel"><div class="section-title"><div><p class="eyebrow">RESULTS</p><h2>验证执行结果</h2></div></div><div id="validation-list" class="audit-list"></div></article><article id="validation-detail" class="panel validation-result-detail" hidden></article></div>
           </section>
 
           <section id="view-runtime" class="view">
@@ -135,14 +153,31 @@
       </div>
     </div>
 
+    <dialog id="audit-drawer" class="audit-drawer" aria-labelledby="audit-drawer-title">
+      <header class="audit-drawer-header"><div><p class="eyebrow">AUDIT DETAIL</p><h2 id="audit-drawer-title">审计任务详情</h2></div><button id="close-audit-drawer" type="button" class="icon-button" aria-label="关闭任务详情" autofocus>×</button></header>
+      <div id="audit-detail" class="audit-detail-content"></div>
+    </dialog>
     <dialog id="audit-dialog">
       <form id="audit-form" method="dialog">
         <div class="dialog-heading"><div><p class="eyebrow">NEW AUDIT</p><h2>创建仓库级安全审计</h2></div><button type="button" class="icon-button" data-close-dialog>×</button></div>
         <label>任务名称<input name="name" maxlength="160" placeholder="例如：支付服务发布前安全审计" required></label>
         <label>使用模型<select name="model" id="audit-model-select" required></select></label>
         <p class="context-note">模型随任务保存，排队和断点恢复沿用此选择；重试可重新选择。“默认”由 OpenCode 配置决定。</p>
+        <label>历史经验<select name="memory_mode"><option value="full">参考历史事实、人工理由与产品经验</option><option value="facts_only">仅参考接口、资产与结构事实</option><option value="off">不读取历史记忆</option><option value="blind">盲审：隔离历史经验与知识种子</option></select></label>
         <label>测试对象<select name="target_id" id="repository-select" required></select></label>
         <label>越权专项分析<select name="bac_analysis"><option value="auto">启用：比较预期权限与实际访问路径</option><option value="off">关闭专项差分，保留常规权限审计</option></select></label>
+        <fieldset class="mining-strategy" aria-describedby="mining-strategy-description">
+          <legend>漏洞挖掘策略</legend>
+          <div class="strategy-switch">
+            <label class="strategy-option"><input type="radio" name="mining_strategy" value="focus_area" checked><span>高风险 Focus Area</span></label>
+            <label class="strategy-option"><input type="radio" name="mining_strategy" value="api"><span>逐接口 API 审查</span></label>
+          </div>
+          <p id="mining-strategy-description" class="context-note" aria-live="polite">由威胁建模提炼高风险主题，按 Focus Area 定向深入分析。</p>
+        </fieldset>
+        <div id="api-inventory-panel" hidden>
+          <label for="api-inventory">API 审查清单<textarea id="api-inventory" name="api_inventory" rows="6" maxlength="120000" spellcheck="false" placeholder="每行一个接口，可附业务说明；也支持 JSON 数组。&#10;GET /orders/{id} 查询订单详情&#10;POST /orders/{id}/refund 申请退款" disabled></textarea></label>
+          <p class="context-note">每个清单条目都会先定位相关代码，再派发审查。切换策略时保留当前输入，提交时仅使用所选策略。</p>
+        </div>
         <div class="form-row"><label>audit_id<input name="audit_id" pattern="[A-Za-z0-9][A-Za-z0-9._-]{2,127}" placeholder="audit-2026-001" required></label><label>版本备注<input name="ref" value="当前目录快照" maxlength="200"></label></div>
         <p class="context-note">目录不要求 Git。任务实际启动前会生成范围清单与逐文件摘要；多范围对象会保存，但在跨范围关联流水线启用前不能启动。</p>
         <div class="audit-contexts">
@@ -210,6 +245,7 @@
       <form id="product-form" method="dialog">
         <div class="dialog-heading"><div><p class="eyebrow">PRODUCT SPACE</p><h2>新建产品</h2></div><button type="button" class="icon-button" data-close-product>×</button></div>
         <label>产品名称<input name="name" maxlength="120" required placeholder="例如：支付平台"></label>
+        <label>产品根目录（可选）<input name="root_path" maxlength="4096" placeholder="绑定后自动发现模块与 Repo"></label>
         <label>产品说明（可选）<textarea name="description" maxlength="2000" placeholder="产品边界、业务背景或审计约束"></textarea></label>
         <div id="product-form-error" class="notice error" hidden></div>
         <div class="dialog-actions"><button type="button" class="button secondary" data-close-product>取消</button><button id="submit-product" class="button primary" type="submit">创建产品</button></div>
@@ -260,8 +296,12 @@
     <dialog id="report-dialog" class="report-dialog">
       <article class="report-dialog-body">
         <div class="dialog-heading"><div><p class="eyebrow">SEALED REPORT</p><h2 id="report-title">安全审计报告</h2><p id="report-subtitle"></p></div><button type="button" class="icon-button" data-close-report aria-label="关闭报告">×</button></div>
-        <article id="report-preview" class="report-preview markdown-body" tabindex="0">正在读取报告…</article>
-        <div class="dialog-actions"><button type="button" class="button secondary" data-close-report>关闭</button><a id="report-download" class="button primary" href="#">下载原始 Markdown</a></div>
+        <p id="report-reading-note" class="report-reading-note" hidden></p>
+        <div class="report-reading-layout">
+          <nav id="report-outline" class="report-outline" aria-label="报告目录" hidden></nav>
+          <article id="report-preview" class="report-preview markdown-body" tabindex="0">正在读取报告…</article>
+        </div>
+        <div class="dialog-actions"><button type="button" class="button secondary" data-close-report>关闭</button><a id="report-original-download" class="button secondary" href="#" hidden>下载封存原文</a><a id="report-download" class="button primary" href="#">下载 Markdown</a></div>
       </article>
     </dialog>
     <dialog id="terminal-dialog" class="terminal-dialog">
@@ -278,15 +318,18 @@
     <dialog id="finding-dialog" class="finding-dialog">
       <article class="report-dialog-body">
         <div class="dialog-heading"><div><p class="eyebrow">CANONICAL FINDING</p><h2 id="finding-detail-title">漏洞详情</h2><p id="finding-detail-subtitle"></p></div><button type="button" class="icon-button" data-close-finding aria-label="关闭漏洞详情">×</button></div>
+        <div id="finding-detail-source"></div>
         <dl id="finding-detail-facts" class="detail-facts"></dl>
         <div id="finding-detail-body" class="finding-detail-body"></div>
+        <div id="finding-memory" class="product-memory-panel"></div>
+        <details><summary>旧版处理记录与动态状态</summary>
         <form id="finding-workflow-form" class="finding-workflow-form">
           <div class="section-title"><div><p class="eyebrow">OPERATOR WORKFLOW</p><h2>人工处理</h2></div><small id="finding-workflow-version">版本 0</small></div>
           <label>处理状态<select name="status" required><option value="unreviewed">未处理</option><option value="confirmed">已确认</option><option value="rejected">已排除</option><option value="insufficient_evidence">证据不足</option><option value="awaiting_validation">待动态验证</option><option value="validated">验证通过</option><option value="validation_failed">验证失败</option><option value="validation_blocked">验证受阻</option><option value="reported">已入报告</option></select></label>
           <label>处理备注<textarea name="note" maxlength="4000" placeholder="记录人工判断、待办或与 Owner 沟通结论；不会覆盖 canonical finding。"></textarea></label>
           <div id="finding-workflow-error" class="notice error" hidden></div>
           <div class="dialog-actions"><button type="button" class="button secondary" data-close-finding>关闭</button><button id="submit-finding-workflow" type="submit" class="button primary">保存处理状态</button></div>
-        </form>
+        </form></details>
       </article>
     </dialog>
     <div id="toast" class="toast" role="status"></div>

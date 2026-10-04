@@ -1,4 +1,5 @@
 import { createHash } from "node:crypto";
+import { redactJsonText } from "../json-text-redaction.mjs";
 
 export const PROTOCOL = "runtime-testing.v1";
 export const PHASES = ["CONTACT", "EXPLORE", "CONFIRM", "CLEANUP"];
@@ -115,6 +116,26 @@ export function redact(value, privateContext = {}) {
   return result.replace(/(authorization|cookie|set-cookie|password|passwd|token|secret|api[_-]?key)(\s*["']?\s*[:=]\s*)[^\n\r,}]+/gi, "$1$2[REDACTED]")
     .replace(/\bBearer\s+[\w.\-+/=]+/gi, "Bearer [REDACTED]")
     .replace(/\beyJ[\w-]+\.[\w-]+\.[\w-]+\b/g, "[JWT_REDACTED]");
+}
+
+// Keep tool data typed while masking each string before it becomes evidence.
+// In particular, header/body strings must not corrupt their enclosing JSON.
+export function redactStructured(value, privateContext = {}, key = "") {
+  const sensitive = name => /(?:authorization|cookie|password|passwd|secret|token|apikey|credentialvalue|credentials|session|sessionid)$/i.test(String(name).replace(/[^a-z0-9]/gi, ""));
+  if (sensitive(key)) return "[REDACTED]";
+  if (typeof value === "string") {
+    // Preserve numeric literals and duplicate fields in captured JSON bodies;
+    // decoding the whole body as JS values can silently change object IDs.
+    if (["requestbody", "responsebody"].includes(key.toLowerCase())) {
+      try { return redactJsonText(value, { sensitiveKey: sensitive, redactString: text => redact(text, privateContext) }); }
+      catch { /* Non-JSON bodies remain text. */ }
+    }
+    return redact(value, privateContext);
+  }
+  if (Array.isArray(value)) return value.map(item => redactStructured(item, privateContext));
+  if (!value || typeof value !== "object") return value;
+  return Object.fromEntries(Object.entries(value).map(([name, child]) => [name,
+    name === "value" && sensitive(value.name ?? "") ? "[REDACTED]" : redactStructured(child, privateContext, name)]));
 }
 
 // Best-effort masking supplements the Agent's explicit secret registration; it

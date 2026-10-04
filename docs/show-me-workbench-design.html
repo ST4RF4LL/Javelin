@@ -1,0 +1,921 @@
+<!doctype html>
+<html lang="zh-CN"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1"><meta name="color-scheme" content="light"><title>漏洞挖掘工作台项目设计文档</title>
+<style>
+:root{--ink:#17211d;--muted:#66716c;--line:#dde3df;--canvas:#f4f6f3;--green:#167c52;--night:#101b17}*{box-sizing:border-box}html{scroll-behavior:smooth}body{margin:0;background:var(--canvas);color:var(--ink);font:15px/1.85 -apple-system,BlinkMacSystemFont,"PingFang SC","Microsoft YaHei",sans-serif}a{color:var(--green);text-decoration:none}a:hover{text-decoration:underline}button,input{font:inherit}button{cursor:pointer}.shell{display:grid;grid-template-columns:245px minmax(0,1fr);max-width:1560px;margin:auto}.sidebar{position:sticky;top:0;height:100vh;padding:30px 22px;background:var(--night);color:#b7c8bf;overflow-y:auto}.sidebar b{display:block;font-size:17px;color:#fff;margin-bottom:4px}.sidebar small{font-size:12px;color:#8ea497}.sidebar nav{display:grid;gap:5px;margin:28px 0}.sidebar nav a{padding:9px 10px;border-radius:7px;color:#b7c8bf;font-size:13px;line-height:1.55}.sidebar nav a:hover,.sidebar nav a.active{background:#22372e;color:#fff;text-decoration:none}.sidebar p{font-size:12px;line-height:1.8;margin-top:28px}.sidebar .files{display:grid;gap:10px}.sidebar .files a{font-size:12px;color:#80c6a2}main{min-width:0;padding:34px 44px 70px}.hero{border-radius:16px;background:linear-gradient(120deg,#111d18,#234534);padding:30px 34px;color:#f3f8f5;margin-bottom:18px}.hero .eyebrow{font-size:11px;letter-spacing:.12em;color:#8cd8b0}.hero h1{font:700 30px/1.35 Georgia,"Songti SC",serif;margin:12px 0}.hero p{color:#bfd0c6;max-width:750px;margin:0;line-height:1.8}.metrics{display:grid;grid-template-columns:repeat(4,minmax(0,1fr));gap:12px;margin-bottom:22px}.metric{background:#fff;border:1px solid var(--line);border-radius:10px;padding:16px 18px}.metric strong{font-size:27px;line-height:1.3;display:block}.metric span{font-size:12px;color:var(--muted)}.toolbar{position:sticky;top:0;z-index:5;display:flex;gap:12px;align-items:center;background:#f4f6f3f2;padding:12px 0;border-bottom:1px solid var(--line);backdrop-filter:blur(8px)}.toolbar label{font-size:12px;color:var(--muted);flex:none}.toolbar input{min-width:0;flex:1;border:1px solid #cbd6ce;border-radius:8px;padding:8px 12px;background:white}.toolbar button{border:1px solid var(--line);border-radius:8px;background:#fff;padding:8px 13px;color:var(--green)}.search-status{font-size:12px;color:var(--muted)}article h2{font:700 25px/1.4 Georgia,"Songti SC",serif;margin:52px 0 18px;scroll-margin-top:95px}article h3{font-size:18px;margin:28px 0 12px;scroll-margin-top:95px}article p{margin:16px 0}article>p{max-width:1000px}code{font:12.5px/1.6 "SFMono-Regular",Consolas,monospace;color:#265941;background:#ebf2ed;padding:2px 4px;border-radius:4px;overflow-wrap:anywhere}.table-wrap{margin:18px 0;border:1px solid var(--line);border-radius:11px;background:#fff;overflow:clip}table{border-collapse:collapse;width:100%;font-size:13px;line-height:1.75;table-layout:auto}th,td{text-align:left;vertical-align:top;padding:12px 15px;overflow-wrap:anywhere}th{background:#edf2ee;font-size:12px;color:#42594c}td{border-top:1px solid #e6ece7}td:first-child{font-weight:600}tr[hidden]{display:none}pre{white-space:pre-wrap;overflow-wrap:anywhere;background:#edf2ee;padding:16px;border-radius:8px;font-size:12px;line-height:1.8}pre code{padding:0;background:none}.diagram{margin:22px auto;background:#fff;border:1px solid var(--line);border-radius:14px;padding:22px;max-width:900px}.diagram svg{width:100%;height:auto;display:block;font-family:-apple-system,BlinkMacSystemFont,"PingFang SC","Microsoft YaHei",sans-serif}.diagram[data-diagram="1"],.diagram[data-diagram="3"]{max-width:720px}figcaption{font-size:12px;color:var(--muted);margin-top:12px}details{margin:12px 0;font-size:12px;color:var(--muted)}summary{cursor:pointer}footer{border-top:1px solid var(--line);margin-top:38px;padding-top:18px;color:var(--muted);font-size:12px}.sr-only{position:absolute;width:1px;height:1px;padding:0;margin:-1px;overflow:hidden;clip:rect(0,0,0,0);white-space:nowrap;border:0}
+@media(max-width:1120px){.shell{grid-template-columns:210px minmax(0,1fr)}main{padding:25px}.sidebar{padding:25px 16px}.hero{padding:25px}.hero h1{font-size:27px}th,td{padding:10px}}
+@media(max-width:780px){.shell{display:block}.sidebar{position:static;height:auto;padding:16px 20px}.sidebar nav{display:flex;flex-wrap:wrap;gap:6px;margin:12px 0}.sidebar nav a{padding:6px 9px;font-size:12px}.sidebar p,.sidebar .files{display:none}main{padding:18px 14px 40px}.hero{padding:23px 20px}.hero h1{font-size:24px}.metrics{grid-template-columns:repeat(2,minmax(0,1fr));gap:8px}.metric{padding:12px}.toolbar{flex-wrap:wrap}.toolbar label{display:none}.toolbar button{font-size:12px}.search-status{width:100%}article h2{font-size:23px;margin-top:35px}.table-wrap{border:0;background:none}table,tbody,tr,td{display:block;width:100%}thead{display:none}tr{background:#fff;border:1px solid var(--line);border-radius:9px;margin:10px 0;padding:8px 10px}td{border:0;padding:5px 0;font-size:13px}td::before{content:attr(data-label);display:block;font-size:11px;font-weight:500;color:var(--muted)}.diagram{padding:12px}.diagram svg{display:none}.diagram .mobile-flow{display:grid;gap:8px}.mobile-flow .step{padding:10px 12px;border:1px solid #c9d6ce;border-radius:8px;background:#fff;font-size:13px}.mobile-flow .step b{color:var(--green);margin-right:8px}.mobile-flow .connections{font-size:12px;color:var(--muted);padding-top:8px}.hero p{font-size:13px}}
+@media(min-width:781px){.mobile-flow{display:none}}
+@media print{.shell{display:block}.sidebar,.toolbar,.metrics,details{display:none}main{padding:0}.hero{background:#fff;color:#17211d;padding:0;border-radius:0}.hero p,.hero .eyebrow{color:#66716c}article h2{break-after:avoid;margin-top:30px}article h3{break-after:avoid}tr{break-inside:avoid}.diagram{break-inside:avoid}.diagram svg{display:block}.mobile-flow{display:none}.table-wrap{overflow:visible}a{color:#17211d}}
+@media(prefers-reduced-motion:reduce){html{scroll-behavior:auto}}
+</style></head><body><div class="shell"><aside class="sidebar"><b>漏洞挖掘工作台</b><small>当前项目设计 · 2026 年 9 月 30 日</small><nav aria-label="文档目录"><a href="#section-2">架构与组件关系</a><a href="#section-3">Agents 与 Subagents 分工</a><a href="#section-6">集成工具功能分类</a><a href="#section-7">Skills 功能清单</a><a href="#section-14">MCP 功能与启用状态</a><a href="#section-15">完整漏洞挖掘流程</a><a href="#section-20">知识库 长期记忆与人工反馈</a><a href="#section-21">状态 证据与完成条件</a><a href="#section-22">当前实现与文档差异</a></nav><div class="files"><a href="workbench-project-design.md">打开 Markdown 文档 ↗</a><a href="workbench-design-inventory.json">打开源码清单与摘要 ↗</a></div><p>依据当前工作区源码。<br>默认 TaskBoard，兼容旧流程。<br>联合产品审计当前为静态。</p></aside><main><header class="hero"><div class="eyebrow">项目设计文档 · 当前代码快照</div><h1>漏洞挖掘工作台项目设计文档</h1><p>Agent 编排与专业分工、工具分类、完整 Skills 和 MCP 清单，以及单 Repo 动静并行与产品多 Repo 流程。</p></header><div class="metrics"><div class="metric"><strong>19</strong><span>静态 Agent 定义</span></div><div class="metric"><strong>11</strong><span>运行时角色类型</span></div><div class="metric"><strong>56</strong><span>Skills · 14 个集合</span></div><div class="metric"><strong>6 + 1</strong><span>MCP 配置项与临时网关</span></div></div><div class="toolbar"><label for="search">清单筛选</label><input id="search" type="search" placeholder="筛选 Agent、工具、Skills、MCP，例如：越权、java、动态" autocomplete="off"><button id="print" type="button">打印文档</button><span class="search-status" role="status" aria-live="polite"></span></div><article>
+<p>本文说明当前工作台的执行架构、Agent 分工、工具分类、Skills、MCP，以及从任务创建到漏洞复核和报告封存的完整流程。代码快照日期为 <strong>2026 年 9 月 30 日</strong>，包含本工作区尚未提交的 TaskBoard、Agent 静态专项、产品多 Repo 和长期记忆代码。</p>
+<p>当前新建审计默认采用 <code>task-board.v1</code>：Orchestrator 负责规划和编排，平台 Monitor 启动专业 Worker，独立复核角色核验候选，程序生成中文终稿。单 Repo 支持显式授权的并行运行测试；产品多 Repo 联合审计当前只做静态挖掘。本文描述代码设计，不代表现有工作台进程已经加载这些改动，也不代表全部本机工具或真实模型链路已验收。</p>
+<p>配套文件：<a href="show-me-workbench-design.html">可视化阅读版</a>、<a href="workbench-design-inventory.json">源码清单与摘要</a>。</p>
+<h2 id="section-2">架构与组件关系</h2>
+<figure class="diagram" data-diagram="0"><svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 1000 990" role="img" aria-labelledby="diagram-title-0 diagram-desc-0"><title id="diagram-title-0">工作台组件架构</title><desc id="diagram-desc-0">工作台页面与产品 API；ProductStore 产品与测试对象；AuditRunner 队列与执行工作区；ProductAuditService 多 Repo 批次；Orchestrator 与 Recon Threat subagents；TaskBoard 发布 调度 回执；六类独立静态 Worker；授权运行测试控制器与 Worker；报告质量复核与独立三方；确定性中文报告与漏洞列表；只读 KnowledgeWorkFlow；产品与 Repo 长期记忆</desc><defs><marker id="arrow-0" markerWidth="8" markerHeight="8" refX="7" refY="4" orient="auto"><path d="M0,0 L8,4 L0,8 Z" fill="#6c8a7b"/></marker></defs><path d="M500,104 L500,127.5 L250,127.5 L250,151" fill="none" stroke="#6c8a7b" stroke-width="2"  marker-end="url(#arrow-0)"/><path d="M500,104 L500,127.5 L750,127.5 L750,151" fill="none" stroke="#6c8a7b" stroke-width="2"  marker-end="url(#arrow-0)"/><path d="M250,239 L250,296" fill="none" stroke="#6c8a7b" stroke-width="2"  marker-end="url(#arrow-0)"/><path d="M435,340 L500,340 L500,195 L565,195" fill="none" stroke="#6c8a7b" stroke-width="2"  marker-end="url(#arrow-0)"/><g><rect x="468.9" y="249" width="62.199999999999996" height="24" rx="5" fill="#f4f6f3"/><text x="500" y="265" text-anchor="middle" font-size="17" fill="#506c5e">子审计</text></g><path d="M750,239 L750,296" fill="none" stroke="#6c8a7b" stroke-width="2"  marker-end="url(#arrow-0)"/><path d="M750,384 L750,441" fill="none" stroke="#6c8a7b" stroke-width="2"  marker-end="url(#arrow-0)"/><path d="M750,529 L750,586" fill="none" stroke="#6c8a7b" stroke-width="2"  marker-end="url(#arrow-0)"/><path d="M935,195 L977,195 L977,705 L250,705 L250,731" fill="none" stroke="#6c8a7b" stroke-width="2"  marker-end="url(#arrow-0)"/><g><rect x="612.8" y="687" width="114.39999999999999" height="24" rx="5" fill="#f4f6f3"/><text x="670" y="703" text-anchor="middle" font-size="17" fill="#506c5e">授权运行支路</text></g><path d="M750,674 L750,731" fill="none" stroke="#6c8a7b" stroke-width="2"  marker-end="url(#arrow-0)"/><path d="M435,775 L565,775" fill="none" stroke="#6c8a7b" stroke-width="2"  marker-end="url(#arrow-0)"/><path d="M750,819 L750,847.5 L500,847.5 L500,876" fill="none" stroke="#6c8a7b" stroke-width="2"  marker-end="url(#arrow-0)"/><path d="M435,630 L510,630 L510,340 L565,340" fill="none" stroke="#6c8a7b" stroke-width="2" stroke-dasharray="6 5" marker-end="url(#arrow-0)"/><g><rect x="456.5" y="539" width="97" height="24" rx="5" fill="#f4f6f3"/><text x="505" y="555" text-anchor="middle" font-size="17" fill="#506c5e">根因与案例</text></g><path d="M435,630 L565,630" fill="none" stroke="#6c8a7b" stroke-width="2" stroke-dasharray="6 5" marker-end="url(#arrow-0)"/><g><rect x="460.2" y="599" width="79.6" height="24" rx="5" fill="#f4f6f3"/><text x="500" y="615" text-anchor="middle" font-size="17" fill="#506c5e">按需检索</text></g><path d="M435,485 L565,340" fill="none" stroke="#6c8a7b" stroke-width="2" stroke-dasharray="6 5" marker-end="url(#arrow-0)"/><g><rect x="460.2" y="381" width="79.6" height="24" rx="5" fill="#f4f6f3"/><text x="500" y="397" text-anchor="middle" font-size="17" fill="#506c5e">历史先验</text></g><path d="M565,630 L435,485" fill="none" stroke="#6c8a7b" stroke-width="2"  marker-end="url(#arrow-0)"/><g><rect x="460.2" y="544" width="79.6" height="24" rx="5" fill="#f4f6f3"/><text x="500" y="560" text-anchor="middle" font-size="17" fill="#506c5e">本轮观察</text></g><path d="M60,920 L25,920 L25,485 L65,485" fill="none" stroke="#6c8a7b" stroke-width="2"  marker-end="url(#arrow-0)"/><g transform="rotate(-90 28 870)"><rect x="-11.799999999999997" y="854" width="79.6" height="24" rx="5" fill="#f4f6f3"/><text x="28" y="870" text-anchor="middle" font-size="17" fill="#506c5e">结果留存</text></g><path d="M250,441 L250,384" fill="none" stroke="#6c8a7b" stroke-width="2"  marker-end="url(#arrow-0)"/><g><rect x="285.2" y="395" width="79.6" height="24" rx="5" fill="#f4f6f3"/><text x="325" y="411" text-anchor="middle" font-size="17" fill="#506c5e">产品经验</text></g><g><rect x="60" y="16" width="880" height="88" rx="14" fill="#fff" stroke="#c9d6ce" stroke-width="1.5"/><text x="75" y="33" fill="#6c8175" font-size="11">U</text><text x="500" y="67" text-anchor="middle" font-size="21" font-weight="600" fill="#17211d"><tspan x="500" dy="0">工作台页面与产品 API</tspan></text></g><g><rect x="65" y="151" width="370" height="88" rx="14" fill="#fff" stroke="#c9d6ce" stroke-width="1.5"/><text x="80" y="168" fill="#6c8175" font-size="11">P</text><text x="250" y="188" text-anchor="middle" font-size="21" font-weight="600" fill="#17211d"><tspan x="250" dy="0">ProductStore 产品与测试对</tspan><tspan x="250" dy="28">象</tspan></text></g><g><rect x="565" y="151" width="370" height="88" rx="14" fill="#fff" stroke="#c9d6ce" stroke-width="1.5"/><text x="580" y="168" fill="#6c8175" font-size="11">R</text><text x="750" y="188" text-anchor="middle" font-size="21" font-weight="600" fill="#17211d"><tspan x="750" dy="0">AuditRunner 队列与执行工作</tspan><tspan x="750" dy="28">区</tspan></text></g><g><rect x="65" y="296" width="370" height="88" rx="14" fill="#fff" stroke="#c9d6ce" stroke-width="1.5"/><text x="80" y="313" fill="#6c8175" font-size="11">C</text><text x="250" y="333" text-anchor="middle" font-size="21" font-weight="600" fill="#17211d"><tspan x="250" dy="0">ProductAuditService 多 Re</tspan><tspan x="250" dy="28">po 批次</tspan></text></g><g><rect x="565" y="296" width="370" height="88" rx="14" fill="#fff" stroke="#c9d6ce" stroke-width="1.5"/><text x="580" y="313" fill="#6c8175" font-size="11">O</text><text x="750" y="333" text-anchor="middle" font-size="21" font-weight="600" fill="#17211d"><tspan x="750" dy="0">Orchestrator 与 Recon Thr</tspan><tspan x="750" dy="28">eat subagents</tspan></text></g><g><rect x="565" y="441" width="370" height="88" rx="14" fill="#fff" stroke="#c9d6ce" stroke-width="1.5"/><text x="580" y="458" fill="#6c8175" font-size="11">T</text><text x="750" y="492" text-anchor="middle" font-size="21" font-weight="600" fill="#17211d"><tspan x="750" dy="0">TaskBoard 发布 调度 回执</tspan></text></g><g><rect x="565" y="586" width="370" height="88" rx="14" fill="#fff" stroke="#c9d6ce" stroke-width="1.5"/><text x="580" y="603" fill="#6c8175" font-size="11">W</text><text x="750" y="637" text-anchor="middle" font-size="21" font-weight="600" fill="#17211d"><tspan x="750" dy="0">六类独立静态 Worker</tspan></text></g><g><rect x="65" y="731" width="370" height="88" rx="14" fill="#fff" stroke="#c9d6ce" stroke-width="1.5"/><text x="80" y="748" fill="#6c8175" font-size="11">D</text><text x="250" y="782" text-anchor="middle" font-size="21" font-weight="600" fill="#17211d"><tspan x="250" dy="0">授权运行测试控制器与 Worker</tspan></text></g><g><rect x="565" y="731" width="370" height="88" rx="14" fill="#fff" stroke="#c9d6ce" stroke-width="1.5"/><text x="580" y="748" fill="#6c8175" font-size="11">V</text><text x="750" y="782" text-anchor="middle" font-size="21" font-weight="600" fill="#17211d"><tspan x="750" dy="0">报告质量复核与独立三方</tspan></text></g><g><rect x="60" y="876" width="880" height="88" rx="14" fill="#fff" stroke="#c9d6ce" stroke-width="1.5"/><text x="75" y="893" fill="#6c8175" font-size="11">F</text><text x="500" y="927" text-anchor="middle" font-size="21" font-weight="600" fill="#17211d"><tspan x="500" dy="0">确定性中文报告与漏洞列表</tspan></text></g><g><rect x="65" y="586" width="370" height="88" rx="14" fill="#fff" stroke="#c9d6ce" stroke-width="1.5"/><text x="80" y="603" fill="#6c8175" font-size="11">K</text><text x="250" y="637" text-anchor="middle" font-size="21" font-weight="600" fill="#17211d"><tspan x="250" dy="0">只读 KnowledgeWorkFlow</tspan></text></g><g><rect x="65" y="441" width="370" height="88" rx="14" fill="#e8f4ee" stroke="#167c52" stroke-width="1.5"/><text x="80" y="458" fill="#6c8175" font-size="11">M</text><text x="250" y="492" text-anchor="middle" font-size="21" font-weight="600" fill="#17211d"><tspan x="250" dy="0">产品与 Repo 长期记忆</tspan></text></g></svg><details><summary>查看可编辑 Mermaid 源码</summary><pre><code>flowchart TB
+  U[工作台页面与产品 API] --&gt; P[ProductStore 产品与测试对象]
+  U --&gt; R[AuditRunner 队列与执行工作区]
+  P --&gt; C[ProductAuditService 多 Repo 批次]
+  C --&gt; R
+  R --&gt; O[Orchestrator 与 Recon Threat subagents]
+  O --&gt; T[TaskBoard 发布 调度 回执]
+  T --&gt; W[六类独立静态 Worker]
+  R --&gt; D[授权运行测试控制器与 Worker]
+  W --&gt; V[报告质量复核与独立三方]
+  D --&gt; V
+  V --&gt; F[确定性中文报告与漏洞列表]
+  K[只读 KnowledgeWorkFlow] -.根因 案例 检测器.-&gt; O
+  K -.按需检索.-&gt; W
+  M[产品与 Repo 长期记忆] -.历史事实 人工理由 待办.-&gt; O
+  W --&gt;|本轮观察| M
+  F --&gt;|结论与留存制品| M
+  M --&gt; C
+</code></pre></details><figcaption>实线表示调用或交付，虚线表示按需读取或基线回传。</figcaption></figure><div class="table-wrap"><table>
+<thead>
+<tr>
+<th>组件</th>
+<th>职责</th>
+<th>主要实现</th>
+</tr>
+</thead>
+<tbody>
+<tr data-search-row>
+<td data-label="组件">工作台前端和产品 API</td>
+<td data-label="职责">产品目录、测试对象、任务、报告、漏洞、动态证据与人工反馈的操作入口</td>
+<td data-label="主要实现"><code>web/dynamic-validation-observatory/public/</code>、<code>server.mjs</code></td>
+</tr>
+<tr data-search-row>
+<td data-label="组件">ProductStore</td>
+<td data-label="职责">产品和测试对象归属、目录绑定、执行配置快照</td>
+<td data-label="主要实现"><code>product-store.mjs</code></td>
+</tr>
+<tr data-search-row>
+<td data-label="组件">AuditRunner</td>
+<td data-label="职责">排队、范围与源码绑定、隔离执行工作区、OpenCode 启动、暂停恢复、事件及完成检查</td>
+<td data-label="主要实现"><code>audit-runner.mjs</code></td>
+</tr>
+<tr data-search-row>
+<td data-label="组件">TaskBoardService</td>
+<td data-label="职责">任务发布与封存、专业分派、执行尝试、报告接收、复核和终稿入口</td>
+<td data-label="主要实现"><code>lib/task-board/</code></td>
+</tr>
+<tr data-search-row>
+<td data-label="组件">RuntimeTestingService</td>
+<td data-label="职责">授权、私有环境、工作包队列、环境租约、受控浏览器、证据与清理</td>
+<td data-label="主要实现"><code>lib/runtime-testing/</code></td>
+</tr>
+<tr data-search-row>
+<td data-label="组件">ProductAuditService</td>
+<td data-label="职责">冻结多个 Repo、调度子审计、跨 Repo 分析、定向补审、产品报告</td>
+<td data-label="主要实现"><code>lib/product-memory/campaign.mjs</code></td>
+</tr>
+<tr data-search-row>
+<td data-label="组件">ProductMemoryService 与 Store</td>
+<td data-label="职责">版本快照、接口与资产、覆盖、问题观察、人工反馈、关系、TODO 和查询留痕</td>
+<td data-label="主要实现"><code>lib/product-memory/</code></td>
+</tr>
+<tr data-search-row>
+<td data-label="组件">KnowledgeWorkFlow 适配器</td>
+<td data-label="职责">只读查询通用安全根因、案例、检测器及质量标记</td>
+<td data-label="主要实现"><code>lib/knowledge-workflow.*</code>、<code>scripts/knowledge-query.mjs</code></td>
+</tr>
+</tbody>
+</table></div>
+<p>上述实现路径均相对于 <code>.opencode/</code>。源码与执行工作区分开；目标源码作为只读输入，报告、临时文件、配置和缓存写入平台管理的输出位置。平台直接运行在宿主机，不使用容器执行链路。</p>
+<p>依据：<a href="../.opencode/web/dynamic-validation-observatory/audit-runner.mjs">工作台 Runner</a>、<a href="../.opencode/lib/task-board/service.mjs">TaskBoard 服务</a>、<a href="../.opencode/lib/product-memory/campaign.mjs">产品批次</a>。</p>
+<h2 id="section-3">Agents 与 Subagents 分工</h2>
+<h3 id="section-4">静态定义的角色</h3>
+<p><code>.opencode/agents/</code> 有 <strong>19 个定义</strong>：2 个 <code>primary</code>、17 个 <code>subagent</code>。角色文件和 <code>roles.json</code> 中仍保留旧 Tri-Lens 流程描述；实际执行先按平台注入的协议分支选择契约。</p>
+<div class="table-wrap"><table>
+<thead>
+<tr>
+<th>Agent</th>
+<th>定义模式</th>
+<th>分工</th>
+<th>当前调用场景</th>
+</tr>
+</thead>
+<tbody>
+<tr data-search-row>
+<td data-label="Agent"><code>security-audit-orchestrator</code></td>
+<td data-label="定义模式">primary</td>
+<td data-label="分工">范围协调、委派 Recon/Threat、发布任务、运行假设分派、启动复核、封存终稿；不直接深审源码或操作浏览器</td>
+<td data-label="当前调用场景">当前单 Repo 主编排角色</td>
+</tr>
+<tr data-search-row>
+<td data-label="Agent"><code>security-intel-collector</code></td>
+<td data-label="定义模式">subagent</td>
+<td data-label="分工">识别技术栈、入口、敏感操作、配置和 AI 表面，构建范围、函数、接口及路由清单</td>
+<td data-label="当前调用场景">当前 Recon；沿用既有解析能力</td>
+</tr>
+<tr data-search-row>
+<td data-label="Agent"><code>security-threat-modeler</code></td>
+<td data-label="定义模式">subagent</td>
+<td data-label="分工">威胁建模；按选定策略规划高风险 Focus Area 或全部用户 API 条目；独立恢复 BAC 预期策略</td>
+<td data-label="当前调用场景">当前规划；BAC 启用时承担独立策略会话</td>
+</tr>
+<tr data-search-row>
+<td data-label="Agent"><code>java-source-auditor</code></td>
+<td data-label="定义模式">subagent</td>
+<td data-label="分工">Java/JVM 入口、框架、注入、反序列化、授权和数据库访问路径</td>
+<td data-label="当前调用场景">当前 Java Worker 的专业参考；旧协议直接委派</td>
+</tr>
+<tr data-search-row>
+<td data-label="Agent"><code>web-source-auditor</code></td>
+<td data-label="定义模式">subagent</td>
+<td data-label="分工">JS/TS、HTML、JSP 和模板的浏览器安全、输出及客户端边界</td>
+<td data-label="当前调用场景">当前 Web Worker 的专业参考；HTTP 接口按实现语言路由</td>
+</tr>
+<tr data-search-row>
+<td data-label="Agent"><code>python-source-auditor</code></td>
+<td data-label="定义模式">subagent</td>
+<td data-label="分工">Python 框架、执行、反序列化、依赖和配置</td>
+<td data-label="当前调用场景">当前 Python Worker 的专业参考</td>
+</tr>
+<tr data-search-row>
+<td data-label="Agent"><code>c-cpp-source-auditor</code></td>
+<td data-label="定义模式">subagent</td>
+<td data-label="分工">C/C++ 内存安全、原生接口、进程和权限边界</td>
+<td data-label="当前调用场景">当前 C/C++ Worker 的专业参考</td>
+</tr>
+<tr data-search-row>
+<td data-label="Agent"><code>platform-security-auditor</code></td>
+<td data-label="定义模式">subagent</td>
+<td data-label="分工">语言无关的依赖、构建、CI/CD、网关、部署、密钥和 IaC；分析目标容器配置源码</td>
+<td data-label="当前调用场景">当前 Platform Worker 的专业参考；不执行目标容器</td>
+</tr>
+<tr data-search-row>
+<td data-label="Agent"><code>ai-security-auditor</code></td>
+<td data-label="定义模式">subagent</td>
+<td data-label="分工">AI/LLM、Agent、RAG、记忆、工具/MCP、模型供应链；Agent 工具执行与权限专项</td>
+<td data-label="当前调用场景">当前 AI Worker 的专业参考</td>
+</tr>
+<tr data-search-row>
+<td data-label="Agent"><code>vulnerability-validator</code></td>
+<td data-label="定义模式">subagent</td>
+<td data-label="分工">逐任务核查报告质量；组织候选的独立正方、反方、裁决</td>
+<td data-label="当前调用场景">当前 TaskBoard 收尾必经；零候选仍做质量复核</td>
+</tr>
+<tr data-search-row>
+<td data-label="Agent"><code>vulnerability-affirmative</code></td>
+<td data-label="定义模式">subagent</td>
+<td data-label="分工">独立证明可达性、输入控制、边界突破、影响与运行证据有效性</td>
+<td data-label="当前调用场景">当前有候选时调用</td>
+</tr>
+<tr data-search-row>
+<td data-label="Agent"><code>vulnerability-negative</code></td>
+<td data-label="定义模式">subagent</td>
+<td data-label="分工">独立查找守卫、框架语义、前提冲突等反证，再核查正方结果</td>
+<td data-label="当前调用场景">当前有候选时调用</td>
+</tr>
+<tr data-search-row>
+<td data-label="Agent"><code>vulnerability-moderator</code></td>
+<td data-label="定义模式">subagent</td>
+<td data-label="分工">核对双方证据，给出 TRUE_POSITIVE / FALSE_POSITIVE / INCONCLUSIVE</td>
+<td data-label="当前调用场景">当前有候选时调用</td>
+</tr>
+<tr data-search-row>
+<td data-label="Agent"><code>security-evidence-correlator</code></td>
+<td data-label="定义模式">subagent</td>
+<td data-label="分工">旧流程覆盖归一、证据去重、矛盾、缺口和补查包</td>
+<td data-label="当前调用场景">保留给旧 Focus/Tri-Lens 流程；不是默认 TaskBoard 必经模型阶段</td>
+</tr>
+<tr data-search-row>
+<td data-label="Agent"><code>security-finding-adjudicator</code></td>
+<td data-label="定义模式">subagent</td>
+<td data-label="分工">旧 Finding v2 的初步语义裁决、守卫和反例检查</td>
+<td data-label="当前调用场景">保留给旧流程；默认 TaskBoard 采用报告复核与三方契约</td>
+</tr>
+<tr data-search-row>
+<td data-label="Agent"><code>security-attack-chain-hunter</code></td>
+<td data-label="定义模式">subagent</td>
+<td data-label="分工">跨 Focus Area、资产和信任边界的系统攻击链挖掘</td>
+<td data-label="当前调用场景">保留给旧流程；产品跨 Repo 有独立实现</td>
+</tr>
+<tr data-search-row>
+<td data-label="Agent"><code>security-skill-optimizer</code></td>
+<td data-label="定义模式">subagent</td>
+<td data-label="分工">从已裁决结果维护审计 Skills、Joern 规则、漏洞和误报案例</td>
+<td data-label="当前调用场景">旧流程反馈维护角色；默认 TaskBoard 不自动启动它</td>
+</tr>
+<tr data-search-row>
+<td data-label="Agent"><code>quick-dynamic-validator</code></td>
+<td data-label="定义模式">subagent</td>
+<td data-label="分工">旧版显式授权的 loopback 快速确认，共享准备最多 240 秒、每报告最多 180 秒</td>
+<td data-label="当前调用场景">旧 quick 协议；当前贯穿式运行测试不调用</td>
+</tr>
+<tr data-search-row>
+<td data-label="Agent"><code>dynamic-vulnerability-validator</code></td>
+<td data-label="定义模式">primary</td>
+<td data-label="分工">对已封存 Web 发现进行显式人工补充验证，输出绑定证据</td>
+<td data-label="当前调用场景">保留的人工验证入口；不属于每次静态挖掘必经步骤</td>
+</tr>
+</tbody>
+</table></div>
+<p>依据：<a href="../.opencode/agents/">角色定义目录</a>、<a href="../.opencode/agent-manifest/roles.json">角色注册表</a>、<a href="../.opencode/lib/task-board/workflow.md">当前协议分支</a>。</p>
+<h3 id="section-5">平台运行时生成的角色</h3>
+<p>当前 Worker 由平台另起 OpenCode 会话，使用动态配置中的 <code>primary</code> 角色；它们不是 Orchestrator 对每个任务调用 <code>task</code> 创建的 subagent。</p>
+<div class="table-wrap"><table>
+<thead>
+<tr>
+<th>运行角色</th>
+<th>专业来源或职责</th>
+<th>启动者</th>
+</tr>
+</thead>
+<tbody>
+<tr data-search-row>
+<td data-label="运行角色"><code>task-board-java-worker</code></td>
+<td data-label="专业来源或职责">Java/JVM 漏洞挖掘</td>
+<td data-label="启动者">TaskBoard Monitor</td>
+</tr>
+<tr data-search-row>
+<td data-label="运行角色"><code>task-board-web-worker</code></td>
+<td data-label="专业来源或职责">浏览器与模板源码漏洞挖掘</td>
+<td data-label="启动者">TaskBoard Monitor</td>
+</tr>
+<tr data-search-row>
+<td data-label="运行角色"><code>task-board-python-worker</code></td>
+<td data-label="专业来源或职责">Python 漏洞挖掘</td>
+<td data-label="启动者">TaskBoard Monitor</td>
+</tr>
+<tr data-search-row>
+<td data-label="运行角色"><code>task-board-c-cpp-worker</code></td>
+<td data-label="专业来源或职责">C/C++ 漏洞挖掘</td>
+<td data-label="启动者">TaskBoard Monitor</td>
+</tr>
+<tr data-search-row>
+<td data-label="运行角色"><code>task-board-platform-worker</code></td>
+<td data-label="专业来源或职责">平台配置与公共边界漏洞挖掘</td>
+<td data-label="启动者">TaskBoard Monitor</td>
+</tr>
+<tr data-search-row>
+<td data-label="运行角色"><code>task-board-ai-worker</code></td>
+<td data-label="专业来源或职责">AI 风险；显式选择时执行 Agent 工具边界静态专项</td>
+<td data-label="启动者">TaskBoard Monitor</td>
+</tr>
+<tr data-search-row>
+<td data-label="运行角色"><code>runtime-testing-worker</code></td>
+<td data-label="专业来源或职责">每次只执行一个 CONTACT / EXPLORE / CONFIRM / CLEANUP 包</td>
+<td data-label="启动者">运行测试控制器；只允许 <code>runtime-browser_*</code></td>
+</tr>
+<tr data-search-row>
+<td data-label="运行角色"><code>security-cross-repo-analyzer</code></td>
+<td data-label="专业来源或职责">核对多 Repo 当前版本的调用、身份传播、共同根因、入口和组合链路，提出候选与 TODO</td>
+<td data-label="启动者">产品批次控制器</td>
+</tr>
+<tr data-search-row>
+<td data-label="运行角色"><code>cross-repo-affirmative</code></td>
+<td data-label="专业来源或职责">逐项核查跨 Repo 候选的支持证据</td>
+<td data-label="启动者">产品批次控制器；有候选时</td>
+</tr>
+<tr data-search-row>
+<td data-label="运行角色"><code>cross-repo-negative</code></td>
+<td data-label="专业来源或职责">检查跨 Repo 参数、身份、守卫、部署与版本差异等反证</td>
+<td data-label="启动者">产品批次控制器；有候选时</td>
+</tr>
+<tr data-search-row>
+<td data-label="运行角色"><code>cross-repo-moderator</code></td>
+<td data-label="专业来源或职责">对跨 Repo 候选作独立终局裁决</td>
+<td data-label="启动者">产品批次控制器；有候选时</td>
+</tr>
+</tbody>
+</table></div>
+<p>因此有 <strong>11 种运行时角色名称</strong>；这不等于常驻 11 个 Agent，也不能与 19 个定义相加理解为同时执行的实例数。每个专业 Worker 一次处理一个任务，同领域串行、跨领域默认最多 4 个；每次任务建立独立会话。Worker 禁止嵌套 <code>task</code>，不持有动态控制连接或私有环境原文。</p>
+<p>独立静态 Worker 与跨 Repo 会话共享进程内配额，默认 4，<code>AUDIT_WORKER_CONCURRENCY</code> 可设为 1–16。该配额不包含 Orchestrator、其内嵌 subagents 或动态 Worker，不能视为全平台模型并发上限。产品 Repo 子审计另有默认 2、最多 4 的并发限制。</p>
+<p>依据：<a href="../.opencode/lib/task-board/service.mjs">Worker 配置与分派</a>、<a href="../.opencode/lib/runtime-testing/service.mjs">运行 Worker</a>、<a href="../.opencode/lib/product-memory/cross-worker.mjs">跨 Repo Worker</a>、<a href="../.opencode/lib/agent-slots.mjs">独立会话配额</a>。</p>
+<h2 id="section-6">集成工具功能分类</h2>
+<p>工具、Skill、MCP 和平台服务属于不同层：工具提供操作能力，Skill 提供分析方法与交付契约，MCP 提供受控工具接口，平台服务维护状态与证据。知识检索、任务调度和静态扫描的本地 CLI 不应列为 MCP。</p>
+<div class="table-wrap"><table>
+<thead>
+<tr>
+<th>分类</th>
+<th>工具和入口</th>
+<th>功能与使用边界</th>
+</tr>
+</thead>
+<tbody>
+<tr data-search-row>
+<td data-label="分类">基础代码操作</td>
+<td data-label="工具和入口">OpenCode <code>read/glob/grep/list</code>、<code>bash</code>、<code>lsp</code>，Git、rg</td>
+<td data-label="功能与使用边界">读取源码、定位符号、版本与差异；源码只读由执行契约要求，不代表所有角色的通用 bash 已做操作系统级沙箱</td>
+</tr>
+<tr data-search-row>
+<td data-label="分类">角色委派</td>
+<td data-label="工具和入口">OpenCode <code>task</code></td>
+<td data-label="功能与使用边界">Orchestrator 委派 Recon/Threat/Validator；Validator 委派三方。独立静态、动态及跨 Repo Worker 禁止再委派</td>
+</tr>
+<tr data-search-row>
+<td data-label="分类">方法装载</td>
+<td data-label="工具和入口">OpenCode <code>skill</code>、集合注册与 SKILL.md</td>
+<td data-label="功能与使用边界">按专业和风险按需载入方法；集合 owner 是职责映射，不是每个 Skill 的强隔离权限列表</td>
+</tr>
+<tr data-search-row>
+<td data-label="分类">范围和结构清单</td>
+<td data-label="工具和入口"><code>build-scope-manifest</code>、<code>build-parser-capabilities</code>、<code>build-function-manifests</code>、<code>build-interface-manifest</code>、<code>verify-interface-extractors</code>、<code>build-threat-routing-index</code></td>
+<td data-label="功能与使用边界">冻结文件、能力探测、函数/接口和紧凑路由；Java 使用 javac，JS 和其他适用语言使用 Joern，模板有嵌入式提取；不可用保留 GAP</td>
+</tr>
+<tr data-search-row>
+<td data-label="分类">基础静态扫描</td>
+<td data-label="工具和入口"><code>static-scan.mjs</code>、OpenGrep / Semgrep</td>
+<td data-label="功能与使用边界">doctor、plan、run、verify、aggregate；执行选定规则并生成摘要绑定 SARIF；命中只是线索，未命中不关闭覆盖</td>
+</tr>
+<tr data-search-row>
+<td data-label="分类">密钥和依赖扫描</td>
+<td data-label="工具和入口">Gitleaks、OSV-Scanner</td>
+<td data-label="功能与使用边界">可选的敏感值和依赖风险扫描；是否能执行取决于实际安装与适用性</td>
+</tr>
+<tr data-search-row>
+<td data-label="分类">深度静态分析</td>
+<td data-label="工具和入口"><code>joern-parse</code>、<code>joern</code>、<code>joern-rules/</code></td>
+<td data-label="功能与使用边界">AST/CPG、调用者与数据流规则；直接 CLI，未注册成 MCP；缺失不阻断基础模式扫描，相关函数/数据流声明保留限制</td>
+</tr>
+<tr data-search-row>
+<td data-label="分类">知识检索</td>
+<td data-label="工具和入口"><code>knowledge-query.mjs</code> → Python 原生知识索引</td>
+<td data-label="功能与使用边界">根因、案例、检测器、分类和质量的只读查询；保留来源摘要、过期及 PARTIAL 信息；blind 在读库前跳过</td>
+</tr>
+<tr data-search-row>
+<td data-label="分类">TaskBoard 控制</td>
+<td data-label="工具和入口"><code>task-board.mjs</code> → 私有 loopback 服务</td>
+<td data-label="功能与使用边界">发布、seal、status/list/wait、skip、review-input、bind、review、finalize；状态由平台维护，Agent 不直接改队列</td>
+</tr>
+<tr data-search-row>
+<td data-label="分类">越权专项</td>
+<td data-label="工具和入口"><code>bac-analysis.mjs</code>、ACP Skill、Java 路径分析、BAC Python 校验</td>
+<td data-label="功能与使用边界">独立预期 D/O/R/AC，与入口到数据库实际控制作差分；未知不能当作缺失；TaskBoard 使用 <code>bac-task-plan.v1</code></td>
+</tr>
+<tr data-search-row>
+<td data-label="分类">Agent 静态专项</td>
+<td data-label="工具和入口"><code>agent-mining.mjs</code>、<code>lib/agent-mining/</code></td>
+<td data-label="功能与使用边界">prepare 定位和知识快照；Agent 追踪调用与权限；finish 核查绑定和必要证据，区分 CANDIDATE / LEAD / GAP；不构建攻击 prompt 或执行目标工具</td>
+</tr>
+<tr data-search-row>
+<td data-label="分类">运行测试与浏览器</td>
+<td data-label="工具和入口"><code>runtime-testing.mjs</code>、<code>runtime-browser</code>、Chrome DevTools MCP</td>
+<td data-label="功能与使用边界">按明确授权登记环境、排队测试、收集证据与清理；同环境串行、身份隔离、origin 代理限制；不是通用网络访问能力</td>
+</tr>
+<tr data-search-row>
+<td data-label="分类">人工补充与桌面探针</td>
+<td data-label="工具和入口"><code>dynamic-validation-cli.mjs</code>、<code>windows-control-*</code>、winapp CLI</td>
+<td data-label="功能与使用边界">补充动态验证保留独立 sidecar；Windows 控件探针默认禁用、只适用于授权 Windows 测试夹具</td>
+</tr>
+<tr data-search-row>
+<td data-label="分类">产品长期记忆</td>
+<td data-label="工具和入口"><code>audit-memory.mjs</code> → 私有记忆 API、SQLite <code>pm_*</code></td>
+<td data-label="功能与使用边界">context/search/show/issue/compare/propose/todos/todo-create/todo-answer；记录事实、理由、版本、关系和 TODO；Worker 不能修改人工判断</td>
+</tr>
+<tr data-search-row>
+<td data-label="分类">报告与证据</td>
+<td data-label="工具和入口">TaskBoard report/review 模块、Finding 校验、SARIF、摘要与受控路径</td>
+<td data-label="功能与使用边界">接收回执、保存独立报告副本、核查真实会话和逐项覆盖、生成中文终稿；结构校验不替代语义判断</td>
+</tr>
+<tr data-search-row>
+<td data-label="分类">旧流程兼容</td>
+<td data-label="工具和入口"><code>audit-todo.mjs</code>、coverage/Stage/Finding v2/CVSS/attack-chain 脚本、watchdog plugin</td>
+<td data-label="功能与使用边界">恢复历史 <code>local-todo.v1</code> 制品及旧流水线；默认 TaskBoard 不使用旧账本或 Stage 门禁决定完成</td>
+</tr>
+</tbody>
+</table></div>
+<p>这些是代码已集成的能力，不是本机安装成功清单。默认专业 Worker 关闭 <code>webfetch/websearch</code> 和浏览器 MCP；不能把全局配置的 allow 理解为每个 Worker 都可联网。依据：<a href="../.opencode/scripts/static-scan.mjs">扫描入口</a>、<a href="../.opencode/skills/common-subagent/audit-coverage-accounting/scripts/build-function-manifests.mjs">函数提取入口</a>、<a href="../.opencode/lib/knowledge-workflow.mjs">知识适配器</a>。</p>
+<h2 id="section-7">Skills 功能清单</h2>
+<p>项目内有 <strong>14 个集合、56 个 SKILL.md</strong>。以下仅统计工作台 <code>.opencode/skills/</code> 的能力；本次用于出图的 show-me、文档规范 write-page，以及助手个人安装的 Skills 不属于产品集成清单。链接指向集合目录，每行对应其中同名目录的 <code>SKILL.md</code>。</p>
+<h3 id="section-8">通用审计方法</h3>
+<p>集合：<a href="../.opencode/skills/common-subagent/">common-subagent</a>，7 项，共享。</p>
+<div class="table-wrap"><table>
+<thead>
+<tr>
+<th>Skill</th>
+<th>功能简述</th>
+</tr>
+</thead>
+<tbody>
+<tr data-search-row>
+<td data-label="Skill"><code>secure-code-review-common</code></td>
+<td data-label="功能简述">通用审查方法，围绕威胁、输入到影响、有效守卫及证据分析</td>
+</tr>
+<tr data-search-row>
+<td data-label="Skill"><code>audit-coverage-accounting</code></td>
+<td data-label="功能简述">范围、文件、函数、接口、目录和语义覆盖的构建与校验；全量覆盖账本主要用于旧流程</td>
+</tr>
+<tr data-search-row>
+<td data-label="Skill"><code>audit-artifact-management</code></td>
+<td data-label="功能简述">制品路径、摘要、阶段与角色交付、报告留存；包含旧八阶段契约</td>
+</tr>
+<tr data-search-row>
+<td data-label="Skill"><code>focus-area-vulnerability-discovery</code></td>
+<td data-label="功能简述">Focus 内的覆盖、盲审和案例引导变体挖掘，区分发现与覆盖闭合</td>
+</tr>
+<tr data-search-row>
+<td data-label="Skill"><code>finding-evidence-contract</code></td>
+<td data-label="功能简述">Finding 结构、证据绑定和外部运行验证交接契约</td>
+</tr>
+<tr data-search-row>
+<td data-label="Skill"><code>finding-adjudication</code></td>
+<td data-label="功能简述">候选的独立语义裁决、守卫与反例；主要对应旧 Finding v2 流程</td>
+</tr>
+<tr data-search-row>
+<td data-label="Skill"><code>detect-bac-risks</code></td>
+<td data-label="功能简述">比较预期数据库访问策略与实际路径，保留未知并转为静态候选</td>
+</tr>
+</tbody>
+</table></div>
+<h3 id="section-9">侦察和威胁建模</h3>
+<div class="table-wrap"><table>
+<thead>
+<tr>
+<th>集合与主要角色</th>
+<th>Skill</th>
+<th>功能简述</th>
+</tr>
+</thead>
+<tbody>
+<tr data-search-row>
+<td data-label="集合与主要角色"><a href="../.opencode/skills/security-intel-subagent/">security-intel-subagent</a> · Intel</td>
+<td data-label="Skill"><code>security-recon</code></td>
+<td data-label="功能简述">五层攻击面、入口、sink、敏感操作、配置与 AI 表面清单</td>
+</tr>
+<tr data-search-row>
+<td data-label="集合与主要角色"><a href="../.opencode/skills/threat-modeling-subagent/">threat-modeling-subagent</a> · Threat</td>
+<td data-label="Skill"><code>evidence-backed-threat-modeling</code></td>
+<td data-label="功能简述">资产、主体、安全不变量、信任边界、攻击故事和风险规划</td>
+</tr>
+<tr data-search-row>
+<td data-label="集合与主要角色">同上</td>
+<td data-label="Skill"><code>extract-acp-quadruples</code></td>
+<td data-label="功能简述">独立恢复预期数据库访问策略的 D/O/R/AC 四元组，不扩展原模型</td>
+</tr>
+</tbody>
+</table></div>
+<h3 id="section-10">Java 和 JVM 审计</h3>
+<p>集合：<a href="../.opencode/skills/java-subagent/">java-subagent</a>，26 项，主要角色 <code>java-source-auditor</code> / Java Worker。</p>
+<div class="table-wrap"><table>
+<thead>
+<tr>
+<th>Skill</th>
+<th>功能简述</th>
+</tr>
+</thead>
+<tbody>
+<tr data-search-row>
+<td data-label="Skill"><code>java-web-comprehensive-review</code></td>
+<td data-label="功能简述">Java/JVM 与服务端 Web 的综合审查入口，组织适用风险与证据</td>
+</tr>
+<tr data-search-row>
+<td data-label="Skill"><code>java-web-security-review</code></td>
+<td data-label="功能简述">Web 认证授权、Spring Security、文件、SSRF 与框架配置</td>
+</tr>
+<tr data-search-row>
+<td data-label="Skill"><code>java-access-path-analysis</code></td>
+<td data-label="功能简述">入口到数据库路径、角色和归属控制，供 BAC 差分分析</td>
+</tr>
+<tr data-search-row>
+<td data-label="Skill"><code>java-injection-review</code></td>
+<td data-label="功能简述">SQL、JPQL、LDAP、XPath、模板、表达式、命令与类加载注入总览</td>
+</tr>
+<tr data-search-row>
+<td data-label="Skill"><code>java-deserialization-review</code></td>
+<td data-label="功能简述">对象映射、gadget 链、多态类型和类型解析综合检查</td>
+</tr>
+<tr data-search-row>
+<td data-label="Skill"><code>java-sql-injection</code></td>
+<td data-label="功能简述">JDBC、MyBatis、JPA 等 SQL/查询拼接、动态标识符与二次注入</td>
+</tr>
+<tr data-search-row>
+<td data-label="Skill"><code>java-nosql-injection</code></td>
+<td data-label="功能简述">MongoDB 查询、JSON 操作符、SpEL 和相关脚本输入</td>
+</tr>
+<tr data-search-row>
+<td data-label="Skill"><code>java-ldap-injection</code></td>
+<td data-label="功能简述">LDAP filter 与 DN 的输入编码、拼接和参数化</td>
+</tr>
+<tr data-search-row>
+<td data-label="Skill"><code>java-xpath-injection</code></td>
+<td data-label="功能简述">XPath 查询构造和变量绑定</td>
+</tr>
+<tr data-search-row>
+<td data-label="Skill"><code>java-command-injection</code></td>
+<td data-label="功能简述">Runtime.exec、ProcessBuilder 等命令与参数边界</td>
+</tr>
+<tr data-search-row>
+<td data-label="Skill"><code>java-spel-injection</code></td>
+<td data-label="功能简述">SpEL 求值上下文、表达式输入与允许范围</td>
+</tr>
+<tr data-search-row>
+<td data-label="Skill"><code>java-xss</code></td>
+<td data-label="功能简述">响应、JSP 与模板输出的上下文编码和净化</td>
+</tr>
+<tr data-search-row>
+<td data-label="Skill"><code>java-xxe</code></td>
+<td data-label="功能简述">XML 外部实体、DTD、XInclude 与解析器安全配置</td>
+</tr>
+<tr data-search-row>
+<td data-label="Skill"><code>java-jwt-misuse</code></td>
+<td data-label="功能简述">JWT 签名、算法混淆、密钥及 exp/aud/iss 等声明验证</td>
+</tr>
+<tr data-search-row>
+<td data-label="Skill"><code>java-csrf</code></td>
+<td data-label="功能简述">Cookie 认证的状态修改入口与 CSRF 防护</td>
+</tr>
+<tr data-search-row>
+<td data-label="Skill"><code>java-idor</code></td>
+<td data-label="功能简述">对象、租户、角色和父子资源的授权绑定</td>
+</tr>
+<tr data-search-row>
+<td data-label="Skill"><code>java-deserialization</code></td>
+<td data-label="功能简述">ObjectInputStream、Fastjson、Jackson、YAML 等危险对象重建</td>
+</tr>
+<tr data-search-row>
+<td data-label="Skill"><code>java-path-traversal</code></td>
+<td data-label="功能简述">文件读写删除、归档解压、Zip Slip 与根目录约束</td>
+</tr>
+<tr data-search-row>
+<td data-label="Skill"><code>java-file-upload</code></td>
+<td data-label="功能简述">上传类型、命名、存储和 Web 可访问位置</td>
+</tr>
+<tr data-search-row>
+<td data-label="Skill"><code>java-ssrf</code></td>
+<td data-label="功能简述">服务端目标地址、协议、端口、重定向与允许列表</td>
+</tr>
+<tr data-search-row>
+<td data-label="Skill"><code>java-resource-exhaustion</code></td>
+<td data-label="功能简述">分配、分页、批量、递归、队列与并发参数的上下限</td>
+</tr>
+<tr data-search-row>
+<td data-label="Skill"><code>java-open-redirect</code></td>
+<td data-label="功能简述">重定向目的地验证与编码、相对路径等绕过条件</td>
+</tr>
+<tr data-search-row>
+<td data-label="Skill"><code>java-weak-cryptography</code></td>
+<td data-label="功能简述">算法、模式、IV、随机数与口令哈希</td>
+</tr>
+<tr data-search-row>
+<td data-label="Skill"><code>java-hardcoded-secrets</code></td>
+<td data-label="功能简述">源码与配置中的密码、密钥、JWT secret 和云凭证</td>
+</tr>
+<tr data-search-row>
+<td data-label="Skill"><code>java-log-injection</code></td>
+<td data-label="功能简述">日志换行、伪造记录和输出边界</td>
+</tr>
+<tr data-search-row>
+<td data-label="Skill"><code>java-mass-assignment</code></td>
+<td data-label="功能简述">HTTP/JSON 自动绑定对权限、归属、余额和状态字段的覆盖</td>
+</tr>
+</tbody>
+</table></div>
+<p>综合 review 与同类专项 Skill 是不同粒度的方法资产，不表示同一文件会被重复调度两次。</p>
+<h3 id="section-11">Web Python C++ 和平台审计</h3>
+<div class="table-wrap"><table>
+<thead>
+<tr>
+<th>集合与主要角色</th>
+<th>Skill</th>
+<th>功能简述</th>
+</tr>
+</thead>
+<tbody>
+<tr data-search-row>
+<td data-label="集合与主要角色"><a href="../.opencode/skills/web-subagent/">web-subagent</a> · Web</td>
+<td data-label="Skill"><code>web-source-security-review</code></td>
+<td data-label="功能简述">JS/TS、HTML、JSP 及各类模板的输出、浏览器行为与安全边界</td>
+</tr>
+<tr data-search-row>
+<td data-label="集合与主要角色"><a href="../.opencode/skills/python-subagent/">python-subagent</a> · Python</td>
+<td data-label="Skill"><code>python-web-framework-review</code></td>
+<td data-label="功能简述">Django、Flask、FastAPI、Starlette 的认证、CSRF/CORS、文件和配置</td>
+</tr>
+<tr data-search-row>
+<td data-label="集合与主要角色">同上</td>
+<td data-label="Skill"><code>python-execution-review</code></td>
+<td data-label="功能简述">命令、动态代码、插件、import 与模板求值</td>
+</tr>
+<tr data-search-row>
+<td data-label="集合与主要角色">同上</td>
+<td data-label="Skill"><code>python-deserialization-review</code></td>
+<td data-label="功能简述">pickle、YAML、jsonpickle 等对象重建</td>
+</tr>
+<tr data-search-row>
+<td data-label="集合与主要角色">同上</td>
+<td data-label="Skill"><code>python-dependency-config-review</code></td>
+<td data-label="功能简述">依赖、配置加载、密钥、日志与部署默认值</td>
+</tr>
+<tr data-search-row>
+<td data-label="集合与主要角色"><a href="../.opencode/skills/c-cpp-subagent/">c-cpp-subagent</a> · C/C++</td>
+<td data-label="Skill"><code>c-cpp-memory-safety-review</code></td>
+<td data-label="功能简述">越界、UAF、double free、整数溢出、格式化与栈安全</td>
+</tr>
+<tr data-search-row>
+<td data-label="集合与主要角色">同上</td>
+<td data-label="Skill"><code>c-cpp-native-boundary-review</code></td>
+<td data-label="功能简述">原生接口、IPC、系统调用、插件与 FFI 信任边界</td>
+</tr>
+<tr data-search-row>
+<td data-label="集合与主要角色">同上</td>
+<td data-label="Skill"><code>c-cpp-file-privilege-review</code></td>
+<td data-label="功能简述">文件、进程、临时文件、符号链接与权限处理</td>
+</tr>
+<tr data-search-row>
+<td data-label="集合与主要角色"><a href="../.opencode/skills/platform-subagent/">platform-subagent</a> · Platform</td>
+<td data-label="Skill"><code>platform-security-review</code></td>
+<td data-label="功能简述">依赖、构建、CI/CD、网关、密钥、网络、IaC 与部署制品</td>
+</tr>
+</tbody>
+</table></div>
+<h3 id="section-12">AI 和 Agent 专项</h3>
+<p>集合：<a href="../.opencode/skills/ai-subagent/">ai-subagent</a>，2 项，主要角色 <code>ai-security-auditor</code> / <code>task-board-ai-worker</code>。</p>
+<div class="table-wrap"><table>
+<thead>
+<tr>
+<th>Skill</th>
+<th>功能简述</th>
+</tr>
+</thead>
+<tbody>
+<tr data-search-row>
+<td data-label="Skill"><code>ai-system-security-review</code></td>
+<td data-label="功能简述">AI/LLM、Agent、RAG/vector、记忆、工具/MCP、模型供应链与评估风险</td>
+</tr>
+<tr data-search-row>
+<td data-label="Skill"><code>agent-tool-boundary-mining</code></td>
+<td data-label="功能简述">API/function/skill/MCP 导致的工具执行 RCE、越权调用、框架访问控制绕过；只做证据驱动的静态挖掘</td>
+</tr>
+</tbody>
+</table></div>
+<h3 id="section-13">复核 动态和知识维护</h3>
+<div class="table-wrap"><table>
+<thead>
+<tr>
+<th>集合与主要角色</th>
+<th>Skill</th>
+<th>功能简述</th>
+</tr>
+</thead>
+<tbody>
+<tr data-search-row>
+<td data-label="集合与主要角色"><a href="../.opencode/skills/evidence-correlation-subagent/">evidence-correlation-subagent</a> · Correlator</td>
+<td data-label="Skill"><code>tri-lens-evidence-correlation</code></td>
+<td data-label="功能简述">旧流程覆盖归一、去重、冲突、缺口和后续工作包</td>
+</tr>
+<tr data-search-row>
+<td data-label="集合与主要角色"><a href="../.opencode/skills/attack-chain-subagent/">attack-chain-subagent</a> · Chain Hunter</td>
+<td data-label="Skill"><code>system-attack-chain-hunting</code></td>
+<td data-label="功能简述">跨模块和信任边界组合攻击链，核查每个连接条件</td>
+</tr>
+<tr data-search-row>
+<td data-label="集合与主要角色"><a href="../.opencode/skills/vulnerability-validator-subagent/">vulnerability-validator-subagent</a> · Validator</td>
+<td data-label="Skill"><code>vulnerability-validation</code></td>
+<td data-label="功能简述">按版本消费运行或旧 quick 证据，组织独立三方真实性复核</td>
+</tr>
+<tr data-search-row>
+<td data-label="集合与主要角色"><a href="../.opencode/skills/dynamic-vulnerability-validator-subagent/">dynamic-vulnerability-validator-subagent</a> · Manual Dynamic</td>
+<td data-label="Skill"><code>web-runtime-validation</code></td>
+<td data-label="功能简述">显式人工请求的非 XSS Web 验证，保留 loopback 旧契约</td>
+</tr>
+<tr data-search-row>
+<td data-label="集合与主要角色">同上</td>
+<td data-label="Skill"><code>web-xss-runtime-validation</code></td>
+<td data-label="功能简述">授权 localhost XSS 验证，强调应用提交、重访和隔离身份</td>
+</tr>
+<tr data-search-row>
+<td data-label="集合与主要角色">同上</td>
+<td data-label="Skill"><code>winapp-ui-automation</code></td>
+<td data-label="功能简述">授权 Windows 测试程序的控件、窗口、状态检查与最小截图</td>
+</tr>
+<tr data-search-row>
+<td data-label="集合与主要角色"><a href="../.opencode/skills/security-skill-optimizer-subagent/">security-skill-optimizer-subagent</a> · Optimizer</td>
+<td data-label="Skill"><code>audit-skill-optimization</code></td>
+<td data-label="功能简述">根据已裁决结果调整方法和提示，保持角色边界</td>
+</tr>
+<tr data-search-row>
+<td data-label="集合与主要角色">同上</td>
+<td data-label="Skill"><code>joern-rule-maintenance</code></td>
+<td data-label="功能简述">从真假裁决维护 Joern 规则和元数据</td>
+</tr>
+<tr data-search-row>
+<td data-label="集合与主要角色">同上</td>
+<td data-label="Skill"><code>audit-casebase-maintenance</code></td>
+<td data-label="功能简述">维护带维度、视角和反例的漏洞与误报案例</td>
+</tr>
+</tbody>
+</table></div>
+<p><code>runtime-testing-worker</code> 采用控制器专用 prompt 和受控 MCP，不自动加载上述人工动态 Skills。Skills 的存在、角色允许装载、实际选用是三个不同状态。依据：<a href="../.opencode/agent-manifest/skill-map.json">集合映射</a>、各集合 <code>collection.json</code> 与 <code>SKILL.md</code>。</p>
+<h2 id="section-14">MCP 功能与启用状态</h2>
+<p>当前项目配置及模板均有 <strong>6 个 MCP 配置项</strong>：1 个配置启用，1 个实验默认禁用，4 个未启用占位。贯穿式动态测试执行时另注入 <strong>1 个临时网关</strong>。</p>
+<div class="table-wrap"><table>
+<thead>
+<tr>
+<th>MCP</th>
+<th>功能简述</th>
+<th>当前状态与消费者</th>
+</tr>
+</thead>
+<tbody>
+<tr data-search-row>
+<td data-label="MCP"><code>chrome-devtools</code></td>
+<td data-label="功能简述">Chrome 页面、导航、真实表单交互、DOM 快照、控制台和网络证据</td>
+<td data-label="当前状态与消费者">配置启用，固定 <code>chrome-devtools-mcp@1.8.0</code>；默认静态角色禁止使用。旧 quick/manual 角色直接使用；新运行测试由控制器按身份创建隔离实例</td>
+</tr>
+<tr data-search-row>
+<td data-label="MCP"><code>runtime-browser</code></td>
+<td data-label="功能简述"><code>register_sensitive_values</code> 脱敏登记；<code>configure_environment</code> 环境登记；<code>browser_tools</code> 发现获准工具；<code>browser_call</code> 代理调用；<code>submit_result</code> 提交结果并结束租约</td>
+<td data-label="当前状态与消费者">动态生成，非全局常驻配置；只向 <code>runtime-testing-worker</code> 开放。底层仍使用 Chrome DevTools MCP</td>
+</tr>
+<tr data-search-row>
+<td data-label="MCP"><code>windows-control</code></td>
+<td data-label="功能简述">status、inspect、set_value、invoke、get_state、wait_for、cleanup、close；只操作登记控件和本次 marker</td>
+<td data-label="当前状态与消费者">实验实现，默认 disabled；Windows 授权夹具探针，未接入默认 TaskBoard/运行测试调度</td>
+</tr>
+<tr data-search-row>
+<td data-label="MCP"><code>cpp_index</code></td>
+<td data-label="功能简述">规划中的 C/C++ 符号、调用图和构建元数据索引</td>
+<td data-label="当前状态与消费者">placeholder，disabled；专业权限映射保留，不代表服务已经实现或可调用</td>
+</tr>
+<tr data-search-row>
+<td data-label="MCP"><code>jvm_index</code></td>
+<td data-label="功能简述">规划中的 JVM 依赖、框架与调用关系索引</td>
+<td data-label="当前状态与消费者">placeholder，disabled</td>
+</tr>
+<tr data-search-row>
+<td data-label="MCP"><code>python_index</code></td>
+<td data-label="功能简述">规划中的 Python import、框架与调用关系索引</td>
+<td data-label="当前状态与消费者">placeholder，disabled</td>
+</tr>
+<tr data-search-row>
+<td data-label="MCP"><code>audit_lab</code></td>
+<td data-label="功能简述">规划中的受控本地验证辅助</td>
+<td data-label="当前状态与消费者">placeholder，disabled</td>
+</tr>
+</tbody>
+</table></div>
+<p>运行链路是 <code>runtime-testing-worker → runtime-browser → 控制器租约与 origin 代理 → Chrome DevTools MCP → 授权环境</code>。登记完成前不启动浏览器；静态候选或运行请求文件本身不授予执行许可。</p>
+<p>Joern、知识库、TaskBoard、长期记忆均不属于 MCP。旧覆盖账本仍有本地核心与脚本，但当前配置没有 <code>coverage_ledger</code> MCP。<code>context7</code>、<code>gh_grep</code>、CodeQL 和外部 truth-review MCP 不在当前项目配置中。用户全局 OpenCode 配置可能另有扩展，本文未把未核实的全局扩展算入产品清单。</p>
+<p>依据：<a href="../.opencode/opencode.json">本机项目配置</a>、<a href="../.opencode/opencode.json.bak">可提交配置模板</a>、<a href="../.opencode/agent-manifest/mcp-map.json">MCP 映射</a>、<a href="../.opencode/lib/runtime-testing/worker-mcp.mjs">动态网关</a>、<a href="../.opencode/lib/runtime-testing/browser.mjs">浏览器控制器</a>、<a href="../.opencode/scripts/windows-control-mcp.mjs">Windows MCP</a>。</p>
+<h2 id="section-15">完整漏洞挖掘流程</h2>
+<h3 id="section-16">单 Repo 未激活动态测试</h3>
+<figure class="diagram" data-diagram="1"><svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 1000 1280" role="img" aria-labelledby="diagram-title-1 diagram-desc-1"><title id="diagram-title-1">单 Repo 静态完整流程</title><desc id="diagram-desc-1">创建任务 产品与 Repo 选择；排队 冻结源码与范围 创建执行工作区；Recon 范围 入口 技术栈 函数与接口清单；Threat Modeler 高风险 Focus 或用户 API 规划；Orchestrator 分批 publish 然后 seal；平台 Monitor 分派六类独立静态 Worker；源码追踪 按需扫描 知识与记忆 BAC或AI专项；接收报告和回执 全部 REPORTED 或显式 GAP；review-input 全任务报告质量复核；有候选时 独立正方 反方 Moderator；review与finalize 中文报告 漏洞列表 记忆留存</desc><defs><marker id="arrow-1" markerWidth="8" markerHeight="8" refX="7" refY="4" orient="auto"><path d="M0,0 L8,4 L0,8 Z" fill="#6c8a7b"/></marker></defs><path d="M500,104 L500,131" fill="none" stroke="#6c8a7b" stroke-width="2"  marker-end="url(#arrow-1)"/><path d="M500,219 L500,246" fill="none" stroke="#6c8a7b" stroke-width="2"  marker-end="url(#arrow-1)"/><path d="M500,334 L500,361" fill="none" stroke="#6c8a7b" stroke-width="2"  marker-end="url(#arrow-1)"/><path d="M500,449 L500,476" fill="none" stroke="#6c8a7b" stroke-width="2"  marker-end="url(#arrow-1)"/><path d="M500,564 L500,591" fill="none" stroke="#6c8a7b" stroke-width="2"  marker-end="url(#arrow-1)"/><path d="M500,679 L500,706" fill="none" stroke="#6c8a7b" stroke-width="2"  marker-end="url(#arrow-1)"/><path d="M500,794 L500,821" fill="none" stroke="#6c8a7b" stroke-width="2"  marker-end="url(#arrow-1)"/><path d="M500,909 L500,936" fill="none" stroke="#6c8a7b" stroke-width="2"  marker-end="url(#arrow-1)"/><path d="M500,1024 L500,1051" fill="none" stroke="#6c8a7b" stroke-width="2"  marker-end="url(#arrow-1)"/><path d="M500,1139 L500,1166" fill="none" stroke="#6c8a7b" stroke-width="2"  marker-end="url(#arrow-1)"/><g><rect x="90" y="16" width="820" height="88" rx="14" fill="#fff" stroke="#c9d6ce" stroke-width="1.5"/><text x="105" y="33" fill="#6c8175" font-size="11">A</text><text x="500" y="67" text-anchor="middle" font-size="21" font-weight="600" fill="#17211d"><tspan x="500" dy="0">创建任务 产品与 Repo 选择</tspan></text></g><g><rect x="90" y="131" width="820" height="88" rx="14" fill="#fff" stroke="#c9d6ce" stroke-width="1.5"/><text x="105" y="148" fill="#6c8175" font-size="11">B</text><text x="500" y="182" text-anchor="middle" font-size="21" font-weight="600" fill="#17211d"><tspan x="500" dy="0">排队 冻结源码与范围 创建执行工作区</tspan></text></g><g><rect x="90" y="246" width="820" height="88" rx="14" fill="#fff" stroke="#c9d6ce" stroke-width="1.5"/><text x="105" y="263" fill="#6c8175" font-size="11">C</text><text x="500" y="297" text-anchor="middle" font-size="21" font-weight="600" fill="#17211d"><tspan x="500" dy="0">Recon 范围 入口 技术栈 函数与接口清单</tspan></text></g><g><rect x="90" y="361" width="820" height="88" rx="14" fill="#fff" stroke="#c9d6ce" stroke-width="1.5"/><text x="105" y="378" fill="#6c8175" font-size="11">D</text><text x="500" y="412" text-anchor="middle" font-size="21" font-weight="600" fill="#17211d"><tspan x="500" dy="0">Threat Modeler 高风险 Focus 或用户 API 规划</tspan></text></g><g><rect x="90" y="476" width="820" height="88" rx="14" fill="#fff" stroke="#c9d6ce" stroke-width="1.5"/><text x="105" y="493" fill="#6c8175" font-size="11">E</text><text x="500" y="527" text-anchor="middle" font-size="21" font-weight="600" fill="#17211d"><tspan x="500" dy="0">Orchestrator 分批 publish 然后 seal</tspan></text></g><g><rect x="90" y="591" width="820" height="88" rx="14" fill="#fff" stroke="#c9d6ce" stroke-width="1.5"/><text x="105" y="608" fill="#6c8175" font-size="11">F</text><text x="500" y="642" text-anchor="middle" font-size="21" font-weight="600" fill="#17211d"><tspan x="500" dy="0">平台 Monitor 分派六类独立静态 Worker</tspan></text></g><g><rect x="90" y="706" width="820" height="88" rx="14" fill="#fff" stroke="#c9d6ce" stroke-width="1.5"/><text x="105" y="723" fill="#6c8175" font-size="11">G</text><text x="500" y="757" text-anchor="middle" font-size="21" font-weight="600" fill="#17211d"><tspan x="500" dy="0">源码追踪 按需扫描 知识与记忆 BAC或AI专项</tspan></text></g><g><rect x="90" y="821" width="820" height="88" rx="14" fill="#fff" stroke="#c9d6ce" stroke-width="1.5"/><text x="105" y="838" fill="#6c8175" font-size="11">H</text><text x="500" y="872" text-anchor="middle" font-size="21" font-weight="600" fill="#17211d"><tspan x="500" dy="0">接收报告和回执 全部 REPORTED 或显式 GAP</tspan></text></g><g><rect x="90" y="936" width="820" height="88" rx="14" fill="#fff" stroke="#c9d6ce" stroke-width="1.5"/><text x="105" y="953" fill="#6c8175" font-size="11">I</text><text x="500" y="987" text-anchor="middle" font-size="21" font-weight="600" fill="#17211d"><tspan x="500" dy="0">review-input 全任务报告质量复核</tspan></text></g><g><rect x="90" y="1051" width="820" height="88" rx="14" fill="#fff" stroke="#c9d6ce" stroke-width="1.5"/><text x="105" y="1068" fill="#6c8175" font-size="11">J</text><text x="500" y="1102" text-anchor="middle" font-size="21" font-weight="600" fill="#17211d"><tspan x="500" dy="0">有候选时 独立正方 反方 Moderator</tspan></text></g><g><rect x="90" y="1166" width="820" height="88" rx="14" fill="#e8f4ee" stroke="#167c52" stroke-width="1.5"/><text x="105" y="1183" fill="#6c8175" font-size="11">K</text><text x="500" y="1217" text-anchor="middle" font-size="21" font-weight="600" fill="#17211d"><tspan x="500" dy="0">review与finalize 中文报告 漏洞列表 记忆留存</tspan></text></g></svg><details><summary>查看可编辑 Mermaid 源码</summary><pre><code>flowchart TB
+  A[创建任务 产品与 Repo 选择] --&gt; B[排队 冻结源码与范围 创建执行工作区]
+  B --&gt; C[Recon 范围 入口 技术栈 函数与接口清单]
+  C --&gt; D[Threat Modeler 高风险 Focus 或用户 API 规划]
+  D --&gt; E[Orchestrator 分批 publish 然后 seal]
+  E --&gt; F[平台 Monitor 分派六类独立静态 Worker]
+  F --&gt; G[源码追踪 按需扫描 知识与记忆 BAC或AI专项]
+  G --&gt; H[接收报告和回执 全部 REPORTED 或显式 GAP]
+  H --&gt; I[review-input 全任务报告质量复核]
+  I --&gt; J[有候选时 独立正方 反方 Moderator]
+  J --&gt; K[review与finalize 中文报告 漏洞列表 记忆留存]
+</code></pre></details><figcaption>实线表示调用或交付，虚线表示按需读取或基线回传。</figcaption></figure><p>动态开关关闭或环境文本为空时记 <code>SKIPPED</code>，不启动动态 Agent、浏览器或目标请求。知识库和长期记忆按模式在 Recon、规划、挖掘和复核中按需读取；本轮观察在报告接收后入库。图中 BAC/AI 为按配置选择的分支，不要求每个任务都执行两种专项。</p>
+<p>Focus 与 API 是互斥策略。Focus 规划高风险主题；API 针对用户输入的每条清单建立任务，一个 API 可以有并列专业任务。当前 TaskBoard 不承诺自动覆盖整个 Repo 的全部接口，不以旧 Tri-Lens 全量账本作为终稿门禁。</p>
+<h3 id="section-17">单 Repo 激活动态测试</h3>
+<figure class="diagram" data-diagram="2"><svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 1000 1095" role="img" aria-labelledby="diagram-title-2 diagram-desc-2"><title id="diagram-title-2">单 Repo 动静并行完整流程</title><desc id="diagram-desc-2">创建并冻结 单Repo源码与明确动态授权；Recon Threat与任务规划；publish seal Monitor与静态Worker；静态报告接收 mining_complete；动态Agent理解私有环境 登记后CONTACT；控制器串行 EXPLORE与CONFIRM；动态收尾 close或cancel 清理与证据封存；review-input 合并源码与运行候选；逐任务报告质量复核；有候选时 独立正方 反方 Moderator；review与finalize 中文报告 漏洞与清理缺口</desc><defs><marker id="arrow-2" markerWidth="8" markerHeight="8" refX="7" refY="4" orient="auto"><path d="M0,0 L8,4 L0,8 Z" fill="#6c8a7b"/></marker></defs><path d="M500,104 L500,137.5 L250,137.5 L250,171" fill="none" stroke="#6c8a7b" stroke-width="2"  marker-end="url(#arrow-2)"/><path d="M250,259 L250,326" fill="none" stroke="#6c8a7b" stroke-width="2"  marker-end="url(#arrow-2)"/><path d="M250,414 L250,481" fill="none" stroke="#6c8a7b" stroke-width="2"  marker-end="url(#arrow-2)"/><path d="M500,104 L500,137.5 L750,137.5 L750,171" fill="none" stroke="#6c8a7b" stroke-width="2"  marker-end="url(#arrow-2)"/><path d="M565,215 L435,215" fill="none" stroke="#6c8a7b" stroke-width="2" stroke-dasharray="6 5" marker-end="url(#arrow-2)"/><g><rect x="460.2" y="184" width="79.6" height="24" rx="5" fill="#f4f6f3"/><text x="500" y="200" text-anchor="middle" font-size="17" fill="#506c5e">基线回传</text></g><path d="M750,259 L750,326" fill="none" stroke="#6c8a7b" stroke-width="2"  marker-end="url(#arrow-2)"/><path d="M435,370 L565,370" fill="none" stroke="#6c8a7b" stroke-width="2"  marker-end="url(#arrow-2)"/><g><rect x="460.2" y="339" width="79.6" height="24" rx="5" fill="#f4f6f3"/><text x="500" y="355" text-anchor="middle" font-size="17" fill="#506c5e">授权入队</text></g><path d="M435,525 L565,525" fill="none" stroke="#6c8a7b" stroke-width="2"  marker-end="url(#arrow-2)"/><g><rect x="460.2" y="494" width="79.6" height="24" rx="5" fill="#f4f6f3"/><text x="500" y="510" text-anchor="middle" font-size="17" fill="#506c5e">收尾指令</text></g><path d="M750,414 L750,481" fill="none" stroke="#6c8a7b" stroke-width="2"  marker-end="url(#arrow-2)"/><path d="M250,569 L250,602.5 L500,602.5 L500,636" fill="none" stroke="#6c8a7b" stroke-width="2"  marker-end="url(#arrow-2)"/><path d="M750,569 L750,602.5 L500,602.5 L500,636" fill="none" stroke="#6c8a7b" stroke-width="2"  marker-end="url(#arrow-2)"/><path d="M500,724 L500,751" fill="none" stroke="#6c8a7b" stroke-width="2"  marker-end="url(#arrow-2)"/><path d="M500,839 L500,866" fill="none" stroke="#6c8a7b" stroke-width="2"  marker-end="url(#arrow-2)"/><path d="M500,954 L500,981" fill="none" stroke="#6c8a7b" stroke-width="2"  marker-end="url(#arrow-2)"/><g><rect x="60" y="16" width="880" height="88" rx="14" fill="#fff" stroke="#c9d6ce" stroke-width="1.5"/><text x="75" y="33" fill="#6c8175" font-size="11">A</text><text x="500" y="67" text-anchor="middle" font-size="21" font-weight="600" fill="#17211d"><tspan x="500" dy="0">创建并冻结 单Repo源码与明确动态授权</tspan></text></g><g><rect x="65" y="171" width="370" height="88" rx="14" fill="#fff" stroke="#c9d6ce" stroke-width="1.5"/><text x="80" y="188" fill="#6c8175" font-size="11">B</text><text x="250" y="222" text-anchor="middle" font-size="21" font-weight="600" fill="#17211d"><tspan x="250" dy="0">Recon Threat与任务规划</tspan></text></g><g><rect x="65" y="326" width="370" height="88" rx="14" fill="#fff" stroke="#c9d6ce" stroke-width="1.5"/><text x="80" y="343" fill="#6c8175" font-size="11">C</text><text x="250" y="363" text-anchor="middle" font-size="21" font-weight="600" fill="#17211d"><tspan x="250" dy="0">publish seal Monitor与静态</tspan><tspan x="250" dy="28">Worker</tspan></text></g><g><rect x="65" y="481" width="370" height="88" rx="14" fill="#fff" stroke="#c9d6ce" stroke-width="1.5"/><text x="80" y="498" fill="#6c8175" font-size="11">D</text><text x="250" y="518" text-anchor="middle" font-size="21" font-weight="600" fill="#17211d"><tspan x="250" dy="0">静态报告接收 mining_comple</tspan><tspan x="250" dy="28">te</tspan></text></g><g><rect x="565" y="171" width="370" height="88" rx="14" fill="#edf4fb" stroke="#c9d6ce" stroke-width="1.5"/><text x="580" y="188" fill="#6c8175" font-size="11">E</text><text x="750" y="208" text-anchor="middle" font-size="21" font-weight="600" fill="#17211d"><tspan x="750" dy="0">动态Agent理解私有环境 登记</tspan><tspan x="750" dy="28">后CONTACT</tspan></text></g><g><rect x="565" y="326" width="370" height="88" rx="14" fill="#edf4fb" stroke="#c9d6ce" stroke-width="1.5"/><text x="580" y="343" fill="#6c8175" font-size="11">F</text><text x="750" y="363" text-anchor="middle" font-size="21" font-weight="600" fill="#17211d"><tspan x="750" dy="0">控制器串行 EXPLORE与CONFIR</tspan><tspan x="750" dy="28">M</tspan></text></g><g><rect x="565" y="481" width="370" height="88" rx="14" fill="#edf4fb" stroke="#c9d6ce" stroke-width="1.5"/><text x="580" y="498" fill="#6c8175" font-size="11">G</text><text x="750" y="518" text-anchor="middle" font-size="21" font-weight="600" fill="#17211d"><tspan x="750" dy="0">动态收尾 close或cancel 清</tspan><tspan x="750" dy="28">理与证据封存</tspan></text></g><g><rect x="60" y="636" width="880" height="88" rx="14" fill="#fff" stroke="#c9d6ce" stroke-width="1.5"/><text x="75" y="653" fill="#6c8175" font-size="11">H</text><text x="500" y="687" text-anchor="middle" font-size="21" font-weight="600" fill="#17211d"><tspan x="500" dy="0">review-input 合并源码与运行候选</tspan></text></g><g><rect x="60" y="751" width="880" height="88" rx="14" fill="#fff" stroke="#c9d6ce" stroke-width="1.5"/><text x="75" y="768" fill="#6c8175" font-size="11">I</text><text x="500" y="802" text-anchor="middle" font-size="21" font-weight="600" fill="#17211d"><tspan x="500" dy="0">逐任务报告质量复核</tspan></text></g><g><rect x="60" y="866" width="880" height="88" rx="14" fill="#fff" stroke="#c9d6ce" stroke-width="1.5"/><text x="75" y="883" fill="#6c8175" font-size="11">J</text><text x="500" y="917" text-anchor="middle" font-size="21" font-weight="600" fill="#17211d"><tspan x="500" dy="0">有候选时 独立正方 反方 Moderator</tspan></text></g><g><rect x="60" y="981" width="880" height="88" rx="14" fill="#e8f4ee" stroke="#167c52" stroke-width="1.5"/><text x="75" y="998" fill="#6c8175" font-size="11">K</text><text x="500" y="1032" text-anchor="middle" font-size="21" font-weight="600" fill="#17211d"><tspan x="500" dy="0">review与finalize 中文报告 漏洞与清理缺口</tspan></text></g></svg><details><summary>查看可编辑 Mermaid 源码</summary><pre><code>flowchart TB
+  A[创建并冻结 单Repo源码与明确动态授权] --&gt; B[Recon Threat与任务规划]
+  B --&gt; C[publish seal Monitor与静态Worker]
+  C --&gt; D[静态报告接收 mining_complete]
+  A --&gt; E[动态Agent理解私有环境 登记后CONTACT]
+  E -.正常访问与登录基线.-&gt; B
+  E --&gt; F[控制器串行 EXPLORE与CONFIRM]
+  C --&gt;|runtime_requests 经Orchestrator授权入队| F
+  D --&gt; G[动态收尾 close或cancel 清理与证据封存]
+  F --&gt; G
+  D --&gt; H[review-input 合并源码与运行候选]
+  G --&gt; H
+  H --&gt; I[逐任务报告质量复核]
+  I --&gt; J[有候选时 独立正方 反方 Moderator]
+  J --&gt; K[review与finalize 中文报告 漏洞与清理缺口]
+</code></pre></details><figcaption>实线表示调用或交付，虚线表示按需读取或基线回传。蓝色节点为授权动态分支。</figcaption></figure><p>CONTACT 与 Recon 并行。静态 Worker 输出假设或候选的 <code>runtime_requests</code>；Orchestrator 使用原有授权校验并入队，Worker 继续静态工作。控制器按环境租约串行执行工作包；每包可以创建新的 <code>runtime-testing-worker</code> 会话，各身份的 Chrome 实例隔离。因此这是静态与动态执行链的并行协作，不是两个无限存续、任意互发消息的 Agent。</p>
+<p>情报交换通过平台制品和状态完成：动态侧返回正常基线、观察、支持或反证；Orchestrator 将获准的公开证据传给专业分析；静态侧返回假设、源码定位和确认包。私有环境原文和凭据不交给静态 Worker。动态异常或必要信息缺失保留具体缺口，静态流程继续；封存时 close 或 cancel，不无限等待。</p>
+<p>该图的前提是用户显式启用并提供授权环境；启动运行测试前仍需平台能力可用。<code>SUPPORTED</code> 仅是运行支持证据，所有候选继续经过三方复核。没有源码映射的观察保持 <code>RUNTIME_ONLY/UNKNOWN</code>，仅对相应授权环境成立。当前 Agent 工具边界静态专项本身不构建攻击 prompt 或提交动态包，即使该审计另行启用了其他运行测试。</p>
+<p>依据：<a href="../.opencode/lib/task-board/workflow.md">TaskBoard 协议</a>、<a href="../.opencode/lib/runtime-testing/workflow.md">运行测试协议</a>、<a href="../.opencode/lib/task-board/review.mjs">复核实现</a>。</p>
+<h3 id="section-18">产品和模块的多 Repo 流程</h3>
+<figure class="diagram" data-diagram="3"><svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 1000 1165" role="img" aria-labelledby="diagram-title-3 diagram-desc-3"><title id="diagram-title-3">产品多 Repo 完整流程</title><desc id="diagram-desc-3">绑定产品根目录或模块目录；递归识别Git与无Git Repo 人工修正边界；选择范围 冻结Repo集合 版本 配置与记忆水位；产品批次调度 默认同时2个Repo；各Repo执行单Repo静态TaskBoard完整流程；报告与观察入库 本轮子任务终态；跨Repo Analyzer 回源核查关系与候选；有候选时 跨Repo正方 反方 Moderator；关系建议与TODO 寻入口 查同类 验修复 补链；产品报告 跨Repo裁决 去重统计 剩余缺口</desc><defs><marker id="arrow-3" markerWidth="8" markerHeight="8" refX="7" refY="4" orient="auto"><path d="M0,0 L8,4 L0,8 Z" fill="#6c8a7b"/></marker></defs><path d="M500,104 L500,131" fill="none" stroke="#6c8a7b" stroke-width="2"  marker-end="url(#arrow-3)"/><path d="M500,219 L500,246" fill="none" stroke="#6c8a7b" stroke-width="2"  marker-end="url(#arrow-3)"/><path d="M500,334 L500,361" fill="none" stroke="#6c8a7b" stroke-width="2"  marker-end="url(#arrow-3)"/><path d="M500,449 L500,476" fill="none" stroke="#6c8a7b" stroke-width="2"  marker-end="url(#arrow-3)"/><path d="M500,564 L500,591" fill="none" stroke="#6c8a7b" stroke-width="2"  marker-end="url(#arrow-3)"/><path d="M500,679 L500,706" fill="none" stroke="#6c8a7b" stroke-width="2"  marker-end="url(#arrow-3)"/><path d="M500,794 L500,821" fill="none" stroke="#6c8a7b" stroke-width="2"  marker-end="url(#arrow-3)"/><path d="M500,909 L500,936" fill="none" stroke="#6c8a7b" stroke-width="2"  marker-end="url(#arrow-3)"/><path d="M875,980 L952,980 L952,405 L875,405" fill="none" stroke="#6c8a7b" stroke-width="2"  marker-end="url(#arrow-3)"/><g transform="rotate(-90 946 695)"><rect x="906.2" y="679" width="79.6" height="24" rx="5" fill="#f4f6f3"/><text x="946" y="695" text-anchor="middle" font-size="17" fill="#506c5e">有界补审</text></g><path d="M500,1024 L500,1051" fill="none" stroke="#6c8a7b" stroke-width="2"  marker-end="url(#arrow-3)"/><g><rect x="125" y="16" width="750" height="88" rx="14" fill="#fff" stroke="#c9d6ce" stroke-width="1.5"/><text x="140" y="33" fill="#6c8175" font-size="11">A</text><text x="500" y="67" text-anchor="middle" font-size="21" font-weight="600" fill="#17211d"><tspan x="500" dy="0">绑定产品根目录或模块目录</tspan></text></g><g><rect x="125" y="131" width="750" height="88" rx="14" fill="#fff" stroke="#c9d6ce" stroke-width="1.5"/><text x="140" y="148" fill="#6c8175" font-size="11">B</text><text x="500" y="182" text-anchor="middle" font-size="21" font-weight="600" fill="#17211d"><tspan x="500" dy="0">递归识别Git与无Git Repo 人工修正边界</tspan></text></g><g><rect x="125" y="246" width="750" height="88" rx="14" fill="#fff" stroke="#c9d6ce" stroke-width="1.5"/><text x="140" y="263" fill="#6c8175" font-size="11">C</text><text x="500" y="297" text-anchor="middle" font-size="21" font-weight="600" fill="#17211d"><tspan x="500" dy="0">选择范围 冻结Repo集合 版本 配置与记忆水位</tspan></text></g><g><rect x="125" y="361" width="750" height="88" rx="14" fill="#fff" stroke="#c9d6ce" stroke-width="1.5"/><text x="140" y="378" fill="#6c8175" font-size="11">D</text><text x="500" y="412" text-anchor="middle" font-size="21" font-weight="600" fill="#17211d"><tspan x="500" dy="0">产品批次调度 默认同时2个Repo</tspan></text></g><g><rect x="125" y="476" width="750" height="88" rx="14" fill="#fff" stroke="#c9d6ce" stroke-width="1.5"/><text x="140" y="493" fill="#6c8175" font-size="11">E</text><text x="500" y="527" text-anchor="middle" font-size="21" font-weight="600" fill="#17211d"><tspan x="500" dy="0">各Repo执行单Repo静态TaskBoard完整流程</tspan></text></g><g><rect x="125" y="591" width="750" height="88" rx="14" fill="#fff" stroke="#c9d6ce" stroke-width="1.5"/><text x="140" y="608" fill="#6c8175" font-size="11">F</text><text x="500" y="642" text-anchor="middle" font-size="21" font-weight="600" fill="#17211d"><tspan x="500" dy="0">报告与观察入库 本轮子任务终态</tspan></text></g><g><rect x="125" y="706" width="750" height="88" rx="14" fill="#fff" stroke="#c9d6ce" stroke-width="1.5"/><text x="140" y="723" fill="#6c8175" font-size="11">G</text><text x="500" y="757" text-anchor="middle" font-size="21" font-weight="600" fill="#17211d"><tspan x="500" dy="0">跨Repo Analyzer 回源核查关系与候选</tspan></text></g><g><rect x="125" y="821" width="750" height="88" rx="14" fill="#fff" stroke="#c9d6ce" stroke-width="1.5"/><text x="140" y="838" fill="#6c8175" font-size="11">H</text><text x="500" y="872" text-anchor="middle" font-size="21" font-weight="600" fill="#17211d"><tspan x="500" dy="0">有候选时 跨Repo正方 反方 Moderator</tspan></text></g><g><rect x="125" y="936" width="750" height="88" rx="14" fill="#fff" stroke="#c9d6ce" stroke-width="1.5"/><text x="140" y="953" fill="#6c8175" font-size="11">I</text><text x="500" y="987" text-anchor="middle" font-size="21" font-weight="600" fill="#17211d"><tspan x="500" dy="0">关系建议与TODO 寻入口 查同类 验修复 补链</tspan></text></g><g><rect x="125" y="1051" width="750" height="88" rx="14" fill="#e8f4ee" stroke="#167c52" stroke-width="1.5"/><text x="140" y="1068" fill="#6c8175" font-size="11">J</text><text x="500" y="1102" text-anchor="middle" font-size="21" font-weight="600" fill="#17211d"><tspan x="500" dy="0">产品报告 跨Repo裁决 去重统计 剩余缺口</tspan></text></g></svg><details><summary>查看可编辑 Mermaid 源码</summary><pre><code>flowchart TB
+  A[绑定产品根目录或模块目录] --&gt; B[递归识别Git与无Git Repo 人工修正边界]
+  B --&gt; C[选择范围 冻结Repo集合 版本 配置与记忆水位]
+  C --&gt; D[产品批次调度 默认同时2个Repo]
+  D --&gt; E[各Repo执行单Repo静态TaskBoard完整流程]
+  E --&gt; F[报告与观察入库 本轮子任务终态]
+  F --&gt; G[跨Repo Analyzer 回源核查关系与候选]
+  G --&gt; H[有候选时 跨Repo正方 反方 Moderator]
+  H --&gt; I[关系建议与TODO 寻入口 查同类 验修复 补链]
+  I --&gt;|full模式且范围与预算允许| D
+  I --&gt; J[产品报告 跨Repo裁决 去重统计 剩余缺口]
+</code></pre></details><figcaption>实线表示调用或交付，虚线表示按需读取或基线回传。</figcaption></figure><p>跨 Repo 分析在本轮子任务终态后运行；静态 Worker 执行期间可查询同产品已经接受的观察，控制器也会检查新增 TODO。当前没有“每新增一条观察就唤醒跨 Repo 模型”的流式机制。</p>
+<p>目录发现优先识别 <code>.git</code> 目录或文件；无 Git 源码根据构建清单、源码与布局启发式识别，复杂边界由用户指定 Repo、模块或忽略。中间结构目录形成产品模块，普通 <code>src</code> 目录不自动拆成模块；<code>.gitmodules</code> 保留待核对提示。目录不完整时保留 UNKNOWN，嵌套重叠的 Repo 不能共同派发。首次绑定、工作台启动、每 5 分钟及手动刷新都会触发发现。</p>
+<p>每批次最多 100 个 Repo；Repo 并发 1–4，默认 2；最多 20 个定向补审任务、2 轮补审、3 轮跨 Repo 分析。补审只派给本批次已选 Repo，其他范围 TODO 留存。无跨 Repo 候选时不创建三方会话。版本漂移或无法证明连接条件时保留 GAP；不把相同 CWE 或标题直接认定为重复问题。联合入口当前不执行动态测试。</p>
+<p>依据：<a href="../.opencode/lib/product-memory/topology.mjs">产品目录发现</a>、<a href="../.opencode/lib/product-memory/campaign.mjs">批次调度与预算</a>、<a href="../.opencode/lib/product-memory/cross-worker.md">跨 Repo 契约</a>。</p>
+<h3 id="section-19">两类专项如何进入主流程</h3>
+<div class="table-wrap"><table>
+<thead>
+<tr>
+<th>专项</th>
+<th>输入与分析</th>
+<th>交付与最终结论</th>
+</tr>
+</thead>
+<tbody>
+<tr data-search-row>
+<td data-label="专项">数据库越权 BAC</td>
+<td data-label="输入与分析">独立 Threat/ACP 会话恢复预期 D/O/R/AC；适用源码 Worker 提取实际入口到数据库路径、角色和归属控制；进行差分</td>
+<td data-label="交付与最终结论"><code>bac-task-plan.v1</code> 绑定源码、任务、attempt 与策略；候选进入主三方，专项缺口独立保留。COMPLETE 仅表示声明范围的比较闭合</td>
+</tr>
+<tr data-search-row>
+<td data-label="专项">Agent 工具和框架边界</td>
+<td data-label="输入与分析">显式 <code>domain=ai</code> 和 <code>agent-tool-boundaries.v1</code>；prepare 提供有界定位、知识快照与模板；AI Worker 追踪入口、分派、执行身份、应有策略、有效守卫及反例</td>
+<td data-label="交付与最终结论">finish 检查摘要、位置、调用边、覆盖与知识引用；证据不足为 LEAD/GAP，CANDIDATE 交主三方。动态 NOT_RUN 不冒充验证完成</td>
+</tr>
+</tbody>
+</table></div>
+<p>Agent 专项覆盖 <code>TOOL_RCE</code>、<code>TOOL_AUTHZ</code>、<code>FRAMEWORK_ACCESS</code> 三个风险族，以及 API call、function call、skill、MCP 四种调用边界。工具具有执行能力不自动等于 RCE；必须证明低信任主体能突破获准能力。该权限模型不强行套入只描述数据库访问的 BAC 四元组。</p>
+<p>依据：<a href="../.opencode/lib/bac/workflow.md">BAC 工作流</a>、<a href="agent-vulnerability-mining.md">Agent 专项</a>。</p>
+<h2 id="section-20">知识库 长期记忆与人工反馈</h2>
+<div class="table-wrap"><table>
+<thead>
+<tr>
+<th>存储</th>
+<th>内容与目的</th>
+<th>读写方式</th>
+</tr>
+</thead>
+<tbody>
+<tr data-search-row>
+<td data-label="存储">通用知识库</td>
+<td data-label="内容与目的">安全不变量、根因、条件、反例、案例、检测器和质量状态，辅助识别同类机制</td>
+<td data-label="读写方式">KnowledgeWorkFlow 本地只读检索；不执行案例 PoC，不自动写回外部库</td>
+</tr>
+<tr data-search-row>
+<td data-label="存储">Repo 长期记忆</td>
+<td data-label="内容与目的">当前和历史接口、资产、覆盖、发现、缺口、完整性与版本差异，辅助回归和新增点分析</td>
+<td data-label="读写方式">Agent 私有记忆 CLI；平台绑定产品/Repo/快照/真实会话，按摘要留存</td>
+</tr>
+<tr data-search-row>
+<td data-label="存储">产品长期记忆</td>
+<td data-label="内容与目的">跨 Repo 观察、同一问题、共同根因、同类模式、组合链和待办</td>
+<td data-label="读写方式">有界产品查询、跨 Repo 分析与建议；建议和人工确认分开</td>
+</tr>
+<tr data-search-row>
+<td data-label="存储">人工反馈</td>
+<td data-label="内容与目的">真漏洞、误报、证据不足、整改状态、理由与重复关系</td>
+<td data-label="读写方式">漏洞详情及问题列表；版本化保存，Agent 不能替用户改判</td>
+</tr>
+</tbody>
+</table></div>
+<p>记忆读取模式为 <code>full</code>、<code>facts_only</code>、<code>off</code>、<code>blind</code>。full 可读取事实、人工理由和产品经验；facts_only 只提供接口、资产、覆盖、关系、清单与缺口等事实记录；off/blind 隔离历史读取，其中 blind 还隔离知识种子。模式不等于删除记录或停止保留本轮事实。</p>
+<p>只有完整范围、相同提取器版本的清单才能把缺失接口或资产算作“减少”；否则为 UNKNOWN。历史误报不会自动屏蔽新候选，修复状态也不会由 Agent 自动改成已验证。相同 Repo、实体和源码证据可继承问题身份；源码变化或仅标题/CWE 相似不自动合并。</p>
+<p>源码快照保存清单与内容摘要，仍引用原只读目录，不是自动复制或 checkout 的源码副本。查询保存读取水位和实际返回内容；报告入库保存独立摘要副本。旧观察版本未知时保留未知，不能套用当前版本作证。</p>
+<p>依据：<a href="product-memory-implementation.md">产品长期记忆实现</a>、<a href="../.opencode/lib/product-memory/store.mjs">记忆存储</a>、<a href="../.opencode/lib/knowledge-workflow.md">知识查询说明</a>。</p>
+<h2 id="section-21">状态 证据与完成条件</h2>
+<div class="table-wrap"><table>
+<thead>
+<tr>
+<th>状态或门禁</th>
+<th>含义</th>
+</tr>
+</thead>
+<tbody>
+<tr data-search-row>
+<td data-label="状态或门禁"><code>PENDING → RUNNING</code></td>
+<td data-label="含义">绑定唯一 attempt 与 30 分钟执行租约</td>
+</tr>
+<tr data-search-row>
+<td data-label="状态或门禁"><code>RUNNING → REPORTED</code></td>
+<td data-label="含义">报告和回执已接收；尚未确认质量或漏洞真实性</td>
+</tr>
+<tr data-search-row>
+<td data-label="状态或门禁"><code>FAILED</code></td>
+<td data-label="含义">累计三次实际执行失败，需处理或显式说明 GAP；暂停和服务中断不消耗失败次数</td>
+</tr>
+<tr data-search-row>
+<td data-label="状态或门禁"><code>GAP</code></td>
+<td data-label="含义">具体未完成范围与原因，终态但不计作报告交付</td>
+</tr>
+<tr data-search-row>
+<td data-label="状态或门禁"><code>mining_complete</code></td>
+<td data-label="含义">发布已封存，全部任务 REPORTED/GAP；报告交付 100% 仍需复核与封存</td>
+</tr>
+<tr data-search-row>
+<td data-label="状态或门禁"><code>review-input / review</code></td>
+<td data-label="含义">核对摘要副本、全任务质量、全候选覆盖、不同真实会话与上下游摘要</td>
+</tr>
+<tr data-search-row>
+<td data-label="状态或门禁"><code>finalize</code></td>
+<td data-label="含义">确定性生成报告与 canonical findings；Moderator TRUE_POSITIVE 才进入确认源码漏洞</td>
+</tr>
+<tr data-search-row>
+<td data-label="状态或门禁"><code>delivery_outcome=NO_REPORTS</code></td>
+<td data-label="含义">非空任务却没有任何报告，封存的是执行失败记录，不能声明未发现漏洞或审计成功</td>
+</tr>
+</tbody>
+</table></div>
+<p>最终制品包括 <code>reports/task-board/&lt;audit_id&gt;/reports/</code>、<code>reports/validation/</code>、可选 <code>reports/runtime-testing/&lt;audit_id&gt;/</code>、<code>reports/final/task-board-report-model.&lt;audit_id&gt;.json</code> 和中文 <code>security-audit-report.&lt;audit_id&gt;.md</code>。实际根目录由平台注入。产品 SQLite 的 <code>pm_*</code> 表、<code>product-memory/</code> 和 <code>product-audits/</code> 保存跨轮次事实、查询留痕和产品批次。</p>
+<p>恢复沿用原审计、策略和已接收报告，不重跑已交付任务；重试创建新审计 ID。发布或报告已封存后不追加本轮范围、不覆盖原结论，新增线索进入后续审计或 TODO。人工动态 sidecar 不自动改写封存终稿。</p>
+<h2 id="section-22">当前实现与文档差异</h2>
+<p>本设计以配置和协议分支为准。现有 README 部分描述仍属于旧流程：包括 <code>coverage_ledger</code> MCP 启用、旧八阶段门禁和完整 Tri-Lens 全范围分区；这些不应直接解释为默认 TaskBoard 的行为。MCP 映射中的 Chrome 文案提到 <code>latest</code>，而当前配置和控制器实际固定为 <code>1.8.0</code>。<code>roles.json</code> 的职责也需结合角色文件顶部的新协议分支阅读。</p>
+<p>产品多 Repo 和长期记忆已有核心代码及替身、进程内行为测试；真实模型四会话链路、浏览器视觉、宿主端口和终端集成仍有未完成验证，现有服务尚未在此前实现任务中重启。本文不根据文件存在推断这些能力已部署，也不重新启动任务或测试环境。具体范围见 <a href="product-memory-implementation.md">实现验证记录</a>。</p>
+<p>本次仅生成设计文档、源码清单和 HTML 图解，并核对角色、集合、Skill 及 MCP 的计数与对应关系。</p>
+</article><footer>此文档不触发审计、目标请求或浏览器测试。文件计数与源码摘要保存在配套 JSON 中。</footer></main></div>
+<script>
+const graphs=[{"nodes":[{"id":"U","label":"工作台页面与产品 API"},{"id":"P","label":"ProductStore 产品与测试对象"},{"id":"R","label":"AuditRunner 队列与执行工作区"},{"id":"C","label":"ProductAuditService 多 Repo 批次"},{"id":"O","label":"Orchestrator 与 Recon Threat subagents"},{"id":"T","label":"TaskBoard 发布 调度 回执"},{"id":"W","label":"六类独立静态 Worker"},{"id":"D","label":"授权运行测试控制器与 Worker"},{"id":"V","label":"报告质量复核与独立三方"},{"id":"F","label":"确定性中文报告与漏洞列表"},{"id":"K","label":"只读 KnowledgeWorkFlow"},{"id":"M","label":"产品与 Repo 长期记忆"}],"edges":[{"from":"U","to":"P","label":"","dashed":false},{"from":"U","to":"R","label":"","dashed":false},{"from":"P","to":"C","label":"","dashed":false},{"from":"C","to":"R","label":"","dashed":false},{"from":"R","to":"O","label":"","dashed":false},{"from":"O","to":"T","label":"","dashed":false},{"from":"T","to":"W","label":"","dashed":false},{"from":"R","to":"D","label":"","dashed":false},{"from":"W","to":"V","label":"","dashed":false},{"from":"D","to":"V","label":"","dashed":false},{"from":"V","to":"F","label":"","dashed":false},{"from":"K","to":"O","label":"根因 案例 检测器","dashed":true},{"from":"K","to":"W","label":"按需检索","dashed":true},{"from":"M","to":"O","label":"历史事实 人工理由 待办","dashed":true},{"from":"W","to":"M","label":"本轮观察","dashed":false},{"from":"F","to":"M","label":"结论与留存制品","dashed":false},{"from":"M","to":"C","label":"","dashed":false}]},{"nodes":[{"id":"A","label":"创建任务 产品与 Repo 选择"},{"id":"B","label":"排队 冻结源码与范围 创建执行工作区"},{"id":"C","label":"Recon 范围 入口 技术栈 函数与接口清单"},{"id":"D","label":"Threat Modeler 高风险 Focus 或用户 API 规划"},{"id":"E","label":"Orchestrator 分批 publish 然后 seal"},{"id":"F","label":"平台 Monitor 分派六类独立静态 Worker"},{"id":"G","label":"源码追踪 按需扫描 知识与记忆 BAC或AI专项"},{"id":"H","label":"接收报告和回执 全部 REPORTED 或显式 GAP"},{"id":"I","label":"review-input 全任务报告质量复核"},{"id":"J","label":"有候选时 独立正方 反方 Moderator"},{"id":"K","label":"review与finalize 中文报告 漏洞列表 记忆留存"}],"edges":[{"from":"A","to":"B","label":"","dashed":false},{"from":"B","to":"C","label":"","dashed":false},{"from":"C","to":"D","label":"","dashed":false},{"from":"D","to":"E","label":"","dashed":false},{"from":"E","to":"F","label":"","dashed":false},{"from":"F","to":"G","label":"","dashed":false},{"from":"G","to":"H","label":"","dashed":false},{"from":"H","to":"I","label":"","dashed":false},{"from":"I","to":"J","label":"","dashed":false},{"from":"J","to":"K","label":"","dashed":false}]},{"nodes":[{"id":"A","label":"创建并冻结 单Repo源码与明确动态授权"},{"id":"B","label":"Recon Threat与任务规划"},{"id":"C","label":"publish seal Monitor与静态Worker"},{"id":"D","label":"静态报告接收 mining_complete"},{"id":"E","label":"动态Agent理解私有环境 登记后CONTACT"},{"id":"F","label":"控制器串行 EXPLORE与CONFIRM"},{"id":"G","label":"动态收尾 close或cancel 清理与证据封存"},{"id":"H","label":"review-input 合并源码与运行候选"},{"id":"I","label":"逐任务报告质量复核"},{"id":"J","label":"有候选时 独立正方 反方 Moderator"},{"id":"K","label":"review与finalize 中文报告 漏洞与清理缺口"}],"edges":[{"from":"A","to":"B","label":"","dashed":false},{"from":"B","to":"C","label":"","dashed":false},{"from":"C","to":"D","label":"","dashed":false},{"from":"A","to":"E","label":"","dashed":false},{"from":"E","to":"B","label":"正常访问与登录基线","dashed":true},{"from":"E","to":"F","label":"","dashed":false},{"from":"C","to":"F","label":"runtime_requests 经Orchestrator授权入队","dashed":false},{"from":"D","to":"G","label":"","dashed":false},{"from":"F","to":"G","label":"","dashed":false},{"from":"D","to":"H","label":"","dashed":false},{"from":"G","to":"H","label":"","dashed":false},{"from":"H","to":"I","label":"","dashed":false},{"from":"I","to":"J","label":"","dashed":false},{"from":"J","to":"K","label":"","dashed":false}]},{"nodes":[{"id":"A","label":"绑定产品根目录或模块目录"},{"id":"B","label":"递归识别Git与无Git Repo 人工修正边界"},{"id":"C","label":"选择范围 冻结Repo集合 版本 配置与记忆水位"},{"id":"D","label":"产品批次调度 默认同时2个Repo"},{"id":"E","label":"各Repo执行单Repo静态TaskBoard完整流程"},{"id":"F","label":"报告与观察入库 本轮子任务终态"},{"id":"G","label":"跨Repo Analyzer 回源核查关系与候选"},{"id":"H","label":"有候选时 跨Repo正方 反方 Moderator"},{"id":"I","label":"关系建议与TODO 寻入口 查同类 验修复 补链"},{"id":"J","label":"产品报告 跨Repo裁决 去重统计 剩余缺口"}],"edges":[{"from":"A","to":"B","label":"","dashed":false},{"from":"B","to":"C","label":"","dashed":false},{"from":"C","to":"D","label":"","dashed":false},{"from":"D","to":"E","label":"","dashed":false},{"from":"E","to":"F","label":"","dashed":false},{"from":"F","to":"G","label":"","dashed":false},{"from":"G","to":"H","label":"","dashed":false},{"from":"H","to":"I","label":"","dashed":false},{"from":"I","to":"D","label":"full模式且范围与预算允许","dashed":false},{"from":"I","to":"J","label":"","dashed":false}]}];
+document.querySelectorAll('.diagram').forEach((figure,i)=>{const flow=document.createElement('div');flow.className='mobile-flow';flow.innerHTML=graphs[i].nodes.map(n=>'<div class="step"><b>'+n.id+'</b>'+n.label+'</div>').join('')+'<div class="connections">'+graphs[i].edges.map(e=>e.from+' → '+e.to+(e.label?' · '+e.label:'')).join('<br>')+'</div>';figure.querySelector('svg').after(flow);});
+const input=document.getElementById('search'),rows=[...document.querySelectorAll('[data-search-row]')],status=document.querySelector('.search-status');
+function filter(){const q=input.value.trim().toLocaleLowerCase();let count=0;for(const row of rows){const show=!q||row.textContent.toLocaleLowerCase().includes(q);row.hidden=!show;if(show)count++;}status.textContent=q?'匹配 '+count+' 条清单记录':'全部 '+rows.length+' 条清单记录';}input.addEventListener('input',filter);filter();
+document.getElementById('print').addEventListener('click',()=>{input.value='';filter();window.print();});
+if('IntersectionObserver' in window){const links=[...document.querySelectorAll('nav a')];new IntersectionObserver(entries=>{for(const e of entries)if(e.isIntersecting){links.forEach(a=>a.classList.toggle('active',a.hash==='#'+e.target.id));}},{rootMargin:'-90px 0px -65% 0px'}).observe(document.querySelector('article h2'));const obs=new IntersectionObserver(entries=>{const e=entries.find(e=>e.isIntersecting);if(e)links.forEach(a=>a.classList.toggle('active',a.hash==='#'+e.target.id));},{rootMargin:'-90px 0px -65% 0px'});document.querySelectorAll('article h2').forEach(h=>obs.observe(h));}
+</script></body></html>
