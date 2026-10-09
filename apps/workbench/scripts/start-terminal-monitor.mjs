@@ -121,15 +121,6 @@ export function createWorkbenchTerminalMonitor({ stateRoot = defaultStateRoot(),
         client.on('message', (data, isBinary) => {
           // Check immediately before every frame, including input, on pause/recovery.
           if (!runtime.valid(worker)) return close();
-          // A sole read-only tmux client can still resize its window despite ignore-size.
-          // Keep legacy task dimensions fixed; OpenCode attach owns an independent PTY.
-          if (worker.initialSize) {
-            if (data[0] === 49) data = Buffer.from(`1${JSON.stringify(worker.initialSize)}`);
-            else if (data[0] === 123) {
-              try { data = Buffer.from(JSON.stringify({ ...JSON.parse(data.toString()), ...worker.initialSize })); }
-              catch { return close(); }
-            }
-          }
           if (upstream.readyState === WebSocket.OPEN) {
             if (upstream.bufferedAmount > 2 * 1024 * 1024) return close();
             upstream.send(data, { binary: isBinary });

@@ -6,8 +6,8 @@ const Context = createContext<{ source: Source; setSource: (source: Source) => v
 export function WorkspaceProvider({ children }: { children: ReactNode }) {
   const config = useQuery({ queryKey: ['runtime-config'], queryFn: api.runtime, staleTime: Infinity, retry: 1 });
   if (config.isPending) return <div className="initial-loading" role="status">正在连接工作台…</div>;
-  if (config.error) return <div className="initial-loading" role="alert"><p>{config.error.message}</p><button onClick={() => void config.refetch()}>重新连接</button><a href="/legacy">返回原工作台</a></div>;
-  return <ReadyWorkspace runtime={config.data}>{children}</ReadyWorkspace>;
+  if (config.error) return <div className="initial-loading" role="alert"><p>{config.error.message}</p><button onClick={() => void config.refetch()}>重新连接</button></div>;
+  return <ReadyWorkspace runtime={{ ...config.data, legacyUrl: config.data.legacyUrl === 'http://127.0.0.1:4173/' ? config.data.legacyUrl : null }}>{children}</ReadyWorkspace>;
 }
 function ReadyWorkspace({ children, runtime }: { children: ReactNode; runtime: WorkbenchRuntime }) {
   const [source, setSourceState] = useState<Source>(runtime.defaultSource); const [createOpen, setCreateOpenState] = useState(false); const [retryDraft, setRetryDraft] = useState<RealAuditDraft | null>(null);

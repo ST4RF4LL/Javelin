@@ -8,6 +8,7 @@ const sources = [
   './runtime-build.mjs', './file-focus-coverage.mjs', '../../lib/runtime-testing/contract.mjs', '../../lib/task-board/contract.mjs',
   '../../lib/runtime-testing/service.mjs', '../../lib/runtime-testing/controller.mjs', '../../lib/runtime-testing/environment-leases.mjs',
   '../../lib/runtime-testing/browser.mjs', '../../lib/runtime-testing/worker-mcp.mjs', '../../lib/runtime-testing/worker-instructions.md',
+  './environment-health.mjs', './opencode-process-monitor.mjs', './opencode-process-launcher.mjs',
   './tmux-monitor.mjs', './tmux-launcher.mjs', './opencode-shared-run.mjs', './opencode-runtime-config.mjs',
   '../../lib/task-board/store.mjs', '../../lib/task-board/service.mjs', '../../lib/task-board/review.mjs',
   '../../lib/task-board/report-integrity.mjs', '../../lib/task-board/report-correction.mjs', '../../lib/bac/contract.mjs',

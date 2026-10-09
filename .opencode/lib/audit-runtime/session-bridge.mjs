@@ -57,7 +57,7 @@ export class AgentSessionBridge {
     await this.checkpoint(key);
     if (binding.error || binding.status !== 'running') throw new Error('任务没有运行，请在当前会话重新登记。');
     const result = await this.execute(process.execPath, [join(platformRoot, '.opencode/scripts', scripts[name]), ...args], {
-      cwd: binding.workspace_root, env: { ...process.env, ...binding.environment }, timeout: 120_000, maxBuffer: 2 * 1024 * 1024, shell: false,
+      cwd: binding.workspace_root, env: { ...process.env, ...binding.environment }, timeout: 120_000, maxBuffer: 2 * 1024 * 1024, shell: false, windowsHide: true,
     });
     await this.checkpoint(key);
     return result.stdout;

@@ -5,6 +5,7 @@ import { fileURLToPath } from 'node:url';
 import { setTimeout as delay } from 'node:timers/promises';
 
 export const SERVICE_PROTOCOL = 'audit-runtime-service.v1';
+export const DEFAULT_SERVICE_ORIGIN = 'http://127.0.0.1:4183';
 const entry = fileURLToPath(new URL('../../scripts/audit-service.mjs', import.meta.url));
 export const platformRoot = resolve(fileURLToPath(new URL('../../../', import.meta.url)));
 export const defaultServiceRoot = join(platformRoot, 'reports/platform/audit-service');
@@ -23,8 +24,14 @@ export async function serviceHealth(origin, fetcher = fetch) {
 }
 
 // The dashboard is a client of this detached process, never its lifecycle owner.
-export async function ensureAuditService({ origin = 'http://127.0.0.1:4173', modernOrigin = 'http://127.0.0.1:4181',
+export async function ensureAuditService({ origin = DEFAULT_SERVICE_ORIGIN, modernOrigin = 'http://127.0.0.1:4181',
   serviceRoot = defaultServiceRoot, stateRoot, fetcher = fetch, spawnProcess = spawn, timeoutMs = 30_000 } = {}) {
+  // Detect the old daemon before attempting to acquire the same task state.
+  let saved;
+  try { saved = await readServiceConnection(serviceRoot); } catch (error) { if (error.code !== 'ENOENT') throw error; }
+  if (saved && saved.origin !== origin && await serviceHealth(saved.origin, fetcher)) {
+    throw new Error(`审计后台仍在 ${saved.origin} 运行。请先结束活动任务，再执行 node .opencode/scripts/audit-service.mjs stop 后重新启动；未启动第二个 Runner。`);
+  }
   const current = await serviceHealth(origin, fetcher);
   if (current && current.runtime_service?.ready !== false) return { health: current, started: false };
   const url = new URL(origin);
@@ -36,7 +43,7 @@ export async function ensureAuditService({ origin = 'http://127.0.0.1:4173', mod
     try {
     child = spawnProcess(process.execPath, [entry, 'serve', '--port', url.port, '--service-root', serviceRoot,
       '--modern-ui-origin', modernOrigin, ...(stateRoot ? ['--state-root', stateRoot] : [])],
-    { cwd: platformRoot, env: process.env, detached: true, shell: false, stdio: ['ignore', log.fd, log.fd] });
+    { cwd: platformRoot, env: process.env, detached: true, shell: false, windowsHide: true, stdio: ['ignore', log.fd, log.fd] });
     child.on('error', error => { failure = error; }); child.unref();
     } finally { await log.close(); }
   }

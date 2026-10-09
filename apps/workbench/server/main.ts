@@ -12,7 +12,7 @@ import { LiveService } from './live.service.js';
 import { RuntimeService } from './runtime.service.js';
 import { registerLegacyRoutes } from './legacy-routes.js';
 
-export async function createApp() {
+export async function createApp({ legacy = false } = {}) {
   const adapter = new FastifyAdapter({ bodyLimit: 1024 * 1024, forceCloseConnections: true, genReqId: () => randomUUID() });
   const app = await NestFactory.create<NestFastifyApplication>(AppModule, adapter, { logger: ['error', 'warn'] });
   const server = adapter.getInstance();
@@ -49,9 +49,9 @@ export async function createApp() {
       if (!origin && request.headers['sec-fetch-site'] === 'cross-site') return reply.code(403).send({ message: '拒绝跨站写请求。' });
     }
   });
-  registerLegacyRoutes(server, app.get(LiveService), app.get(RuntimeService));
+  registerLegacyRoutes(server, app.get(LiveService), app.get(RuntimeService), legacy);
   const root = fileURLToPath(new URL('../../client/', import.meta.url));
-  if (existsSync(root)) {
+  if (!legacy && existsSync(root)) {
     await app.register(fastifyStatic, { root, wildcard: false });
     server.get('/*', (request, reply) => {
       if (request.url.startsWith('/api/') || request.url.startsWith('/assets/') || !['GET', 'HEAD'].includes(request.method) || !request.headers.accept?.includes('text/html')) return reply.code(404).send({ message: '资源不存在。' });

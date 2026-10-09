@@ -5,9 +5,9 @@ import { mkdir, rm } from 'node:fs/promises';
 import { join, resolve } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { atomicJson } from '../lib/task-board/contract.mjs';
-import { SERVICE_PROTOCOL, defaultServiceRoot, readServiceConnection, ensureAuditService } from '../lib/audit-runtime/service-process.mjs';
+import { SERVICE_PROTOCOL, DEFAULT_SERVICE_ORIGIN, defaultServiceRoot, readServiceConnection, ensureAuditService } from '../lib/audit-runtime/service-process.mjs';
 
-export async function startAuditService({ port = 4173, stateRoot, serviceRoot = defaultServiceRoot, modernOrigin = 'http://127.0.0.1:4181', backendOptions = {} } = {}) {
+export async function startAuditService({ port = 4183, stateRoot, serviceRoot = defaultServiceRoot, modernOrigin = 'http://127.0.0.1:4181', backendOptions = {} } = {}) {
   const token = randomBytes(32).toString('hex'), generation = randomUUID();
   let backend, ready = false, stopping = false;
   // Claim the port before constructing any stateful runner or database service.
@@ -24,6 +24,8 @@ export async function startAuditService({ port = 4173, stateRoot, serviceRoot = 
       }
       res.writeHead(202); res.end(); void close(); return;
     }
+    // This process owns execution and APIs, not either web interface.
+    if (!new URL(req.url, origin).pathname.startsWith('/api/')) { res.writeHead(404); return res.end('此端口仅提供审计 API'); }
     if (!backend) { res.writeHead(503, { 'Retry-After': '1' }); return res.end('审计服务正在初始化'); }
     backend.emit('request', req, res);
   });
@@ -61,7 +63,7 @@ if (process.argv[1] && resolve(process.argv[1]) === fileURLToPath(import.meta.ur
       process.stdout.write(`独立审计服务已启动：${service.origin}\n`);
       for (const signal of ['SIGTERM', 'SIGINT']) process.once(signal, () => { void service.close().catch(error => { process.stderr.write(`${error.message}\n`); process.exitCode = 1; }); });
     } else if (command === 'start') {
-      const result = await ensureAuditService({ ...options, origin: `http://127.0.0.1:${options.port ?? 4173}` });
+      const result = await ensureAuditService({ ...options, origin: options.port === undefined ? DEFAULT_SERVICE_ORIGIN : `http://127.0.0.1:${options.port}` });
       process.stdout.write(`${JSON.stringify({ started: result.started, pid: result.health.runtime_service?.pid })}\n`);
     } else if (['status', 'stop'].includes(command)) {
       const connection = await readServiceConnection(options.serviceRoot);

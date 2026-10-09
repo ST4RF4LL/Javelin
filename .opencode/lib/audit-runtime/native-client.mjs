@@ -16,8 +16,8 @@ export function createNativeClient({ serviceRoot, fetcher = fetch, connection: s
           body: JSON.stringify(input), signal: AbortSignal.timeout(operation === 'register' ? 120_000 : 15_000), redirect: 'error',
         });
       } catch (error) {
-        const origin = connection.origin; connection = null;
-        if (!suppliedConnection && (error.cause?.code ?? error.code) === 'ECONNREFUSED') await ensureAuditService({ origin, serviceRoot });
+        connection = null;
+        if (!suppliedConnection && (error.cause?.code ?? error.code) === 'ECONNREFUSED') await ensureAuditService({ serviceRoot });
         throw error;
       }
       const result = await response.json();

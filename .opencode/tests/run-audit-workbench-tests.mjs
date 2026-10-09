@@ -564,6 +564,7 @@ if (mode === "run") {
   for (let attempt = 0; attempt < 100 && !["running", "failed"].includes(fallbackRunner.getAudit(fallbackAudit.id)?.status); attempt += 1) await new Promise(resolve => setTimeout(resolve, 2));
   assert.equal(fallbackRunner.getAudit(fallbackAudit.id).status, "running", String(fallbackRunner.getAudit(fallbackAudit.id).error ?? "fallback runner 未进入运行状态"));
   assert.equal(fallbackSpawnCall.command, "C:\\tools\\opencode.exe");
+  assert.equal(fallbackSpawnCall.options.windowsHide, true);
   assert.deepEqual(fallbackSpawnCall.args.slice(0, 6), ["run", "--format", "json", "--agent", "security-audit-orchestrator", "--dir"]);
   assert.equal(fallbackSpawnCall.args[6], join(platformRoot, "workspace", "audit-runs", "audit-fallback-001"));
   assert.equal(fallbackSpawnCall.options.cwd, join(platformRoot, "workspace", "audit-runs", "audit-fallback-001"));
@@ -1029,8 +1030,8 @@ if (mode === "run") {
   const windowsHealth = await windowsHealthService.snapshot();
   assert.equal(windowsChromeLaunches, 0);
   assert.equal(windowsHealth.components.find(item => item.id === "chrome").status, "ready");
-  assert.equal(windowsHealth.components.find(item => item.id === "tmux").status, "ready");
-  assert.match(windowsHealth.components.find(item => item.id === "tmux").detail, /psmux/);
+  assert.equal(windowsHealth.components.find(item => item.id === "ttyd").status, "ready");
+  assert.equal(windowsHealth.components.some(item => item.id === "tmux"), false);
 
   const noJoernHealthService = new EnvironmentHealthService({
     projectRoot: resolve(OPENCODE, ".."),

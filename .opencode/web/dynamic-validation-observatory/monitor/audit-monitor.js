@@ -182,8 +182,7 @@ export function createAuditMonitor({ document, window, audit, renderOriginalEven
     const source = next.terminal;
     const shared = source?.shared_server === true;
     const active = source?.live && next.status === 'running';
-    const sessionId = shared ? `tmux:opencode:${next.id}` : undefined;
-    const key = active && source.socket_name ? `${serverUrl}|${sessionId || source.socket_name}|${source.server_generation || next.provider_session_id || ''}|${source.target || 'audit:tui'}` : '';
+    const key = active && shared ? `${serverUrl}|opencode:${next.id}|${source.server_generation || next.provider_session_id || ''}` : '';
     if (key !== terminalKey) terminalError = '';
     terminalKey = key; terminalUrl = '';
     if (key) {
@@ -191,7 +190,7 @@ export function createAuditMonitor({ document, window, audit, renderOriginalEven
       catch { terminalError = '终端连接地址无效，请检查终端服务配置。'; }
     }
     openTerminal.disabled = !terminalUrl;
-    openTerminal.textContent = shared ? '交互终端 ↗' : '原始终端（只读）↗';
+    openTerminal.textContent = '交互终端 ↗';
     openTerminal.title = !terminalUrl
       ? '此任务没有运行中的终端。暂停或中断的任务请先恢复。'
       : shared ? '在独立子窗口连接此任务的同一 OpenCode 会话；关闭窗口后任务继续运行。'

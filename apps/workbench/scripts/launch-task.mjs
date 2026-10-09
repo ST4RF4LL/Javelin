@@ -52,7 +52,7 @@ export async function launchTask(spec, { transport, wait = delay, timeoutMs = 12
     if (!products.items?.some(product => product.id === input.productId) || !targets.items?.some(target => target.id === input.targetId && target.runnable && (!spec.expectedSourcePath || target.path === spec.expectedSourcePath))) throw new Error('产品、源码对象或源码路径与预期不符；未提交任务。');
     if (!runner.runnerEnabled || !Array.isArray(snapshot.reports) || !Array.isArray(findings.findings) || !Array.isArray(audits.items)) throw new Error('执行器或数据列表未就绪；未提交任务。');
     checks.push('模型、产品、源码、执行器、概览、任务和漏洞接口通过');
-    for (const page of ['/', '/products', '/audits', '/findings', '/reports', '/validation', '/runtime', '/settings', '/legacy/']) await call(page, { format: 'html' });
+    for (const page of ['/', '/products', '/audits', '/findings', '/reports', '/validation', '/runtime', '/settings']) await call(page, { format: 'html' });
     checks.push('六个页面的 HTTP 入口通过（不等同于浏览器渲染验收）');
     if (snapshot.reports.length) {
       const id = encodeURIComponent(snapshot.reports[0].id);

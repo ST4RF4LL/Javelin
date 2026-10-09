@@ -2,7 +2,7 @@
 // an abrupt workbench exit. Only this child process receives termination.
 import { spawn } from "node:child_process";
 const [command, ...args] = process.argv.slice(2);
-const child = spawn(command, args, { cwd: process.cwd(), env: process.env, shell: false, stdio: ["ignore", "inherit", "inherit"] });
+const child = spawn(command, args, { cwd: process.cwd(), env: process.env, shell: false, windowsHide: true, stdio: ["ignore", "inherit", "inherit"] });
 let stopping = false, timer;
 function stop() {
   if (stopping) return;

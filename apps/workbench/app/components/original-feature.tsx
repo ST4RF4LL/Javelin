@@ -33,10 +33,12 @@ export function OriginalFeature({ view, auditId, hidden = false }: { view: Origi
     const abort = new AbortController(); let mounted: Controller | undefined, disposed = false;
     setController(null); setError(''); setLoading(true);
     void (async () => {
-      if (runtime.featureVersion !== 1) throw new Error('运行中的后台尚未加载本次功能更新。请重启平台后刷新页面。');
+      if (![1, 2].includes(runtime.featureVersion ?? 0)) throw new Error('运行中的 Web 服务尚未加载本次功能更新。请重启 Web 服务后刷新页面。');
       const read = async (path: string) => { const response = await fetch(path, { signal: abort.signal }); if (!response.ok) throw new Error(`功能模块加载失败（${response.status}）`); return response.text(); };
       const moduleUrl = '/app.js';
-      const [html, styles, module] = await Promise.all([read('/legacy/'), read('/styles.css'), import(/* @vite-ignore */ moduleUrl)]);
+      // Keep an already-running v1 Web process usable until its tasks finish and it can be upgraded.
+      const documentUrl = runtime.featureVersion === 1 ? '/legacy/' : '/api/workbench/feature-document';
+      const [html, styles, module] = await Promise.all([read(documentUrl), read('/styles.css'), import(/* @vite-ignore */ moduleUrl)]);
       if (disposed) return;
       const parsed = new DOMParser().parseFromString(html, 'text/html'); parsed.querySelectorAll('script').forEach(node => node.remove());
       const style = document.createElement('style'); style.textContent = styles.replace(/:root\b/g, ':host') + theme;

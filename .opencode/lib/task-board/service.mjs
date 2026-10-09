@@ -241,7 +241,7 @@ export class TaskBoardService {
       "--file", inputPath];
     return new Promise((resolve, reject) => {
       if (signal.aborted) return reject(new Error("任务已停止。"));
-      const child = this.spawnProcess(process.execPath, [guardian, this.command, ...args], { cwd: this.workspaceRoot, env: environment, shell: false, stdio: ["ignore", "pipe", "pipe", "ipc"] });
+      const child = this.spawnProcess(process.execPath, [guardian, this.command, ...args], { cwd: this.workspaceRoot, env: environment, shell: false, windowsHide: true, stdio: ["ignore", "pipe", "pipe", "ipc"] });
       let sessionId = null, stopping = null, sessionWrite = Promise.resolve(), sessionWriteError = null;
       const stop = () => {
         if (stopping) return;

@@ -10,17 +10,18 @@ const assets: Record<string, string> = {
 };
 const publicRoot = new URL('../../../../../.opencode/web/dynamic-validation-observatory/public/', import.meta.url);
 
-export function registerLegacyRoutes(server: FastifyInstance, live: LiveService, runtime: RuntimeService) {
+export function registerLegacyRoutes(server: FastifyInstance, live: LiveService, runtime: RuntimeService, legacy = false) {
   const page = async (_request: unknown, reply: any) => reply.header('Cache-Control', 'no-store').type(assets['index.html']).send(await readFile(new URL('index.html', publicRoot)));
-  server.get('/legacy', (_request, reply) => reply.redirect('/legacy/'));
-  server.get('/api/workbench/legacy', (_request, reply) => reply.redirect('/legacy/'));
-  server.get('/legacy/', page);
-  server.get('/workbench', (_request, reply) => reply.redirect('/'));
+  for (const path of ['/legacy', '/legacy/', '/legacy/*', '/api/workbench/legacy']) server.get(path, (_request, reply) => reply.code(404).send({ message: '旧界面入口未开放，请显式启用 4173 原界面。' }));
+  // Shared feature document for the modern Shadow DOM mount; not a legacy entry.
+  server.get('/api/workbench/feature-document', page);
+  if (legacy) { server.get('/', page); server.get('/index.html', page); }
+  server.get('/workbench', (_request, reply) => reply.redirect(legacy ? process.env.WORKBENCH_MODERN_ORIGIN || 'http://127.0.0.1:4181' : '/'));
   for (const [name, type] of Object.entries(assets)) {
     if (name === 'index.html') continue;
     server.get(`/${name}`, async (_request, reply) => reply.header('Cache-Control', 'no-cache').type(type).send(await readFile(new URL(name, publicRoot))));
   }
-  // 原界面的绝对 API 路径在同一端口转发；浏览器无需单独访问 4173。
+  // Both interfaces share the same execution service through same-origin APIs.
   for (const url of ['/api/v1/*', '/api/v2/*', '/api/runs', '/api/runs/*', '/api/health']) {
     server.route({ url, method: ['GET', 'POST', 'PUT', 'PATCH', 'DELETE'], handler: async (request, reply) => {
       const mutation = !['GET', 'HEAD'].includes(request.method);

@@ -1,6 +1,6 @@
 export type Source = 'demo' | 'live';
 export const WORKBENCH_API_VERSION = 3;
-export interface WorkbenchRuntime { mode: 'preview' | 'integrated'; defaultSource: Source; demoEnabled: boolean; liveReadOnly: boolean; legacyUrl: string; featureVersion?: number }
+export interface WorkbenchRuntime { mode: 'preview' | 'integrated'; defaultSource: Source; demoEnabled: boolean; liveReadOnly: boolean; legacyUrl: string | null; featureVersion?: number }
 export type AuditStatus = 'running' | 'paused' | 'queued' | 'completed' | 'failed' | 'interrupted' | 'cancelled' | 'preparing' | 'recovering' | 'pausing' | 'cancelling' | 'artifact_only';
 export interface Stage { id: string; label: string; status: 'done' | 'active' | 'pending' | 'gap' }
 export interface LogEntry { sequence: number; time: string; level: string; agent: string; message: string }

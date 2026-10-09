@@ -353,7 +353,7 @@ export class DynamicValidationRunner extends EventEmitter {
     if (!envelopeTarget || envelopeTarget.origin !== authorization.target.origin) {
       throw Object.assign(new Error("表单目标与密封 P08 envelope 的 localhost origin 不一致。"), { statusCode: 409, code: "validation-target-binding-mismatch" });
     }
-    const currentCommit = (await execFileAsync("git", ["-C", repository.path, "rev-parse", "HEAD"], { encoding: "utf8", timeout: 10_000, maxBuffer: 1024 * 1024 })).stdout.trim();
+    const currentCommit = (await execFileAsync("git", ["-C", repository.path, "rev-parse", "HEAD"], { windowsHide: true, encoding: "utf8", timeout: 10_000, maxBuffer: 1024 * 1024 })).stdout.trim();
     if (request.source_binding?.commit && request.source_binding.commit !== currentCommit) {
       throw Object.assign(new Error("当前仓库提交与密封验证请求不一致。"), { statusCode: 409, code: "validation-source-drift" });
     }
@@ -454,6 +454,7 @@ export class DynamicValidationRunner extends EventEmitter {
           ...(this.platform === "win32" ? { TEMP: ephemeral.tempHome, TMP: ephemeral.tempHome } : {}),
         },
         stdio: ["ignore", "pipe", "pipe"],
+        windowsHide: true,
         shell: false,
       });
     } catch (error) {
@@ -517,7 +518,7 @@ export class DynamicValidationRunner extends EventEmitter {
       "--request", join(runtimeRoot, requestDescriptor.request_path),
       "--target", join(runtimeRoot, run.audit_id, `${run.finding_id}.target.json`),
       "--result", join(runtimeRoot, run.audit_id, `${run.finding_id}.result.json`),
-    ], { cwd: repository.path, encoding: "utf8", timeout: 60_000, maxBuffer: 1024 * 1024 });
+    ], { cwd: repository.path, windowsHide: true, encoding: "utf8", timeout: 60_000, maxBuffer: 1024 * 1024 });
   }
 
   async finish({ run, repository, runtimeRoot, requestDescriptor, code, signal }) {

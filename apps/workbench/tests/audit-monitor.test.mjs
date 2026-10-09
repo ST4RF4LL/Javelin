@@ -54,7 +54,7 @@ const descendants = node => node.childNodes.flatMap(child => [child, ...descenda
 const find = (node, className) => descendants(node).find(child => child.className.split(/\s+/).includes(className));
 const findAll = (node, className) => descendants(node).filter(child => child.className.split(/\s+/).includes(className));
 const audit = overrides => ({ id: 'audit-test', task_board: { reported: 0, total: 4, running: 1, pending: 3 },
-  terminal: { live: true, socket_name: 'socket-test', target: 'audit:tui' }, ...overrides });
+  terminal: { live: true, shared_server: true }, ...overrides });
 const log = (id, text, overrides = {}) => ({ occurred_at: '2026-10-04T16:00:00.000Z', source: 'stdout', kind: 'raw', label: 'Runner 输出',
   body: `[web/${id}] ${JSON.stringify({ type: 'tool_use', sessionID: 'ses-test', part: { id: `prt-${text}`, callID: `call-${text}`, tool: 'read',
     state: { status: 'running', input: { filePath: `${text}.py` }, output: text } } })}`, detail: '', ...overrides });
@@ -176,7 +176,7 @@ test('SSE 恢复后更新连接提示，复用最后同步时间而不伪造新�
 });
 
 const sharedAudit = overrides => audit({ status: 'running', provider_session_id: 'ses_fixture',
-  terminal: { live: true, shared_server: true, socket_name: 'owa-fixture', server_generation: 'generation-1' }, ...overrides });
+  terminal: { live: true, shared_server: true, backend: 'opencode-process', server_generation: 'generation-1' }, ...overrides });
 
 test('点击才弹出独立终端，保持事件筛选、展开、滚动和原始视图', () => {
   const f = fixture({ audit: sharedAudit() });
@@ -247,9 +247,16 @@ test('旧入口也能打开子窗口，旧任务保持只读；键盘导航只�
   const f = fixture({ port: '4173', audit: audit({ status: 'running' }) }); f.get('monitor-open-terminal').click();
   const url = new URL(f.popups[0].navigations[0]); assert.equal(url.pathname, '/audits/audit-test/');
   assert.equal(url.searchParams.has('socket'), false); assert.equal(url.searchParams.has('target'), false);
-  assert.equal(f.get('monitor-open-terminal').textContent, '原始终端（只读）↗');
+  assert.equal(f.get('monitor-open-terminal').textContent, '交互终端 ↗');
   const tabs = f.get('monitor-tabs'); tabs.fire('keydown', { key: 'End' }); assert.equal(f.element.dataset.view, 'original');
   tabs.fire('keydown', { key: 'ArrowRight' }); assert.equal(f.element.dataset.view, 'events');
   tabs.fire('keydown', { key: 'ArrowLeft' }); assert.equal(f.element.dataset.view, 'original');
   tabs.fire('keydown', { key: 'Home' }); assert.equal(f.element.dataset.view, 'events'); f.destroy();
+});
+
+test('没有共享会话的历史终端不回退到 tmux，仍可浏览任务事件', () => {
+  const f = fixture({ audit: audit({ terminal: { live: true, socket_name: 'old-socket', target: 'audit:tui' } }) });
+  assert.equal(f.get('monitor-open-terminal').disabled, true);
+  f.setEvents([log('legacy-task', '历史输出')]);
+  assert.equal(f.all('monitor-event').length, 1); f.destroy();
 });

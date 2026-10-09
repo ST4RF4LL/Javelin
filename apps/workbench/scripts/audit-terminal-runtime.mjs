@@ -48,7 +48,7 @@ export function readAuditConnection(stateRoot, id) {
 }
 
 // Only server-owned task state determines the command. No client command/socket input.
-export function readAuditTerminal(stateRoot, id, { generation, readOnly = false, tmuxCommand = 'tmux' } = {}) {
+export function readAuditTerminal(stateRoot, id, { generation, readOnly = false } = {}) {
   const { audit } = readState(stateRoot, id);
   let target;
   if (audit.terminal.shared_server) {
@@ -58,15 +58,7 @@ export function readAuditTerminal(stateRoot, id, { generation, readOnly = false,
       command: binding.command, args: ['attach', binding.url, '--session', binding.session_id, '--dir', binding.directory],
       cwd: binding.directory, environment: { OPENCODE_SERVER_USERNAME: binding.username, OPENCODE_SERVER_PASSWORD: binding.password } };
   } else {
-    const { socket_name: socket, target: pane = 'audit:tui' } = audit.terminal;
-    if (!/^[A-Za-z0-9_][A-Za-z0-9_.-]{0,100}$/.test(socket ?? '') || !/^[A-Za-z0-9_$:.-]{1,160}$/.test(pane)) {
-      throw unavailable('旧任务的终端绑定无效。');
-    }
-    const version = createHash('sha256').update(JSON.stringify(audit.terminal)).digest('hex');
-    if (generation && generation !== version) throw unavailable('旧任务的终端绑定已改变，请重新打开。');
-    target = { kind: 'tmux', generation: version, readOnly: true, command: tmuxCommand,
-      args: ['-L', socket, 'attach-session', '-r', '-f', 'read-only,ignore-size', '-t', pane],
-      cwd: resolve(audit.paths?.workspace_root || stateRoot), environment: { TMUX: '', TMUX_PANE: '' } };
+    throw unavailable('旧任务没有共享会话连接。请查看归档日志，或在任务结束后断点恢复以使用 ttyd；平台不会启动 tmux/psmux。');
   }
   return { ...target, auditId: id, name: audit.name || id,
     fingerprint: createHash('sha256').update(JSON.stringify({ auditId: id, ...target })).digest('hex') };

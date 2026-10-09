@@ -6,21 +6,22 @@ import { join } from 'node:path';
 import { createApp } from '../build/api/server/main.js';
 import { LiveService } from '../build/api/server/live.service.js';
 
-async function fixture(run, writable = true) {
+async function fixture(run, writable = true, legacy = false) {
   const root = await mkdtemp(join(tmpdir(), 'workbench-parity-'));
-  const env = { WORKBENCH_MODE: 'integrated', WORKBENCH_ENABLE_TASKS: writable ? '1' : '0', WORKBENCH_DIAGNOSTICS_DIR: root };
+  const env = { WORKBENCH_MODE: 'integrated', WORKBENCH_ENABLE_TASKS: writable ? '1' : '0', WORKBENCH_LEGACY_ENABLED: legacy ? '1' : '0', WORKBENCH_DIAGNOSTICS_DIR: root };
   const before = Object.fromEntries(Object.keys(env).map(key => [key, process.env[key]]));
-  Object.assign(process.env, env); const app = await createApp();
+  Object.assign(process.env, env); const app = await createApp({ legacy });
   try { await run(app, app.get(LiveService)); }
   finally { await app.close(); for (const [key, value] of Object.entries(before)) value === undefined ? delete process.env[key] : process.env[key] = value; await rm(root, { recursive: true, force: true }); }
 }
 
-test('返回入口和旧地址兼容链接均到同端口原界面；全部原页面、静态模块真实返回', () => fixture(async (app, live) => {
+test('默认关闭旧入口；新界面业务文档和静态模块不依赖原界面', () => fixture(async (app, live) => {
   live.transport = async () => { throw new Error('静态界面不依赖 4173 可达'); };
-  for (const path of ['/legacy?next=https://unlisted.invalid', '/api/workbench/legacy']) {
-    const response = await app.inject(path); assert.equal(response.statusCode, 302); assert.equal(response.headers.location, '/legacy/');
+  for (const path of ['/legacy?next=https://unlisted.invalid', '/legacy/', '/legacy/anything', '/api/workbench/legacy']) {
+    const response = await app.inject({ url: path, headers: { accept: 'text/html' } }); assert.equal(response.statusCode, 404); assert.equal(response.headers.location, undefined);
   }
-  const page = await app.inject('/legacy/');
+  assert.equal((await app.inject('/api/workbench/config')).json().legacyUrl, null);
+  const page = await app.inject('/api/workbench/feature-document');
   assert.equal(page.statusCode, 200); assert.match(page.headers['content-type'], /text\/html/);
   assert.equal(page.body, await readFile(new URL('../../../.opencode/web/dynamic-validation-observatory/public/index.html', import.meta.url), 'utf8'));
   for (const view of ['dashboard', 'projects', 'audits', 'findings', 'reports', 'validation', 'runtime', 'settings']) assert.ok(page.body.includes(`id="view-${view}"`));
@@ -30,6 +31,20 @@ test('返回入口和旧地址兼容链接均到同端口原界面；全部原�
   assert.equal((await app.inject('/workbench')).headers.location, '/');
   assert.equal((await app.inject('/legacy/../../opencode.json')).statusCode, 404);
 }));
+
+test('显式启用的原界面在根路径提供页面，保留入口为 4173，操作仍转发同一服务', () => fixture(async (app, live) => {
+  const page = await app.inject('/'); assert.equal(page.statusCode, 200); assert.match(page.body, /id="view-audits"/);
+  assert.equal((await app.inject('/index.html')).body, page.body);
+  assert.equal((await app.inject('/api/workbench/config')).json().legacyUrl, 'http://127.0.0.1:4173/');
+  assert.equal((await app.inject('/workbench')).headers.location, 'http://127.0.0.1:4181');
+  assert.equal((await app.inject('/legacy/')).statusCode, 404);
+  const calls = [];
+  live.transport = async (url, options) => { calls.push({ url: String(url), options }); return new Response('{"id":"existing-audit"}', { headers: { 'Content-Type': 'application/json' } }); };
+  const response = await app.inject({ url: '/api/v1/audits/existing-audit/actions', method: 'POST', payload: { action: 'pause' } });
+  assert.equal(response.statusCode, 200); assert.equal(calls.length, 1);
+  assert.equal(calls[0].url, `${live.origin}/api/v1/audits/existing-audit/actions`);
+  assert.equal(calls[0].options.headers.Origin, live.origin);
+}, true, true));
 
 test('原功能转发保持方法、中文正文、版本、幂等、响应类型与二进制，跨站操作被拒绝', () => fixture(async (app, live) => {
   const calls = [], binary = Buffer.from([0x50, 0x4b, 0, 255, 13, 10]);

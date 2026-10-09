@@ -7,11 +7,10 @@ import { fileURLToPath } from 'node:url';
 import { setTimeout as delay } from 'node:timers/promises';
 import { once } from 'node:events';
 import { connectTtyd } from './fixtures/ttyd-client.mjs';
-import { OpenCodeTmuxMonitor } from '../../../.opencode/web/dynamic-validation-observatory/tmux-monitor.mjs';
+import { OpenCodeProcessMonitor } from '../../../.opencode/web/dynamic-validation-observatory/opencode-process-monitor.mjs';
 import { startTerminalMonitor } from '../scripts/start-terminal-monitor.mjs';
 
 const fixture = fileURLToPath(new URL('./fixtures/opencode-shared-fixture.mjs', import.meta.url));
-const emptyTmux = { listSessions: async () => ({ sessions: [], warnings: [] }), resolve: async () => undefined };
 async function until(fn, message, timeout = 7000) {
   const deadline = Date.now() + timeout;
   while (Date.now() < deadline) { const result = await fn().catch(() => null); if (result) return result; await delay(40); }
@@ -22,10 +21,11 @@ async function setup() {
   const root = await realpath(await mkdtemp(join(tmpdir(), 'shared-opencode-test-')));
   const stateRoot = join(root, 'state'); await mkdir(stateRoot);
   const audit = { id: 'audit-shared-fixture', name: '共享会话回归', status: 'running', paths: { workspace_root: root } };
-  const monitor = new OpenCodeTmuxMonitor({ stateRoot, command: fixture });
+  const monitor = new OpenCodeProcessMonitor({ stateRoot, command: fixture });
   const launch = async session => {
     audit.terminal = await monitor.start({ audit, repository: { path: root }, environment: { ...process.env, AUDIT_FIXTURE_MARKER: 'watchdog-env-preserved' },
       args: ['run', '--format', 'json', ...(session ? ['--session', session] : []), '--dir', root, '--title', audit.name, 'fixture prompt'], providerSessionId: session || null });
+    const child = monitor.launch(audit.terminal); child.stdout.resume(); child.stderr.resume();
     const binding = await until(() => readFile(join(stateRoot, audit.id, 'opencode-server.json'), 'utf8').then(JSON.parse), '服务未就绪');
     audit.provider_session_id = binding.session_id;
     await writeFile(join(stateRoot, audit.id, 'run.json'), JSON.stringify(audit));
@@ -47,7 +47,7 @@ test('共享服务：JSON 与 PTY 连接同一 session，输入可追踪，关�
     const created = JSON.parse((await readFile(join(f.root, 'session-create.jsonl'), 'utf8')).trim());
     assert.deepEqual(created.permission, ['question', 'plan_enter', 'plan_exit'].map(permission => ({ permission, action: 'deny', pattern: '*' })));
     assert.match(await f.monitor.capture(f.audit.terminal), /watchdog-env-preserved/);
-    app = await startTerminalMonitor({ port: 0, stateRoot: f.stateRoot, tmux: emptyTmux });
+    app = await startTerminalMonitor({ port: 0, stateRoot: f.stateRoot });
     const base = `http://127.0.0.1:${app.server.address().port}`;
     const listed = await (await fetch(`${base}/api/audits/audit-shared-fixture/terminal`)).text();
     assert.equal(listed.includes(f.binding.password), false);
@@ -71,7 +71,9 @@ test('共享服务：JSON 与 PTY 连接同一 session，输入可追踪，关�
     await app.close(); app = null;
     assert.equal((await f.request('/')).status, 200);
     await f.monitor.signalRun(f.audit.terminal, 'SIGSTOP');
-    await assert.rejects(f.request('/'), /abort|timeout/i);
+    assert.equal((await f.request('/')).status, 200, '暂停模型执行时保留会话服务');
+    const pausedOutput = await f.monitor.capture(f.audit.terminal); await delay(100);
+    assert.equal(await f.monitor.capture(f.audit.terminal), pausedOutput);
     await f.monitor.signalRun(f.audit.terminal, 'SIGCONT');
     assert.equal((await f.request('/')).status, 200);
     await f.monitor.abort(f.audit.terminal);
@@ -86,7 +88,7 @@ test('结束后禁止连接；恢复复用原 session，生成新服务；服务
   try {
     await f.request('/finish');
     await until(() => readFile(f.audit.terminal.exit_path, 'utf8').then(JSON.parse), '结束未写出状态');
-    app = await startTerminalMonitor({ port: 0, stateRoot: f.stateRoot, tmux: emptyTmux });
+    app = await startTerminalMonitor({ port: 0, stateRoot: f.stateRoot });
     const base = `http://127.0.0.1:${app.server.address().port}`;
     const response = await fetch(`${base}/api/audits/audit-shared-fixture/terminal`);
     assert.equal(response.status, 409);
@@ -105,7 +107,7 @@ test('结束后禁止连接；恢复复用原 session，生成新服务；服务
 test('输入按任务状态和服务代次校验，旧进程不会接收暂停或恢复后输入', { timeout: 20_000 }, async () => {
   const f = await setup(); let app, connection;
   try {
-    app = await startTerminalMonitor({ port: 0, stateRoot: f.stateRoot, tmux: emptyTmux });
+    app = await startTerminalMonitor({ port: 0, stateRoot: f.stateRoot });
     connection = await connect(`http://127.0.0.1:${app.server.address().port}`);
     await until(async () => connection.output.includes('ATTACH_READY'), 'TUI 未连接');
     f.audit.status = 'paused';
@@ -144,4 +146,38 @@ test('缺失ttyd可恢复报错，不遗留启动中进程，也不终止审计'
     assert.equal(response.status, 503); assert.equal(app.runtime.status().workers, 0);
     assert.equal((await f.request('/')).status, 200);
   } finally { await app?.close(); await f.close(); }
+});
+
+test('默认 AuditRunner 直接启动共享进程：JSON、暂停、恢复、取消全链路不调用 tmux/psmux', { timeout: 15000 }, async () => {
+  const { AuditRunner } = await import('../../../.opencode/web/dynamic-validation-observatory/audit-runner.mjs');
+  const { createHash } = await import('node:crypto');
+  const root = await realpath(await mkdtemp(join(tmpdir(), 'direct-runner-test-'))), source = join(root, 'source'), config = join(root, 'opencode.json');
+  await mkdir(source); await writeFile(join(source, 'test.js'), 'export const fixture = true;'); await writeFile(config, '{"mcp":{}}');
+  const stateRoot = join(root, 'state'), runner = new AuditRunner({ stateRoot, platformRoot: root, configPath: config, enabled: true, command: fixture });
+  runner.setQueueScheduler({ async enqueueNewAudit() { return true; } });
+  try {
+    await runner.ready;
+    const spec = { target_id: 'direct-fixture', target_name: '直接进程测试', source_scopes: [{ id: 'source', path: source }] };
+    const audit = await runner.createAuditFromTarget({ target_id: spec.target_id, execution_spec: spec, execution_spec_digest: createHash('sha256').update(JSON.stringify(spec)).digest('hex'), bac_analysis: 'off' }, 'direct-runner-fixture');
+    await runner.dispatchQueuedAudit(audit.id);
+    await until(async () => runner.getAudit(audit.id).provider_session_id, '未绑定会话');
+    let current = runner.getAudit(audit.id);
+    assert.equal(current.terminal.backend, 'opencode-process'); assert.equal(current.terminal.socket_name, undefined);
+    assert.equal(runner.health().active_tmux_monitors, 0);
+    assert.match(await runner.terminalMonitor.capture(current.terminal), /session_bound/);
+    await runner.action(audit.id, 'pause', current.version, 'direct-pause');
+    assert.equal(runner.getAudit(audit.id).status, 'paused');
+    const startsBeforeResume = await readFile(join(current.paths.workspace_root, 'run-starts.txt'), 'utf8').catch(error => { if (error.code === 'ENOENT') return ''; throw error; });
+    await runner.action(audit.id, 'resume', runner.getAudit(audit.id).version, 'direct-resume');
+    current = runner.getAudit(audit.id); assert.equal(current.status, 'running'); assert.equal(current.provider_session_id, 'ses_shared_fixture');
+    await until(async () => (await readFile(join(current.paths.workspace_root, 'run-starts.txt'), 'utf8')).length > startsBeforeResume.length, '恢复后未继续执行');
+    await runner.action(audit.id, 'pause', current.version, 'direct-pause-before-cancel');
+    current = runner.getAudit(audit.id);
+    const starts = await readFile(join(current.paths.workspace_root, 'run-starts.txt'), 'utf8');
+    await runner.action(audit.id, 'cancel', current.version, 'direct-cancel');
+    await until(async () => runner.getAudit(audit.id).status === 'cancelled', '取消未结束');
+    assert.equal(await readFile(join(current.paths.workspace_root, 'run-starts.txt'), 'utf8'), starts, '取消暂停任务不能重新提交指令');
+    assert.equal(runner.health().active_processes, 0);
+    await assert.rejects(readFile(join(stateRoot, audit.id, 'opencode-server.json')), { code: 'ENOENT' });
+  } finally { await runner.shutdown(); await rm(root, { recursive: true, force: true }); }
 });

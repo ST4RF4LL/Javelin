@@ -6,7 +6,7 @@ import { readAuditTerminal } from './audit-terminal-runtime.mjs';
 export const ttydCommand = () => process.env.WORKBENCH_TTYD_BIN || 'ttyd';
 export async function checkTtyd(command = ttydCommand()) {
   try {
-    const { stdout } = await promisify(execFile)(command, ['--version'], { timeout: 5000 });
+    const { stdout } = await promisify(execFile)(command, ['--version'], { timeout: 5000, windowsHide: true });
     if (!/^ttyd(?: version)?\s+1\./.test(stdout.trim())) throw new Error('unsupported');
     return stdout.trim();
   } catch {
@@ -14,10 +14,10 @@ export async function checkTtyd(command = ttydCommand()) {
   }
 }
 
-export function createTtydRuntime({ stateRoot, command = ttydCommand(), spawnProcess = spawn, idleMs = 120_000, checkMs = 500, tmuxCommand } = {}) {
+export function createTtydRuntime({ stateRoot, command = ttydCommand(), spawnProcess = spawn, idleMs = 120_000, checkMs = 500 } = {}) {
   const workers = new Map(), pending = new Map(), starting = new Set();
   let closed = false;
-  const resolve = (id, options) => readAuditTerminal(stateRoot, id, { ...options, tmuxCommand });
+  const resolve = (id, options) => readAuditTerminal(stateRoot, id, options);
   function valid(worker) {
     if (closed || worker.stopped) return false;
     try { return resolve(worker.target.auditId, worker.options).fingerprint === worker.target.fingerprint; } catch { return false; }
@@ -37,21 +37,14 @@ export function createTtydRuntime({ stateRoot, command = ttydCommand(), spawnPro
   async function launch(target, options) {
     const id = randomBytes(12).toString('hex'), basePath = `/t/${id}`;
     const credential = `workbench:${randomBytes(24).toString('hex')}`;
-    let initialSize;
-    if (target.kind === 'tmux') {
-      const { stdout } = await promisify(execFile)(target.command, ['-L', target.args[1], 'display-message', '-p', '-t', target.args.at(-1), '#{window_width} #{window_height}'], { timeout: 3000 });
-      const [columns, rows] = stdout.trim().split(/\s+/).map(Number);
-      if (!Number.isInteger(columns) || !Number.isInteger(rows) || columns < 1 || rows < 1) throw new Error('无法读取旧任务的终端尺寸。');
-      initialSize = { columns, rows };
-    }
     const args = ['-p', '0', '-i', '127.0.0.1', '-b', basePath, '-c', credential, '-O', '-m', '8',
       '-t', 'titleFixed=OpenCode · ttyd', '-t', 'fontSize=14', '-t', 'disableLeaveAlert=true',
       '-t', 'theme={"background":"#10151c","foreground":"#e1e7ef"}', '-w', target.cwd,
       ...(target.readOnly ? [] : ['-W']), target.command, ...target.args];
     const child = spawnProcess(command, args, { cwd: target.cwd,
       env: { ...process.env, ...target.environment, TERM: 'xterm-256color', COLORTERM: 'truecolor' },
-      stdio: ['ignore', 'pipe', 'pipe'] });
-    const worker = { id, basePath, target, options, child, credential, port: null, connections: new Set(), initialSize, touched: Date.now(), stopped: false };
+      stdio: ['ignore', 'pipe', 'pipe'], windowsHide: true });
+    const worker = { id, basePath, target, options, child, credential, port: null, connections: new Set(), touched: Date.now(), stopped: false };
     starting.add(worker);
     // ttyd logs its local ephemeral port. Never log child command or credentials.
     try {

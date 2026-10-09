@@ -9,7 +9,7 @@ import { PassThrough } from 'node:stream';
 import { AuditRunner } from '../web/dynamic-validation-observatory/audit-runner.mjs';
 import { NativeSessionController } from '../lib/audit-runtime/native-sessions.mjs';
 import { startAuditService } from '../scripts/audit-service.mjs';
-import { readServiceConnection, ensureAuditService } from '../lib/audit-runtime/service-process.mjs';
+import { DEFAULT_SERVICE_ORIGIN, readServiceConnection, ensureAuditService } from '../lib/audit-runtime/service-process.mjs';
 import { createNativeClient } from '../lib/audit-runtime/native-client.mjs';
 import plugin from '../lib/audit-runtime/opencode-session-plugin.mjs';
 import { atomicJson, hash } from '../lib/task-board/contract.mjs';
@@ -130,18 +130,32 @@ test('后台 HTTP 当前会话入口鉴权、范围登记和健康检查；后�
   assert.equal(registered.audit.execution.entry, 'agent'); assert.equal(f.launches.length, 0);
   const health = await (await fetch(`${service.origin}/api/v1/runtime/health`)).json();
   assert.equal(health.runtime_service.ready, true); assert.equal(health.runner.registered_agent_sessions, 1);
+  for (const path of ['/', '/index.html', '/app.js', '/legacy/']) assert.equal((await fetch(`${service.origin}${path}`)).status, 404);
   assert.equal((await fetch(`${service.origin}/api/internal/service/stop`, { method: 'POST', headers })).status, 409);
   assert.equal((await client.call('register', f.registration)).audit.id, registered.audit.id);
   const targets = await service.backend.productStore.targetIds(registered.audit.execution_spec.product_id ?? 'undefined');
   assert.equal(targets.length, 1);
 });
 
-test('服务初始化健康状态等待就绪，不重复启动 Runner', async () => {
+test('服务初始化健康状态等待就绪，不重复启动 Runner', async t => {
+  const serviceRoot = await mkdtemp(join(tmpdir(), 'service-wait-')); t.after(() => rm(serviceRoot, { recursive: true, force: true }));
   let reads = 0;
-  const result = await ensureAuditService({ origin: 'http://127.0.0.1:49199',
+  const result = await ensureAuditService({ origin: 'http://127.0.0.1:49199', serviceRoot,
     fetcher: async () => ({ ok: true, json: async () => ({ service: 'opencode-audit-workbench', runtime_service: { protocol: 'audit-runtime-service.v1', ready: ++reads > 1 } }) }),
     spawnProcess() { throw new Error('不应启动'); } });
   assert.equal(result.started, false); assert.equal(reads, 2);
+});
+
+test('默认审计 API 使用独立端口；旧连接仍活动时拒绝创建第二个执行器', async t => {
+  assert.equal(DEFAULT_SERVICE_ORIGIN, 'http://127.0.0.1:4183');
+  const serviceRoot = await mkdtemp(join(tmpdir(), 'service-migration-')); t.after(() => rm(serviceRoot, { recursive: true, force: true }));
+  const calls = [], fetcher = async url => { calls.push(url); return { ok: true, json: async () => ({ service: 'opencode-audit-workbench', runtime_service: { ready: true } }) }; };
+  const result = await ensureAuditService({ serviceRoot, fetcher, spawnProcess() { throw new Error('不能启动'); } });
+  assert.equal(result.started, false); assert.deepEqual(calls, [`${DEFAULT_SERVICE_ORIGIN}/api/v1/runtime/health`]);
+  await atomicJson(join(serviceRoot, 'connection.json'), { protocol: 'audit-runtime-service.v1', origin: 'http://127.0.0.1:4173', token: 'a'.repeat(64) });
+  calls.length = 0;
+  await assert.rejects(ensureAuditService({ serviceRoot, fetcher, spawnProcess() { throw new Error('不能启动'); } }), /未启动第二个 Runner/);
+  assert.deepEqual(calls, ['http://127.0.0.1:4173/api/v1/runtime/health']);
 });
 
 test('原生当前会话通过任务交付、独立质量复核和报告封存完成，保留真实会话且无主进程启动', async t => {

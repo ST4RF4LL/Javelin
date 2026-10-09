@@ -141,7 +141,7 @@ export class OpenCodeTmuxMonitor {
         code: "terminal-multiplexer-unavailable",
       });
     }
-    return this.execute(this.tmuxCommand, ["-L", socketName, ...args], { encoding: "utf8", timeout: 10_000, maxBuffer: 2 * 1024 * 1024, ...options });
+    return this.execute(this.tmuxCommand, ["-L", socketName, ...args], { encoding: "utf8", timeout: 10_000, maxBuffer: 2 * 1024 * 1024, ...options, windowsHide: true });
   }
 
   async targetLive(socketName, target) {

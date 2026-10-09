@@ -22,7 +22,7 @@ async function probeExecutable({ id, label, category, command, args = ["--versio
   let detail = "可执行文件已就绪。";
   if (args === null) return { id, label, category, status: "ready", version, command: basename(resolved), required_for: requiredFor, detail };
   try {
-    const result = await execute(resolved, args, { encoding: "utf8", timeout: VERSION_TIMEOUT_MS, maxBuffer: 1024 * 1024, env: environment });
+    const result = await execute(resolved, args, { encoding: "utf8", timeout: VERSION_TIMEOUT_MS, maxBuffer: 1024 * 1024, env: environment, windowsHide: true });
     version = oneLine(result.stdout) ?? oneLine(result.stderr);
   } catch (error) {
     version = oneLine(error.stdout) ?? oneLine(error.stderr);
@@ -78,18 +78,9 @@ async function chromeComponent({ environment, platform, execute, resolveCommand 
   return { id: "chrome", label: "Google Chrome", category: "动态验证", status: "unavailable", version: null, command: "google-chrome", required_for: ["dynamic"], detail: "未找到可见 Chrome；静态审计不受影响。" };
 }
 
-async function terminalMultiplexerComponent({ environment, platform, execute, resolveCommand }) {
-  const configured = environment.AUDIT_MULTIPLEXER_BIN ?? environment.PSMUX_BIN ?? environment.TMUX_BIN;
-  const commands = platform === "win32"
-    ? [configured, "tmux.exe", "psmux.exe", "pmux.exe", "tmux", "psmux", "pmux"]
-    : [configured, "tmux"];
-  for (const command of [...new Set(commands.filter(Boolean))]) {
-    const resolved = await resolveCommand(command, environment, platform);
-    if (!resolved) continue;
-    const result = await probeExecutable({ id: "tmux", label: platform === "win32" ? "psmux / tmux" : "tmux", category: "Agent 运行时", command: resolved, args: ["-V"], requiredFor: ["terminal_monitor"], environment, platform, execute, resolveCommand: async value => value });
-    if (result.status === "ready") return { ...result, detail: platform === "win32" ? "Windows 终端复用器已就绪（支持 psmux/tmux 兼容协议）。" : result.detail };
-  }
-  return { id: "tmux", label: platform === "win32" ? "psmux / tmux" : "tmux", category: "Agent 运行时", status: "unavailable", version: null, command: platform === "win32" ? "psmux.exe" : "tmux", required_for: ["terminal_monitor"], detail: platform === "win32" ? "未找到 psmux/tmux；静态审计仍可回退普通 Runner。" : "未找到 tmux；静态审计仍可回退普通 Runner。" };
+async function terminalComponent({ environment, platform, execute, resolveCommand }) {
+  return probeExecutable({ id: "ttyd", label: "ttyd Web 终端", category: "交互终端", command: environment.WORKBENCH_TTYD_BIN || "ttyd",
+    requiredFor: ["terminal_monitor"], environment, platform, execute, resolveCommand });
 }
 
 async function openCodeComponent({ environment, platform, architecture, execute, resolveCommand }) {
@@ -143,7 +134,8 @@ export class EnvironmentHealthService {
 
   async snapshot({ force = false } = {}) {
     if (!force && this.cached && Date.now() - this.cached.generated_at_ms < this.cacheTtlMs) return this.cached.value;
-    if (!force && this.pending) return this.pending;
+    // A forced refresh bypasses the cache, but must not duplicate an in-flight probe batch.
+    if (this.pending) return this.pending;
     this.pending = this.build().finally(() => { this.pending = null; });
     return this.pending;
   }
@@ -159,11 +151,11 @@ export class EnvironmentHealthService {
       id: "node", label: "Node.js", category: "基础运行时", status: nodeMajor >= 20 ? "ready" : "unavailable", version: this.nodeVersion,
       command: "node", required_for: ["workbench", "static", "dynamic"], detail: nodeMajor >= 20 ? "满足 Node.js 20+ 要求。" : "需要 Node.js 20 或更高版本。",
     };
-    const [npm, git, opencode, tmux, java, joern, joernParse, opengrep, semgrep, gitleaks, osvScanner, chrome, dependencies, mcp, bacPython] = await Promise.all([
+    const [npm, git, opencode, ttyd, java, joern, joernParse, opengrep, semgrep, gitleaks, osvScanner, chrome, dependencies, mcp, bacPython] = await Promise.all([
       probeExecutable({ id: "npm", label: "npm", category: "基础运行时", command: platform === "win32" ? "npm.cmd" : "npm", requiredFor: ["workbench", "dynamic"], environment, platform, execute, resolveCommand }),
       probeExecutable({ id: "git", label: "Git", category: "基础运行时", command: "git", requiredFor: ["static", "dynamic"], environment, platform, execute, resolveCommand }),
       openCodeComponent({ environment, platform, architecture: this.architecture, execute, resolveCommand }),
-      terminalMultiplexerComponent({ environment, platform, execute, resolveCommand }),
+      terminalComponent({ environment, platform, execute, resolveCommand }),
       probeExecutable({ id: "java", label: "Java", category: "深度静态分析（可选）", command: javaCommand, requiredFor: ["deep_dataflow"], environment, platform, execute, resolveCommand }),
       probeExecutable({ id: "joern", label: "Joern", category: "深度静态分析（可选）", command: environment.JOERN_BIN ?? "joern", args: null, requiredFor: ["deep_dataflow"], environment, platform, execute, resolveCommand }),
       probeExecutable({ id: "joern_parse", label: "joern-parse", category: "深度静态分析（可选）", command: environment.JOERN_PARSE_BIN ?? "joern-parse", args: ["--list-languages"], requiredFor: ["deep_dataflow"], environment, platform, execute, resolveCommand }),
@@ -177,7 +169,7 @@ export class EnvironmentHealthService {
       probeExecutable({ id: "bac_python", label: "Python（越权专项）", category: "静态分析（可选）", command: environment.AUDIT_BAC_PYTHON || (platform === "win32" ? "python" : "python3"), requiredFor: ["bac_analysis"], environment, platform, execute, resolveCommand }),
     ]);
     const chromeMcp = configuredComponent("chrome_devtools_mcp", "Chrome DevTools MCP", "动态验证", mcp.chrome_devtools, ["dynamic"], "隔离 Chrome DevTools MCP 已启用。" );
-    const components = [node, npm, dependencies, git, opencode, tmux, java, joern, joernParse, opengrep, semgrep, gitleaks, osvScanner, chrome, chromeMcp, bacPython];
+    const components = [node, npm, dependencies, git, opencode, ttyd, java, joern, joernParse, opengrep, semgrep, gitleaks, osvScanner, chrome, chromeMcp, bacPython];
     const capabilities = [
       capability("workbench", "工作台", ["node", "project_dependencies"], components),
       capability("static", "静态漏洞挖掘", ["node", "git", "opencode", "project_dependencies"], components, { anyOf: ["opengrep", "semgrep"] }),
@@ -186,7 +178,7 @@ export class EnvironmentHealthService {
       capability("secret_scan", "密钥泄漏扫描（可选）", ["gitleaks"], components, { optional: true }),
       capability("dependency_scan", "依赖漏洞扫描（可选）", ["osv_scanner"], components, { optional: true }),
       capability("deep_dataflow", "深度数据流分析（可选）", ["java", "joern", "joern_parse"], components, { optional: true }),
-      capability("terminal_monitor", "OpenCode 窗口监控", ["node", "opencode", "tmux"], components),
+      capability("terminal_monitor", "ttyd 交互终端", ["node", "opencode", "ttyd"], components),
       capability("dynamic", "Web 动态验证", ["node", "npm", "git", "opencode", "project_dependencies", "chrome", "chrome_devtools_mcp"], components),
     ];
     const value = {

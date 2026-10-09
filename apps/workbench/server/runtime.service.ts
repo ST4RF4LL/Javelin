@@ -7,7 +7,7 @@ export class RuntimeService {
   constructor() {
     const mode = process.env.WORKBENCH_MODE || 'preview';
     if (mode !== 'preview' && mode !== 'integrated') throw new Error('WORKBENCH_MODE 仅支持 preview 或 integrated。');
-    this.config = { mode, defaultSource: mode === 'integrated' ? 'live' : 'demo', demoEnabled: mode === 'preview', liveReadOnly: !(mode === 'integrated' && process.env.WORKBENCH_ENABLE_TASKS === '1'), legacyUrl: '/legacy/', featureVersion: 1 };
+    this.config = { mode, defaultSource: mode === 'integrated' ? 'live' : 'demo', demoEnabled: mode === 'preview', liveReadOnly: !(mode === 'integrated' && process.env.WORKBENCH_ENABLE_TASKS === '1'), legacyUrl: process.env.WORKBENCH_LEGACY_ENABLED === '1' ? 'http://127.0.0.1:4173/' : null, featureVersion: 2 };
   }
   assertWritable() { if (this.config.liveReadOnly) throw new ForbiddenException('当前入口只读。请使用新平台运行命令启动任务模式。'); }
   source(value?: string): Source {

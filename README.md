@@ -185,9 +185,9 @@ Skill 到 agent 的映射通过目录约定和 `collection.json` 自动完成，
 npm --prefix .opencode run start:audit-workbench
 ```
 
-默认监听 `http://127.0.0.1:4173`。页面统一展示仓库 Git/配置就绪度、审计任务、8 阶段流水线、带人工处理 companion 状态的漏洞台账、报告记录、运行环境组件与能力快照，以及动态验证的授权 loopback 环境、隔离浏览器上下文和 extension-v2 脱敏 HTTP 请求/响应证据链。安装 tmux（macOS/Linux/WSL）或 psmux（Windows）后，新建静态审计还会得到一个只读 OpenCode 实时窗口；网页按精确 multiplexer target 刷新画面，也会给出可在工作台主机执行的直接 attach 命令。Windows 环境探针只检查 Chrome 可执行文件是否存在，不会为了读取版本而启动空白浏览器。历史 v1 验证结果没有持久化 HTTP exchange 时会明确标记为“未捕获”。人工处理状态使用独立版本和幂等事件记录，不覆盖 canonical finding；Windows 验证结果同步到工作台的 `reports/repositories/<repository-id>/validation-handoff/runtime/` 后也会被统一读取。
+上述旧版独立命令监听 `http://127.0.0.1:4173`，仅在手动运行时开启；当前默认启动方式见下一段。页面统一展示仓库 Git/配置就绪度、审计任务、8 阶段流水线、带人工处理 companion 状态的漏洞台账、报告记录、运行环境组件与能力快照，以及动态验证的授权 loopback 环境、隔离浏览器上下文和 extension-v2 脱敏 HTTP 请求/响应证据链。当前新任务直接运行 OpenCode 共享会话，网页默认读取 JSON 事件；安装 ttyd 后可按需打开同一 session 的交互子窗口。默认流程和运行环境探测不再调用 tmux/psmux。Windows 环境探针只检查 Chrome 可执行文件是否存在，不会为了读取版本而启动空白浏览器。历史 v1 验证结果没有持久化 HTTP exchange 时会明确标记为“未捕获”。人工处理状态使用独立版本和幂等事件记录，不覆盖 canonical finding；Windows 验证结果同步到工作台的 `reports/repositories/<repository-id>/validation-handoff/runtime/` 后也会被统一读取。
 
-新版 React / NestJS 工作台已支持真实任务：在仓库根目录运行 `npm --prefix apps/workbench run start:platform`，默认入口 `http://127.0.0.1:4181`。首次安装或拉取依赖变更后，先执行 `npm --prefix apps/workbench ci --include=dev --include=optional`，成功后执行 `npm --prefix apps/workbench run build`；Windows PowerShell 使用相同命令。可选择产品、源码、模型和策略，创建任务并执行调度、暂停、恢复、取消或断点恢复；复用原平台 Runner 与业务数据。上一阶段只读入口 `start:audit-workbench:modern`、4173 原平台及 4180 首版封存预览继续保留。启动、任务操作、诊断和回退方法见 [新版工作台说明](apps/workbench/README.md)。
+新版 React / NestJS 工作台已支持真实任务：在仓库根目录运行 `npm --prefix apps/workbench run start:platform`，默认入口 `http://127.0.0.1:4181`，4173 原界面保留入口及 4181 `/legacy` 默认不开启。需要原界面时执行 `npm --prefix apps/workbench run start:platform -- --legacy`，在 4173 开放原界面并共用执行服务。首次安装或拉取依赖变更后，先执行 `npm --prefix apps/workbench ci --include=dev --include=optional`，成功后执行 `npm --prefix apps/workbench run build`；Windows PowerShell 使用相同命令。可选择产品、源码、模型和策略，创建任务并执行调度、暂停、恢复、取消或断点恢复；复用原平台 Runner 与业务数据。上一阶段只读入口 `start:audit-workbench:modern`、4173 原平台及 4180 首版封存预览继续保留。启动、任务操作、诊断和回退方法见 [新版工作台说明](apps/workbench/README.md)。
 
 动态验证默认展示“验证动作”：按产品、审计和漏洞归集浏览器操作与 HTTP 请求/响应；没有绑定漏洞的环境接触和探索单独显示，受阻、缺失正文与证据校验失败保留具体缺口。贯穿式 `runtime-testing.v1` 与历史人工补充验证共用该视图；旧文本不能可靠还原时只展示脱敏原文，不猜测 HTTP 请求。读取页面和导出不会启动验证。
 

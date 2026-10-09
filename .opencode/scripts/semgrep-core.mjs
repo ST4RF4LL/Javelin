@@ -101,6 +101,7 @@ export function runProcess(command, args, {
         ...env,
       },
       stdio: ["ignore", "pipe", "pipe"],
+      windowsHide: true,
     });
     const stdoutChunks = [];
     let stdoutBytes = 0;

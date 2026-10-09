@@ -23,7 +23,7 @@ export async function runCrossRepoAgent({ input, outputRoot, runner, model, sign
   const args = ['run', '读取附件，按 role 执行跨 Repo 静态分析或独立复核。输出 result.json 后结束。', '--format', 'json', '--agent', agent, '--dir', outputRoot, ...(model ? ['--model', model] : []), '--file', inputPath];
   const execution = await new Promise((resolve, reject) => {
     if (signal.aborted) return reject(new Error('跨 Repo 任务已停止。'));
-    const child = (runner.spawnProcess ?? spawn)(process.execPath, [guardian, runner.command, ...args], { cwd: outputRoot, env, shell: false, stdio: ['ignore', 'pipe', 'pipe', 'ipc'] });
+    const child = (runner.spawnProcess ?? spawn)(process.execPath, [guardian, runner.command, ...args], { cwd: outputRoot, env, shell: false, windowsHide: true, stdio: ['ignore', 'pipe', 'pipe', 'ipc'] });
     let sessionId = null, persist = Promise.resolve(), stopping = null, failed = null;
     const stop = () => { if (stopping) return; if (child.connected) child.send({ type: 'stop' }, () => {}); child.kill('SIGTERM'); stopping = setTimeout(() => child.kill('SIGKILL'), 7000); stopping.unref?.(); };
     signal.addEventListener('abort', stop, { once: true });

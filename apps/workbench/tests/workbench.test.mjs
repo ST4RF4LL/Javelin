@@ -103,7 +103,7 @@ test('融合模式默认真实数据并拒绝演示、任务写入；回退地�
     const events = await fetch(`${base}/api/workbench/audits/fixture-audit/events`, { signal: AbortSignal.timeout(3000) });
     assert.match(await events.text(), /fixture-event-9/);
     const back = await fetch(`${base}/legacy?next=https://unrelated.invalid`, { redirect: 'manual' });
-    assert.equal(back.status, 302); assert.equal(back.headers.get('location'), '/legacy/');
+    assert.equal(back.status, 404); assert.equal(back.headers.get('location'), null); assert.equal(config.legacyUrl, null);
     const preview = await request('config'); assert.equal(preview.data.defaultSource, 'demo'); assert.equal(preview.data.demoEnabled, true);
   } finally { await integrated?.close(); if (previousMode === undefined) delete process.env.WORKBENCH_MODE; else process.env.WORKBENCH_MODE = previousMode; }
 });

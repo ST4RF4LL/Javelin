@@ -33,12 +33,12 @@ export class LiveService {
   transport: typeof fetch = this.upstream.fetch;
   onModuleDestroy() { this.upstream.close(); }
   constructor() {
-    const url = new URL(process.env.WORKBENCH_UPSTREAM || 'http://127.0.0.1:4173');
+    const url = new URL(process.env.WORKBENCH_UPSTREAM || 'http://127.0.0.1:4183');
     if (!['http:', 'https:'].includes(url.protocol) || url.username || url.password || url.pathname !== '/' || url.search || url.hash) throw new Error('WORKBENCH_UPSTREAM 必须为不含凭据的 HTTP(S) origin。');
     this.origin = url.origin;
     const source = process.env.WORKBENCH_MODEL_SOURCE || 'auto';
     if (!['auto', 'local', 'upstream'].includes(source)) throw new Error('WORKBENCH_MODEL_SOURCE 仅支持 auto、local 或 upstream。');
-    this.modelSource = source === 'local' || (source === 'auto' && this.origin === 'http://127.0.0.1:4173') ? 'local' : 'upstream';
+    this.modelSource = source === 'local' || (source === 'auto' && ['http://127.0.0.1:4183', 'http://127.0.0.1:4173'].includes(this.origin)) ? 'local' : 'upstream';
   }
   async request(path: string, options: RequestInit = {}, policy: ReadPolicy = {}) {
     const controller = new AbortController();

@@ -78,24 +78,15 @@ test('拒绝任务目录和连接文件的符号链接越界', async () => {
     assert.throws(() => readAuditTerminal(join(root, 'state'), 'audit-file'), /受控目录/);
   } finally { await rm(root, { recursive: true, force: true }); }
 });
-test('真实ttyd连接任务tmux：强制只读，缩放不影响原窗口，重连和关闭保留任务', { timeout: 20_000 }, async () => {
-  const root = await mkdtemp('/private/tmp/ttyd-tmux-test-'), id = 'audit-tmux-fixture';
-  const socket = `owa-ttyd-test-${process.pid}-${Date.now()}`;
-  let app, connection, created = false;
+test('旧任务没有共享会话时明确拒绝连接，不启动 ttyd 或 tmux/psmux', async () => {
+  const root = await mkdtemp('/private/tmp/ttyd-legacy-test-'), id = 'audit-legacy-fixture';
+  let app, starts = 0;
   try {
-    await execute('tmux', ['-L', socket, 'new-session', '-d', '-x', '120', '-y', '30', '-s', 'audit', '/bin/cat']); created = true;
-    await mkdir(join(root, id)); await writeFile(join(root, id, 'run.json'), JSON.stringify({ id, status: 'running', name: '旧任务只读回归', paths: { workspace_root: root }, terminal: { live: true, socket_name: socket, target: 'audit' } }));
-    app = await startTerminalMonitor({ port: 0, stateRoot: root });
-    const base = `http://127.0.0.1:${app.server.address().port}`;
-    connection = await connectTtyd(base, id); assert.equal(connection.terminal.readOnly, true);
-    await until(async () => connection.messages.length > 1);
-    connection.input('MUST_NOT_ARRIVE\r'); connection.resize(200, 80); await delay(150);
-    const { stdout } = await execute('tmux', ['-L', socket, 'capture-pane', '-p', '-t', 'audit']); assert.equal(stdout.includes('MUST_NOT_ARRIVE'), false);
-    assert.equal((await execute('tmux', ['-L', socket, 'display-message', '-p', '-t', 'audit', '#{window_width}'])).stdout.trim(), '120');
-    const closed = once(connection.ws, 'close'); connection.ws.close(); await closed;
-    connection = await connectTtyd(base, id); await until(async () => connection.messages.length > 1);
-    await app.close(); await execute('tmux', ['-L', socket, 'has-session', '-t', 'audit']);
-  } finally { connection?.ws.terminate(); await app?.close(); if (created) await execute('tmux', ['-L', socket, 'kill-session', '-t', 'audit']); await rm(root, { recursive: true, force: true }); }
+    await mkdir(join(root, id)); await writeFile(join(root, id, 'run.json'), JSON.stringify({ id, status: 'running', paths: { workspace_root: root }, terminal: { live: true, socket_name: 'old-socket', target: 'audit' } }));
+    app = await startTerminalMonitor({ port: 0, stateRoot: root, spawnProcess() { starts++; throw new Error('不应启动'); } });
+    const response = await fetch(`http://127.0.0.1:${app.server.address().port}/api/audits/${id}/terminal`, { method: 'POST', headers: { Origin: `http://127.0.0.1:${app.server.address().port}` } });
+    assert.equal(response.status, 409); assert.match(await response.text(), /不会启动 tmux/); assert.equal(starts, 0);
+  } finally { await app?.close(); await rm(root, { recursive: true, force: true }); }
 });
 test('CLI收到SIGTERM退出并释放自有端口', { timeout: 15_000 }, async () => {
   const reservation = http.createServer(); await new Promise(resolve => reservation.listen(0, '127.0.0.1', resolve));

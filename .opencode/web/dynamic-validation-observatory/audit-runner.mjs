@@ -23,7 +23,7 @@ import { basename, dirname, isAbsolute, join, parse, relative, resolve, sep } fr
 import { fileURLToPath, pathToFileURL } from "node:url";
 import { buildOpenCodeEnvironment, configureTaskReviewPermissions, proxyEnvironmentFrom } from "./opencode-runtime-config.mjs";
 import { DEFAULT_MODEL_SELECTION, normalizeOpenCodeModel } from "./opencode-model-settings.mjs";
-import { OpenCodeTmuxMonitor } from "./tmux-monitor.mjs";
+import { OpenCodeProcessMonitor } from "./opencode-process-monitor.mjs";
 import { openCodeEventView } from "./opencode-event-view.mjs";
 import { auditsFromArtifacts, materializeFinalReportFromModel, scanReportArtifacts } from "./workspace-model.mjs";
 import { verifyAuditStageDeliveries } from "../../skills/common-subagent/audit-artifact-management/scripts/stage-delivery-materialization.mjs";
@@ -336,6 +336,7 @@ function repositoryRegistryEntries(registry) {
 async function git(repositoryPath, args) {
   const result = await execFileAsync("git", ["-C", repositoryPath, ...args], {
     encoding: "utf8",
+    windowsHide: true,
     timeout: 10_000,
     maxBuffer: 1024 * 1024,
   });
@@ -657,7 +658,7 @@ export class AuditRunner extends EventEmitter {
     this.compactSessionRunner = compactSessionRunner ?? ((command, args, options) => execFileAsync(command, args, options));
     this.stageDeliveryVerifier = stageDeliveryVerifier;
     this.todoCompletionVerifier = todoCompletionVerifier;
-    this.terminalMonitor = terminalMonitor ?? new OpenCodeTmuxMonitor({ stateRoot: this.stateRoot, command: this.command, environment: this.environment });
+    this.terminalMonitor = terminalMonitor ?? new OpenCodeProcessMonitor({ stateRoot: this.stateRoot, command: this.command, environment: this.environment, spawnProcess });
     this.audits = new Map();
     this.processes = new Map();
     this.completions = new Map();
@@ -1166,7 +1167,7 @@ export class AuditRunner extends EventEmitter {
         "--audit-id", audit.id,
         "--output", temporaryPath,
         "--mode", audit.source_kind === "directory" ? "filesystem" : "auto",
-      ], { encoding: "utf8", timeout: 10 * 60_000, maxBuffer: 1024 * 1024 });
+      ], { windowsHide: true, encoding: "utf8", timeout: 10 * 60_000, maxBuffer: 1024 * 1024 });
       const manifest = JSON.parse(await readFile(temporaryPath, "utf8"));
       if (!/^[a-f0-9]{64}$/i.test(manifest?.scope_digest ?? "")) throw new Error("任务启动时生成的源码范围清单摘要无效。");
       const current = {
@@ -2011,10 +2012,10 @@ export class AuditRunner extends EventEmitter {
         command = probe.opencode_command;
       }
       if (!probe.available) {
-        audit.terminal = { backend: probe.backend ?? "terminal-multiplexer", supported: false, status: "unavailable", live: false, message: probe.message };
+        audit.terminal = { backend: probe.backend ?? "opencode-process", supported: false, status: "unavailable", live: false, message: probe.message };
         await this.record(audit, "audit.terminal.unavailable", { message: redact(probe.message) });
       } else {
-        audit.terminal = { backend: probe.backend ?? "tmux", supported: true, status: "starting", live: false, message: `正在通过 ${probe.backend ?? "tmux"} 启动隔离 OpenCode run。` };
+        audit.terminal = { backend: probe.backend ?? "opencode-process", supported: true, status: "starting", live: false, message: "正在后台启动 OpenCode 共享会话。" };
         await this.record(audit, "audit.terminal.starting", {});
         audit.terminal = await this.terminalMonitor.start({
           audit,
@@ -2027,9 +2028,11 @@ export class AuditRunner extends EventEmitter {
         audit.execution_transport = audit.terminal.transport;
         audit.provider_session_id = providerSessionId(audit.terminal.provider_session_id);
         audit.execution.session_id = audit.provider_session_id;
-        if (!isAbsolute(audit.terminal.relay_spec_path ?? "")) throw new Error("终端输出中继配置缺失。");
-        command = process.execPath;
-        args = [TERMINAL_OUTPUT_RELAY, audit.terminal.relay_spec_path];
+        if (audit.terminal.backend !== 'opencode-process') {
+          if (!isAbsolute(audit.terminal.relay_spec_path ?? "")) throw new Error("终端输出中继配置缺失。");
+          command = process.execPath;
+          args = [TERMINAL_OUTPUT_RELAY, audit.terminal.relay_spec_path];
+        }
         await this.record(audit, "audit.terminal.ready", {
           backend: audit.terminal.backend,
           target: audit.terminal.target,
@@ -2039,7 +2042,7 @@ export class AuditRunner extends EventEmitter {
       }
     } catch (error) {
       await this.terminalMonitor.stop(audit.terminal).catch(() => {});
-      audit.terminal = { backend: audit.terminal?.backend ?? "terminal-multiplexer", supported: false, status: "error", live: false, message: `终端监控启动失败，已回退普通 Runner：${redact(error.message)}` };
+      audit.terminal = { backend: audit.terminal?.backend ?? "opencode-process", supported: false, status: "error", live: false, message: `终端监控启动失败，已回退普通 Runner：${redact(error.message)}` };
       audit.execution_transport = "opencode-run";
       await this.record(audit, "audit.terminal.failed", { message: audit.terminal.message });
     }
@@ -2051,10 +2054,12 @@ export class AuditRunner extends EventEmitter {
       await runtimeService.contact();
     }
     if (audit.status === "cancelled" || audit.product_campaign_id && this.productCampaignGuard && !this.productCampaignGuard(audit.product_campaign_id)) throw Object.assign(new Error("产品批次已暂停或取消，未启动审计 Agent。"), { code: "product-campaign-not-running" });
-    const child = this.spawnProcess(command, args, {
+    const child = audit.terminal?.backend === 'opencode-process' && audit.terminal.supported
+      ? this.terminalMonitor.launch(audit.terminal) : this.spawnProcess(command, args, {
       cwd: paths.workspace_root,
       env: environment,
       stdio: ["ignore", "pipe", "pipe"],
+      windowsHide: true,
       shell: false,
     });
     this.processes.set(audit.id, child);
@@ -2190,9 +2195,12 @@ export class AuditRunner extends EventEmitter {
   }
 
   async captureProviderSession(audit, line) {
-    if (audit.provider_session_id) return;
     let value;
     try { value = JSON.parse(line); } catch { return; }
+    if (value.type === 'session_bound' && audit.terminal?.shared_server && typeof value.generation === 'string') {
+      audit.terminal.server_generation = value.generation;
+      audit.terminal.status = 'ready';
+    }
     const sessionId = providerSessionId(value?.sessionID ?? value?.session_id ?? value?.session?.id);
     if (!sessionId || audit.provider_session_id) return;
     audit.provider_session_id = sessionId;
@@ -2436,7 +2444,7 @@ export class AuditRunner extends EventEmitter {
       forced_at: audit.finished_at,
       last_error: null,
     };
-    if (audit.terminal?.supported && audit.terminal?.socket_name) {
+    if (audit.terminal?.supported && (audit.terminal.socket_name || audit.terminal.backend === 'opencode-process')) {
       await this.terminalMonitor.stop(audit.terminal).catch(() => {});
       audit.terminal.live = false;
       audit.terminal.status = "closed";
@@ -2528,7 +2536,7 @@ export class AuditRunner extends EventEmitter {
     audit.interrupted_at = audit.finished_at;
     audit.error = "检测到模型上下文达到上限；Runner 在宽限期内未退出，已强制收敛并准备执行 /compact。";
     audit.context_window_recovery = { ...audit.context_window_recovery, state: "waiting-to-compact", forced_at: audit.finished_at, last_error: null };
-    if (audit.terminal?.supported && audit.terminal?.socket_name) {
+    if (audit.terminal?.supported && (audit.terminal.socket_name || audit.terminal.backend === 'opencode-process')) {
       await this.terminalMonitor.stop(audit.terminal).catch(() => {});
       audit.terminal.live = false;
       audit.terminal.status = "closed";
@@ -2614,7 +2622,7 @@ export class AuditRunner extends EventEmitter {
   }
 
   async finalizeTerminal(audit) {
-    if (!audit.terminal?.supported || !audit.terminal?.socket_name) return;
+    if (!audit.terminal?.supported || (!audit.terminal?.socket_name && audit.terminal?.backend !== 'opencode-process')) return;
     let captured = "";
     try {
       captured = redactTerminalOutput(await this.terminalMonitor.capture(audit.terminal, 1000), await this.redactionsForAudit(audit));
@@ -2728,9 +2736,9 @@ export class AuditRunner extends EventEmitter {
 
       const existingSessionId = providerSessionId(audit.provider_session_id ?? audit.terminal?.provider_session_id);
       if (audit.terminal?.live) {
-        await this.terminalMonitor.abort(audit.terminal, audit.paths?.workspace_root).catch(error => this.recordLog(audit, "stderr", `旧 OpenCode session 中止确认失败，将继续关闭该任务的隔离 tmux：${error.message}`));
+        await this.terminalMonitor.abort(audit.terminal, audit.paths?.workspace_root).catch(error => this.recordLog(audit, "stderr", `旧 OpenCode session 中止确认失败，将继续关闭该任务的执行进程：${error.message}`));
       }
-      if (audit.terminal?.supported && audit.terminal?.socket_name) {
+      if (audit.terminal?.supported && (audit.terminal.socket_name || audit.terminal.backend === 'opencode-process')) {
         await this.terminalMonitor.stop(audit.terminal);
         audit.terminal.live = false;
         audit.terminal.status = "closed";
@@ -2798,7 +2806,7 @@ export class AuditRunner extends EventEmitter {
     } else if (action === "cancel" && ACTIVE.has(audit.status)) {
       await this.stopTaskBoard(audit);
       await this.stopRuntimeTesting(audit);
-      if (audit.status === "paused") {
+      if (audit.status === "paused" && audit.terminal?.backend !== 'opencode-process') {
         if (audit.terminal?.live) await this.terminalMonitor.signalRun(audit.terminal, "SIGCONT");
         if (!child.kill("SIGCONT")) throw new Error("取消前恢复审计进程失败。");
       }
@@ -2823,7 +2831,8 @@ export class AuditRunner extends EventEmitter {
       command: this.command,
       active_processes: this.processes.size,
       registered_agent_sessions: [...this.audits.values()].filter(audit => isNativeAudit(audit) && audit.execution.connected).length,
-      active_tmux_monitors: [...this.audits.values()].filter(audit => audit.terminal?.live).length,
+      active_terminals: [...this.audits.values()].filter(audit => audit.terminal?.live).length,
+      active_tmux_monitors: [...this.audits.values()].filter(audit => audit.terminal?.live && ['tmux', 'psmux'].includes(audit.terminal.backend)).length,
       registered_repositories: this.repositories.size,
       state_root: "server-managed",
     };
@@ -2849,7 +2858,7 @@ export class AuditRunner extends EventEmitter {
     for (const [id, child] of this.processes) {
       const audit = this.audits.get(id);
       if (!audit || audit.status === "cancelling") continue;
-      if (audit.status === "paused") {
+      if (audit.status === "paused" && audit.terminal?.backend !== 'opencode-process') {
         if (audit.terminal?.live) await this.terminalMonitor.signalRun(audit.terminal, "SIGCONT").catch(() => {});
         child.kill("SIGCONT");
       }

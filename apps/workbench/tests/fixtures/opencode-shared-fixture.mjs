@@ -18,7 +18,8 @@ if (args.includes('--help')) {
       appendFileSync(join(process.cwd(), 'session-create.jsonl'), `${body}\n`);
       appendFileSync(join(process.cwd(), 'creates.txt'), 'created\n');
       res.end(JSON.stringify({ id: 'ses_shared_fixture' }));
-    } else if (/^\/session\//.test(url.pathname)) res.end(JSON.stringify({ id: url.pathname.split('/').pop() }));
+    } else if (url.pathname.endsWith('/abort')) { sink?.end(); sink = null; res.end('true'); }
+    else if (/^\/session\//.test(url.pathname)) res.end(JSON.stringify({ id: url.pathname.split('/').pop() }));
     else if (url.pathname === '/run') {
       sink = res;
       res.writeHead(200, { 'Content-Type': 'application/jsonl' });
@@ -32,6 +33,7 @@ if (args.includes('--help')) {
   });
   server.listen(0, '127.0.0.1', () => console.log(`opencode server listening on http://127.0.0.1:${server.address().port}`));
 } else if (command === 'run') {
+  appendFileSync(join(process.cwd(), 'run-starts.txt'), 'started\n');
   const result = await fetch(`${option('--attach')}/run?session=${option('--session')}`, { headers: { Authorization: auth } });
   if (!result.ok) process.exit(1);
   for await (const chunk of result.body) process.stdout.write(chunk);
