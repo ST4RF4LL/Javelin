@@ -258,7 +258,17 @@ function toast(message) {
 async function api(path, options = {}) {
   if (disposed) throw new DOMException("页面已关闭", "AbortError");
   const response = await fetch(path, { headers: { Accept: "application/json", ...(options.headers ?? {}) }, ...options });
-  const body = await response.json().catch(() => ({}));
+  let body;
+  try { body = await response.json(); }
+  catch (error) {
+    // A newer refresh can cancel this request after headers have arrived.
+    // Preserve cancellation instead of passing an empty object to the caller.
+    options.signal?.throwIfAborted();
+    if (error.name === "AbortError") throw error;
+    if (response.ok) throw new Error("服务响应未完整读取或不是有效 JSON，请刷新后重试。");
+    body = {};
+  }
+  options.signal?.throwIfAborted();
   if (disposed) throw new DOMException("页面已关闭", "AbortError");
   if (!response.ok) throw Object.assign(new Error(body.message ?? `请求失败：HTTP ${response.status}`), { status: response.status });
   if (!['GET', 'HEAD'].includes(options.method ?? 'GET')) onMutation?.();
@@ -624,6 +634,8 @@ async function loadAuditsPage(page = 1) {
   renderAudits();
   try {
     const payload = await api(auditListPath(productId, parameters), { signal: controller.signal });
+    if (controller.signal.aborted || state.view !== "audits") return;
+    if (!Array.isArray(payload?.items)) throw new Error("任务列表响应缺少 items，请刷新后重试。");
     const items = await auditViews(payload.items.map(audit => productId ? { ...audit, provenance: { audit_product_id: productId, audit_managed: true, ...audit.provenance } } : audit));
     if (controller.signal.aborted || state.view !== "audits") return;
     state.audits = items;
@@ -687,6 +699,7 @@ async function selectAudit(auditId, { productId = null, repositoryId = null, man
     const path = scope.managed ? `/api/v2/products/${encodeURIComponent(scope.productId)}/audits/${encodeURIComponent(auditId)}`
       : `/api/v1/audits/${encodeURIComponent(auditId)}?repository_id=${encodeURIComponent(scope.repositoryId ?? repositoryId ?? "")}`;
     const audit = await api(path, { signal: controller.signal });
+    if (controller.signal.aborted || state.selectedAuditId !== auditId) return;
     const [view] = await auditViews([audit], { details: true });
     if (controller.signal.aborted || state.selectedAuditId !== auditId || !$("audit-drawer").open) return;
     state.selectedAudit = { ...view, provenance: { ...view.provenance, audit_product_id: scope.productId, audit_managed: scope.managed } };

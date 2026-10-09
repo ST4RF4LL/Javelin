@@ -99,6 +99,48 @@ test('跨产品任务详情和调度、暂停始终使用任务真实归属', as
   assert.equal(f.state.selectedProductId, 'p1'); assert.equal(f.errors.length, 0);
 });
 
+test('暂停后的刷新与 SSE 重叠：响应头已到达时取消旧列表不会报 map 错误', async () => {
+  const f = fixture(), value = audit('audit-pause', 'p1', 'running');
+  const apiSource = source.match(/^async function api\([^]*?^}/m)[0];
+  Object.assign(f.context, { DOMException, onMutation() {} });
+  vm.runInContext(apiSource, f.context);
+  let headersArrived;
+  const firstHeaders = new Promise(resolve => { headersArrived = resolve; });
+  let listRequests = 0;
+  f.context.fetch = async (url, options) => {
+    if (options.method === 'POST') return Response.json({ ...value, status: 'paused' });
+    if (++listRequests === 1) {
+      // Like fetch on a streamed HTTP response: abort happens in json(),
+      // after fetch itself has already fulfilled with status 200.
+      const response = new Response(new ReadableStream({ start(controller) {
+        options.signal.addEventListener('abort', () => controller.error(new DOMException('aborted while reading body', 'AbortError')), { once: true });
+      } }));
+      headersArrived(); return response;
+    }
+    return Response.json({ items: [{ ...value, status: 'paused' }], count: 1, page: 1, total_pages: 1 });
+  };
+  f.context.load = () => f.context.loadAuditsPage(1);
+  const sseRefresh = f.context.loadAuditsPage(1);
+  await firstHeaders;
+  await f.context.requestAuditAction(value, 'pause');
+  await sseRefresh;
+  assert.equal(f.errors.length, 0);
+  assert.equal(f.state.audits[0].status, 'paused');
+  assert.equal(f.state.auditLoading, false);
+});
+
+test('成功状态中的截断 JSON 不会伪装成空对象；服务端错误仍保留 HTTP 状态', async () => {
+  const f = fixture();
+  Object.assign(f.context, { DOMException, onMutation() {} });
+  vm.runInContext(source.match(/^async function api\([^]*?^}/m)[0], f.context);
+  f.context.fetch = async () => new Response('{"items":');
+  await assert.rejects(f.context.api('/fixture'), /响应未完整读取/);
+  f.context.fetch = async () => new Response('Bad gateway', { status: 502 });
+  await assert.rejects(f.context.api('/fixture'), error => error.status === 502);
+  f.context.fetch = async () => Response.json({ message: '审计版本已变化' }, { status: 412 });
+  await assert.rejects(f.context.api('/fixture'), error => error.status === 412 && error.message === '审计版本已变化');
+});
+
 test('旧列表无审计归属时从 v1 解析，不把对象当前产品当成原审计产品', async () => {
   const f = fixture(), value = audit('audit-p2', 'p2'); f.state.audits = [{ ...value, provenance: { product_id: 'transferred-target-product' } }];
   f.context.respond = async () => value;

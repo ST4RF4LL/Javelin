@@ -15,7 +15,7 @@ export const TERMINAL_MONITOR_ORIGINS = Object.freeze([
 const RESERVED_PORTS = new Set([4173, 4181, 4183]);
 const defaultStateRoot = () => resolve(process.env.AUDIT_WORKBENCH_STATE_ROOT || fileURLToPath(new URL('../../../reports/platform/audit-runs', import.meta.url)));
 export const TERMINAL_PROTOCOL = 'audit-terminal.ttyd.v1';
-export const TERMINAL_BUILD = createHash('sha256').update(['start-terminal-monitor.mjs','audit-terminal-runtime.mjs','ttyd-runtime.mjs','terminal-page.mjs']
+export const TERMINAL_BUILD = createHash('sha256').update(['start-terminal-monitor.mjs','audit-terminal-runtime.mjs','ttyd-runtime.mjs','ttyd-command.mjs','ttyd-attach-launch.cjs','terminal-page.mjs']
   .map(file => readFileSync(new URL(file, import.meta.url))).reduce((a, b) => Buffer.concat([a, b]), Buffer.alloc(0))).digest('hex');
 function validPort(value, ephemeral = false) {
   const port = Number(value);
@@ -76,9 +76,15 @@ export function createWorkbenchTerminalMonitor({ stateRoot = defaultStateRoot(),
     if (api && ['GET', 'POST'].includes(req.method)) {
       if (req.method === 'POST' && !req.headers.origin) throw failure('启动终端需要受信任的浏览器来源。', 403);
       const options = targetOptions(url), target = runtime.resolve(api[1], options);
-      if (req.method === 'GET') return json(res, 200, publicTarget(target));
+      if (req.method === 'GET') {
+        if (url.searchParams.has('worker')) {
+          const worker = runtime.get(url.searchParams.get('worker'));
+          if (worker.target.fingerprint !== target.fingerprint) throw failure('终端连接与当前任务不匹配，请重新连接。', 409);
+        }
+        return json(res, 200, publicTarget(target));
+      }
       const worker = await runtime.open(api[1], options);
-      return json(res, 200, { ...publicTarget(worker.target), url: `${worker.basePath}/` });
+      return json(res, 200, { ...publicTarget(worker.target), worker: worker.id, url: `${worker.basePath}/` });
     }
     const page = /^\/audits\/([a-z0-9][a-z0-9._-]{2,127})\/$/i.exec(url.pathname);
     if (req.method === 'GET' && (page || url.pathname === '/')) {

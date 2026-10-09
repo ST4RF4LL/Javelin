@@ -5,7 +5,8 @@ import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { setTimeout as delay } from 'node:timers/promises';
-import { once } from 'node:events';
+import { once, EventEmitter } from 'node:events';
+import { PassThrough } from 'node:stream';
 import { connectTtyd } from './fixtures/ttyd-client.mjs';
 import { OpenCodeProcessMonitor } from '../../../.opencode/web/dynamic-validation-observatory/opencode-process-monitor.mjs';
 import { startTerminalMonitor } from '../scripts/start-terminal-monitor.mjs';
@@ -145,6 +146,30 @@ test('缺失ttyd可恢复报错，不遗留启动中进程，也不终止审计'
     const response = await fetch(`${base}/api/audits/${f.audit.id}/terminal`, { method: 'POST', headers: { Origin: base } });
     assert.equal(response.status, 503); assert.equal(app.runtime.status().workers, 0);
     assert.equal((await f.request('/')).status, 200);
+  } finally { await app?.close(); await f.close(); }
+});
+
+test('终端轮询检查实际 ttyd：PTY 启动失败可诊断并重连，凭据不进入错误响应', { timeout: 15_000 }, async () => {
+  const f = await setup(); let app; const children = [];
+  try {
+    app = await startTerminalMonitor({ port: 0, stateRoot: f.stateRoot, spawnProcess() {
+      const child = Object.assign(new EventEmitter(), { pid: 900000 + children.length, exitCode: null, signalCode: null, stdout: new PassThrough(), stderr: new PassThrough() });
+      child.kill = signal => { child.signalCode = signal; child.emit('exit', null, signal); return true; };
+      children.push(child); queueMicrotask(() => child.stderr.write('Listening on port: 12345\n')); return child;
+    } });
+    const base = `http://127.0.0.1:${app.server.address().port}`, endpoint = `${base}/api/audits/${f.audit.id}/terminal`;
+    const open = async () => (await fetch(endpoint, { method: 'POST', headers: { Origin: base } })).json();
+    const initial = await open();
+    assert.equal((await fetch(`${endpoint}?worker=${initial.worker}`)).status, 200);
+    assert.equal((await fetch(`${endpoint}?worker=${initial.worker}&readonly=1`)).status, 409);
+    children[0].stderr.write(`private credential ${f.binding.password}\nCreateProcessW failed\npty_spawn: 2 (No such file)\n`);
+    const failure = await fetch(`${endpoint}?worker=${initial.worker}`), error = await failure.text();
+    assert.equal(failure.status, 503); assert.match(error, /无法启动交互客户端/); assert.equal(error.includes(f.binding.password), false);
+    const retried = await open(); assert.notEqual(retried.worker, initial.worker);
+    assert.equal((await fetch(`${endpoint}?worker=${retried.worker}`)).status, 200);
+    children[1].kill('SIGTERM');
+    assert.equal((await fetch(`${endpoint}?worker=${retried.worker}`)).status, 409);
+    assert.equal((await f.request('/')).status, 200, '终端故障不能关闭执行服务');
   } finally { await app?.close(); await f.close(); }
 });
 
