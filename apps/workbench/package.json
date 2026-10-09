@@ -16,7 +16,7 @@
     "start:integrated": "node scripts/start-integrated.mjs",
     "start:preview:baseline": "node .releases/preview-20261001/build/api/server/main.js",
     "start:platform": "node scripts/start-platform.mjs",
-    "test:tasks": "node --test tests/task-control.test.mjs tests/task-kernel.test.mjs tests/task-client.test.mjs tests/upstream-transport.test.mjs tests/read-pages.test.mjs tests/task-launch.test.mjs tests/local-models.test.mjs tests/feature-parity.test.mjs"
+    "test:tasks": "node --test tests/batch-audit.test.mjs tests/task-control.test.mjs tests/task-kernel.test.mjs tests/task-client.test.mjs tests/upstream-transport.test.mjs tests/read-pages.test.mjs tests/task-launch.test.mjs tests/local-models.test.mjs tests/feature-parity.test.mjs"
   },
   "engines": {
     "node": ">=22.22.3"

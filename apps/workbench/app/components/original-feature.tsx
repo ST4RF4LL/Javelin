@@ -20,7 +20,8 @@ type Controller = { ready: Promise<unknown>; destroy: () => void; refresh: () =>
 
 // 在 Shell 中持续挂载，切换页面时保留产品选择、筛选和原控制器状态。
 export function OriginalFeature({ view, auditId, hidden = false }: { view: OriginalView; auditId?: string; hidden?: boolean }) {
-  const { runtime } = useWorkspace();
+  const { runtime, setCreateOpen } = useWorkspace();
+  const createEntry = useRef(setCreateOpen); createEntry.current = setCreateOpen;
   const queryClient = useQueryClient();
   const host = useRef<HTMLDivElement>(null); const navigate = useNavigate(); const [params] = useSearchParams();
   const [controller, setController] = useState<Controller | null>(null);
@@ -50,13 +51,13 @@ export function OriginalFeature({ view, auditId, hidden = false }: { view: Origi
         if (key === 'querySelector' || key === 'querySelectorAll') return body[key].bind(body);
         const value = Reflect.get(target, key, target); return typeof value === 'function' ? value.bind(target) : value;
       } });
-      mounted = module.mountWorkbench({ document: scopedDocument, initialView: location.current.view, onNavigate: (next: OriginalView) => { if (next !== location.current.view) navigate(routes[next]); }, onFileCoverage: (id: string) => navigate(`/audits/coverage?audit_id=${encodeURIComponent(id)}`), onMutation: () => { void queryClient.invalidateQueries(); } });
+      mounted = module.mountWorkbench({ document: scopedDocument, initialView: location.current.view, onNavigate: (next: OriginalView) => { if (next !== location.current.view) navigate(routes[next]); }, onFileCoverage: (id: string) => navigate(`/audits/coverage?audit_id=${encodeURIComponent(id)}`), onBatchCreate: runtime.liveReadOnly ? null : () => createEntry.current(true, true), onMutation: () => { void queryClient.invalidateQueries(); } });
       shownView.current = location.current.view;
       // 原页面按资源到达逐步显示，模型或目录读取不能阻塞整个页面。
       if (!disposed) { setController(mounted!); setLoading(false); }
     })().catch(cause => { if (!disposed) { setError(cause.message); setLoading(false); } });
     return () => { disposed = true; abort.abort(); mounted?.destroy(); root.replaceChildren(); };
-  }, [attempt, navigate, runtime.featureVersion, queryClient]);
+  }, [attempt, navigate, runtime.featureVersion, runtime.liveReadOnly, queryClient]);
   useEffect(() => {
     if (!controller) return;
     setError('');

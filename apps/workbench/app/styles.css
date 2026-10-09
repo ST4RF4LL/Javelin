@@ -126,6 +126,27 @@ code, .log-row, .metric-value, .pipeline-progress { font-family: "SFMono-Regular
 .target-tools { display: flex; justify-content: space-between; align-items: center; gap: 10px; }
 .target-registration { padding: 15px; background: #f8f5fc; border: 1px solid #e8e1f0; border-radius: 9px; display: flex; flex-direction: column; gap: 12px; }
 .target-registration>button { align-self: flex-start; }
+.batch-mode-switch, .batch-source-heading, .batch-source-heading>div, .batch-result-heading { display: flex; align-items: center; gap: 8px; flex-wrap: wrap; }
+.batch-source-heading, .batch-result-heading { justify-content: space-between; }
+.batch-sources { display: flex; flex-direction: column; gap: 12px; min-width: 0; }
+.batch-source-heading, .batch-results { font-size: 13px; color: #68567e; }
+.batch-sources>button { align-self: flex-start; }
+.batch-source-list { max-height: 280px; overflow-y: auto; border: 1px solid #e8e1f0; border-radius: 9px; padding: 6px 12px; }
+.batch-source-list>.field-hint { padding: 10px 0; }
+.real-create-form .batch-source { padding: 10px 0; gap: 10px; cursor: pointer; }
+.batch-source+.batch-source { border-top: 1px solid #eee9f4; }
+.batch-source:has(input:checked) strong { color: #7657cf; }
+.batch-source:has(input:disabled) { opacity: .65; cursor: default; }
+.batch-source>span { display: flex; flex-direction: column; gap: 3px; min-width: 0; }
+.batch-source code, .batch-results code { font-size: 11px; overflow-wrap: anywhere; white-space: pre-wrap; color: #80728f; }
+.batch-source small { font-size: 11px; color: #80728f; }
+.batch-results h3 { margin: 0 0 8px; font-size: 15px; }
+.batch-results ul { padding: 0; margin: 12px 0 0; list-style: none; display: flex; flex-direction: column; gap: 8px; }
+.batch-results li { display: flex; flex-direction: column; gap: 6px; border: 1px solid #e8e1f0; border-radius: 9px; padding: 12px; overflow-wrap: anywhere; }
+.batch-results li[data-status=created] { border-color: #bcdccd; background: #f7fcf9; }
+.batch-results li[data-status=failed], .batch-results li[data-status=uncertain] { border-color: #eed5ba; background: #fffaf3; }
+.batch-results a { align-self: flex-start; color: #7657cf; text-decoration: underline; }
+.real-create-form .dialog-footer { flex-wrap: wrap; }
 .task-options { border: 1px solid #e8e1f0; border-radius: 9px; padding: 14px; font-size: 13px; color: #68567e; }
 .task-options summary { cursor: pointer; }.task-options summary span { float: right; font-size: 11px; color: #8b789e; }
 .task-option-body { margin-top: 16px; }

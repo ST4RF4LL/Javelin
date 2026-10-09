@@ -58,7 +58,7 @@ export async function resolveAuditScope(auditId, { audit, api, signal, repositor
   return { ...scope, audit: value };
 }
 
-export function mountWorkbench({ document = globalThis.document, window = globalThis.window, initialView = "dashboard", initialFilters = {}, onNavigate = null, onFileCoverage = null, onMutation = null } = {}) {
+export function mountWorkbench({ document = globalThis.document, window = globalThis.window, initialView = "dashboard", initialFilters = {}, onNavigate = null, onFileCoverage = null, onBatchCreate = null, onMutation = null } = {}) {
 let disposed = false;
 let navigationSequence = 0;
 const state = {
@@ -3015,6 +3015,12 @@ document.querySelectorAll("[data-close-delete-audit]").forEach(button => button.
 document.querySelectorAll("[data-close-delete-project]").forEach(button => button.addEventListener("click", closeDeleteProjectDialog));
 document.querySelectorAll("[data-close-cancel-validation]").forEach(button => button.addEventListener("click", closeCancelValidationDialog));
 $("new-audit").addEventListener("click", () => openAuditDialog());
+if (typeof onBatchCreate === "function") {
+  const batchCreate = element("button", "button", "批量创建任务");
+  batchCreate.type = "button";
+  batchCreate.addEventListener("click", () => onBatchCreate());
+  $("new-audit").after(batchCreate);
+}
 $("add-project").addEventListener("click", openProjectDialog);
 $("add-product").addEventListener("click", openProductDialog);
 $("product-archive").addEventListener("click", () => productAction().catch(showError));

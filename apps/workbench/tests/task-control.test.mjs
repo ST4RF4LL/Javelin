@@ -6,6 +6,7 @@ import { join } from 'node:path';
 import { createApp } from '../build/api/server/main.js';
 import { LiveService, normalizeAudit } from '../build/api/server/live.service.js';
 import { createTaskInput } from '../build/api/server/task-contract.js';
+import { prepareBatchAudits, submitBatchAudits } from '../app/lib/batch-audit.ts';
 import { selection as runtimeSelection } from '../../../.opencode/lib/runtime-testing/contract.mjs';
 import { bacSelection } from '../../../.opencode/lib/bac/contract.mjs';
 import { probeBackend } from '../scripts/start-platform.mjs';
@@ -84,6 +85,29 @@ test('空环境继续静态流程；自由文本授权完整转交，不要求�
   assert.equal(calls[0].body.test_environment_context, context);
   const selection = runtimeSelection(calls[0].body); assert.equal(selection.protocol, 'runtime-testing.v1'); assert.equal(selection.explicit_authorization, true); assert.deepEqual(selection.allowed_actions, ['navigate', 'normal_interaction']);
   assert.ok(!response.body.includes('PRIVATE_TEST_MARKER'));
+});
+
+test('批量创建沿用产品级队列入口与配置契约，每个仓库有独立任务和幂等键', async () => {
+  mockTransport(call => {
+    if (call.method === 'POST' && call.url.pathname.endsWith('/audits')) return json({ ...audit, id: call.body.audit_id, name: call.body.name, repository_id: call.body.target_id, status: 'queued', version: 1 }, 202);
+  });
+  const config = { ...input, apiInventory: '', memoryMode: 'facts_only', additionalInstructionsEnabled: true, additionalInstructions: '共用静态审计说明', testEnvironmentEnabled: false, testEnvironmentContext: 'PRIVATE_BATCH_MUST_NOT_FORWARD', runtimeTesting: { mode: 'CONTACT_ONLY', budgetMinutes: 60, identityMode: 'auto', testInput: false, testMutation: false } };
+  const items = prepareBatchAudits(config, [{ id: 'target-alpha', path: '/repos/alpha', runnable: true }, { id: 'target-beta', path: 'D:\\repos\\beta', runnable: true }]);
+  const results = await submitBatchAudits(items, async (task, key) => {
+    const response = await request('audits', post(task, key));
+    assert.equal(response.statusCode, 201); return response.json();
+  }, () => {});
+  assert.ok(results.every(item => item.status === 'created' && item.audit.status === 'queued'));
+  assert.equal(calls.length, 2);
+  for (const [index, call] of calls.entries()) {
+    assert.equal(call.url.pathname, `/api/v2/products/${input.productId}/audits`);
+    assert.equal(call.body.audit_id, items[index].input.auditId);
+    assert.equal(call.body.target_id, items[index].input.targetId);
+    assert.equal(call.headers.get('idempotency-key'), items[index].key);
+    assert.equal(call.body.memory_mode, 'facts_only'); assert.equal(call.body.additional_instructions, '共用静态审计说明');
+    assert.equal(call.body.test_environment_enabled, false); assert.equal(call.body.test_environment_context, ''); assert.equal(runtimeSelection(call.body), null);
+  }
+  assert.notEqual(calls[0].body.audit_id, calls[1].body.audit_id);
 });
 
 test('API 审计支持超过旧 64 KiB 限制的清单，非法选项在请求上游之前拦截', async () => {
