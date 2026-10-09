@@ -32,7 +32,9 @@ npm --prefix apps/workbench run start:monitor
 
 ttyd 可执行路径通过 `WORKBENCH_TTYD_BIN` 覆盖。前端资源刷新即可加载；终端网关切换需要正常重启所属平台进程，重启前确认没有活动审计。已有运行任务保留原启动方式；更新后新建或通过原操作断点恢复的任务会启用共享服务。终端网关默认绑定 `127.0.0.1:4184`；仅复用协议、源码摘要和工作区一致的服务。每个任务及只读模式的 ttyd 使用随机本机端口和独立凭据，首次打开时启动，空闲两分钟后回收；缺少共享服务的旧任务仅保留日志查看，正常结束后可通过断点恢复切换新执行方式；交互只开放给当前运行审计的 OpenCode 会话，禁止创建任意 Shell。关闭页面或终端服务只释放附加客户端，不停止审计。
 
-Windows 使用原生 ttyd（可执行 `winget install tsl0922.ttyd`）。ttyd 1.7.7 的 [Windows 命令拼接实现](https://github.com/tsl0922/ttyd/blob/1.7.7/src/pty.c#L203-L216) 使用固定的 256 字节缓冲区；平台通过短 Node 启动命令和私有环境变量传递完整 OpenCode 路径、session 和工作目录，避免长路径导致 TUI 客户端启动失败。启动器在 ttyd 创建的 ConPTY 内运行，OpenCode 继承该控制台；外层后台进程仍隐藏窗口。终端页面同时检查所属 ttyd 实例，PTY 启动失败会显示具体提示并支持重连。
+Windows 使用原生 ttyd（可执行 `winget install tsl0922.ttyd`）。交互终端通过系统 Windows PowerShell 启动 Node 附加启动器，再以 `opencode attach` 连接当前任务 session；显式指定工作目录，使用 `--` 分隔 ttyd 与客户端参数。ttyd 1.7.7 的 [Windows 命令拼接实现](https://github.com/tsl0922/ttyd/blob/1.7.7/src/pty.c#L203-L216) 使用固定的 256 字节缓冲区；PowerShell 命令保持短小，完整 Node/OpenCode 路径、session 和工作目录通过私有环境变量传递，不拼接到 Shell 脚本中。OpenCode 继承 ttyd 创建的 ConPTY，外层后台进程仍隐藏窗口。客户端结束后 PowerShell 同步退出，不保留任意 Shell；终端页面检查所属 ttyd 实例，PTY 启动失败会显示具体提示并支持重连。
+
+Windows 手动验证已确认 `ttyd → powershell.exe → opencode` 能显示 TUI；平台的同 session 附加仍需在 Windows 验收。此调整不要求改用社区 ttyd 构建，继续使用本机已验证可用的版本。macOS/Linux 仍直接附加 OpenCode，JSON Runner 与 watchdog 不变。
 
 2026-10-09 暂停与终端修复：修正页面刷新重叠时，响应体读取被取消却转换为空对象、随后触发 `items.map` 的问题。Windows 命令构造测试及宿主机真实 ttyd 的 TTY、中文输入、窗口尺寸、长参数验证通过；原生 Windows 的 OpenCode TUI 仍需在 Windows 机器验收，可先运行 `node --test apps/workbench/tests/ttyd-command.test.mjs`，再打开运行中任务的交互终端。
 

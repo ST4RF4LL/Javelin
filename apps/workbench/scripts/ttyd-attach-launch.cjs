@@ -7,6 +7,7 @@ function launchAttach(environment = process.env, spawnProcess = spawn) {
   const env = { ...environment };
   delete env.JAVELIN_TTYD_ATTACH;
   delete env.JAVELIN_TTYD_LAUNCHER;
+  delete env.JAVELIN_TTYD_NODE;
   return spawnProcess(command, args, { cwd, env, stdio: 'inherit', shell: false, windowsHide: false });
 }
 

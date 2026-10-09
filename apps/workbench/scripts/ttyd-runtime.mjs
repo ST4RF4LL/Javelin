@@ -42,7 +42,7 @@ export function createTtydRuntime({ stateRoot, command = ttydCommand(), spawnPro
     const args = ['-p', '0', '-i', '127.0.0.1', '-b', basePath, '-c', credential, '-O', '-m', '8',
       '-t', 'titleFixed=OpenCode · ttyd', '-t', 'fontSize=14', '-t', 'disableLeaveAlert=true',
       '-t', 'theme={"background":"#10151c","foreground":"#e1e7ef"}', '-w', attachment.cwd,
-      ...(target.readOnly ? [] : ['-W']), attachment.command, ...attachment.args];
+      ...(target.readOnly ? [] : ['-W']), '--', attachment.command, ...attachment.args];
     const child = spawnProcess(command, args, { cwd: attachment.cwd,
       env: { ...process.env, ...attachment.environment, TERM: 'xterm-256color', COLORTERM: 'truecolor' },
       stdio: ['ignore', 'pipe', 'pipe'], windowsHide: true });
@@ -53,7 +53,7 @@ export function createTtydRuntime({ stateRoot, command = ttydCommand(), spawnPro
       // credentials, which must never be exposed by the public API.
       diagnostic = (diagnostic + bytes.toString()).slice(-4096);
       if (/CreatePseudoConsole|conpty_init|conpty_setup/.test(diagnostic)) worker.failure = 'Windows 伪终端创建失败，请确认使用 Windows 10 1809 或更新系统及原生 ttyd。';
-      else if (/CreateProcessW|pty_spawn:/.test(diagnostic)) worker.failure = 'ttyd 无法启动交互客户端，请检查 Node.js、OpenCode 安装及工作目录。';
+      else if (/CreateProcessW|pty_spawn:/.test(diagnostic)) worker.failure = 'ttyd 无法启动交互客户端，请检查 PowerShell、Node.js、OpenCode 安装及工作目录。';
     });
     starting.add(worker);
     // ttyd logs its local ephemeral port. Never log child command or credentials.

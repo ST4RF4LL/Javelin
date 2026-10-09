@@ -18,11 +18,16 @@ const target = { command: 'C:\\Users\\测试 用户\\AppData\\Roaming\\npm\\node
   args: ['attach', 'http://127.0.0.1:52784', '--session', `ses_${'a'.repeat(40)}`, '--dir', `D:\\项目 (工作区)&验证\\${'long-directory\\'.repeat(12)}`],
   cwd: 'D:\\项目 (工作区)&验证', environment: { OPENCODE_SERVER_PASSWORD: 'private-fixture' } };
 
-test('Windows ConPTY 启动命令小于 256 字节，完整中文长路径和会话通过环境传递', () => {
+test('Windows 通过 PowerShell 启动附加客户端，长路径和会话仍通过环境传递', () => {
   assert.ok(Buffer.byteLength([target.command, ...target.args].join(' ')) > 256);
-  const launch = ttydAttachCommand(target, { platform: 'win32', executable: 'C:\\Program Files\\nodejs\\node.exe', launcherPath: 'D:\\平台 目录\\ttyd-attach-launch.cjs' });
-  assert.ok(Buffer.byteLength([launch.command, ...launch.args].join(' ')) < 128);
-  assert.equal(launch.command, '.\\node.exe'); assert.equal(launch.cwd, 'C:\\Program Files\\nodejs');
+  const launch = ttydAttachCommand(target, { platform: 'win32', systemRoot: 'C:\\Windows', executable: 'C:\\Program Files\\nodejs\\node.exe', launcherPath: 'D:\\平台 目录\\ttyd-attach-launch.cjs' });
+  assert.ok(Buffer.byteLength([launch.command, ...launch.args].join(' ')) < 240);
+  assert.equal(launch.command, 'C:\\Windows\\System32\\WindowsPowerShell\\v1.0\\powershell.exe');
+  assert.equal(launch.cwd, target.cwd);
+  assert.deepEqual(launch.args.slice(0, 3), ['-NoLogo', '-NoProfile', '-Command']);
+  assert.ok(!launch.args.includes('-NoExit'));
+  assert.match(launch.args[3], /exit \$LASTEXITCODE$/);
+  assert.equal(launch.environment.JAVELIN_TTYD_NODE, 'C:\\Program Files\\nodejs\\node.exe');
   assert.equal(launch.environment.OPENCODE_SERVER_PASSWORD, 'private-fixture');
   let called;
   launchAttach(launch.environment, (...args) => { called = args; });
@@ -31,6 +36,15 @@ test('Windows ConPTY 启动命令小于 256 字节，完整中文长路径和会
   assert.equal(called[2].shell, false); assert.equal(called[2].windowsHide, false);
   assert.equal(called[2].env.JAVELIN_TTYD_ATTACH, undefined);
   assert.equal(called[2].env.JAVELIN_TTYD_LAUNCHER, undefined);
+  assert.equal(called[2].env.JAVELIN_TTYD_NODE, undefined);
+});
+
+test('Windows 系统目录含空格时保留引号，过长或无效路径明确报错', () => {
+  const launch = ttydAttachCommand(target, { platform: 'win32', systemRoot: 'C:\\Windows System' });
+  assert.equal(launch.command, '"C:\\Windows System\\System32\\WindowsPowerShell\\v1.0\\powershell.exe"');
+  for (const systemRoot of ['relative', 'C:\\bad"root', 'C:\\' + 'long'.repeat(80)]) {
+    assert.throws(() => ttydAttachCommand(target, { platform: 'win32', systemRoot }), { status: 503 });
+  }
 });
 
 test('macOS/Linux 继续直接附加 OpenCode，不使用 Windows 启动器', () => {
@@ -41,15 +55,16 @@ test('macOS/Linux 继续直接附加 OpenCode，不使用 Windows 启动器', ()
 
 // Runs on a host with ttyd installed, including Windows. This exercises the
 // actual inherited PTY, UTF-8 input and resize, without a model or an audit.
-test('真实 ttyd → Node 启动器 → 客户端保留 TTY、中文输入、窗口尺寸和长参数', { timeout: 15000 }, async () => {
+test('真实 ttyd → 平台启动器 → 客户端保留 TTY、中文输入、窗口尺寸和长参数', { timeout: 15000 }, async () => {
   const root = await realpath(await mkdtemp(join(tmpdir(), 'ttyd-attach-')));
   const cwd = join(root, '中文 目录 (PTY)&test'); await mkdir(cwd);
-  const script = join(cwd, 'client.cjs'), marker = `长路径参数 ${'1234567890'.repeat(40)}`;
+  const script = join(cwd, 'client.cjs'), marker = `长路径参数 '" $(Write-Error unexpected) & ; ${'1234567890'.repeat(40)}`;
   await writeFile(script, `const assert = require('node:assert/strict');
 assert.equal(process.argv[2], ${JSON.stringify(marker)});
 assert.equal(process.cwd(), ${JSON.stringify(cwd)});
 assert.equal(process.stdin.isTTY, true); assert.equal(process.stdout.isTTY, true);
 assert.equal(process.env.JAVELIN_TTYD_ATTACH, undefined);
+assert.equal(process.env.JAVELIN_TTYD_NODE, undefined);
 process.stdin.setRawMode(true); process.stdin.setEncoding('utf8');
 process.stdin.on('data', data => { process.stdout.write('INPUT:' + data); if(data.includes('quit')) process.exit(0); });
 process.stdout.on('resize', () => process.stdout.write('SIZE:' + process.stdout.columns + 'x' + process.stdout.rows));
@@ -60,7 +75,7 @@ process.stdout.write('TTY_READY');`);
     command: process.execPath, args: ['-e', 'require(process.env.JAVELIN_TTYD_LAUNCHER)'], cwd,
     environment: { JAVELIN_TTYD_LAUNCHER: launcher, JAVELIN_TTYD_ATTACH: JSON.stringify(executableTarget) },
   };
-  const child = spawn(ttydCommand(), ['-p', '0', '-i', '127.0.0.1', '-W', '-w', launch.cwd, launch.command, ...launch.args], {
+  const child = spawn(ttydCommand(), ['-p', '0', '-i', '127.0.0.1', '-W', '-w', launch.cwd, '--', launch.command, ...launch.args], {
     cwd: launch.cwd, env: { ...process.env, ...launch.environment, TERM: 'xterm-256color' }, windowsHide: true,
     stdio: ['ignore', 'pipe', 'pipe'],
   });
