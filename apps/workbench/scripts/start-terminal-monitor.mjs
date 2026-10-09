@@ -15,7 +15,7 @@ export const TERMINAL_MONITOR_ORIGINS = Object.freeze([
 const RESERVED_PORTS = new Set([4173, 4181, 4183]);
 const defaultStateRoot = () => resolve(process.env.AUDIT_WORKBENCH_STATE_ROOT || fileURLToPath(new URL('../../../reports/platform/audit-runs', import.meta.url)));
 export const TERMINAL_PROTOCOL = 'audit-terminal.ttyd.v1';
-export const TERMINAL_BUILD = createHash('sha256').update(['start-terminal-monitor.mjs','audit-terminal-runtime.mjs','ttyd-runtime.mjs','ttyd-command.mjs','ttyd-attach-launch.cjs','terminal-page.mjs']
+export const TERMINAL_BUILD = createHash('sha256').update(['start-terminal-monitor.mjs','audit-terminal-runtime.mjs','ttyd-runtime.mjs','ttyd-command.mjs','terminal-page.mjs']
   .map(file => readFileSync(new URL(file, import.meta.url))).reduce((a, b) => Buffer.concat([a, b]), Buffer.alloc(0))).digest('hex');
 function validPort(value, ephemeral = false) {
   const port = Number(value);

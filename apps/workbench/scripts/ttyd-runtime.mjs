@@ -53,7 +53,7 @@ export function createTtydRuntime({ stateRoot, command = ttydCommand(), spawnPro
       // credentials, which must never be exposed by the public API.
       diagnostic = (diagnostic + bytes.toString()).slice(-4096);
       if (/CreatePseudoConsole|conpty_init|conpty_setup/.test(diagnostic)) worker.failure = 'Windows 伪终端创建失败，请确认使用 Windows 10 1809 或更新系统及原生 ttyd。';
-      else if (/CreateProcessW|pty_spawn:/.test(diagnostic)) worker.failure = 'ttyd 无法启动交互客户端，请检查 PowerShell、Node.js、OpenCode 安装及工作目录。';
+      else if (/CreateProcessW|pty_spawn:/.test(diagnostic)) worker.failure = 'ttyd 无法启动交互客户端，请检查 PowerShell、OpenCode 安装及工作目录。';
     });
     starting.add(worker);
     // ttyd logs its local ephemeral port. Never log child command or credentials.

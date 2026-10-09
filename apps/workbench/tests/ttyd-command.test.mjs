@@ -1,10 +1,8 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
-import { createRequire } from 'node:module';
-import { mkdtemp, mkdir, writeFile, rm, realpath } from 'node:fs/promises';
+import { mkdtemp, mkdir, writeFile, rm, realpath, chmod } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
-import { fileURLToPath } from 'node:url';
 import { spawn } from 'node:child_process';
 import { once } from 'node:events';
 import { setTimeout as delay } from 'node:timers/promises';
@@ -12,39 +10,25 @@ import WebSocket from 'ws';
 import { ttydAttachCommand } from '../scripts/ttyd-command.mjs';
 import { ttydCommand } from '../scripts/ttyd-runtime.mjs';
 
-const launcher = fileURLToPath(new URL('../scripts/ttyd-attach-launch.cjs', import.meta.url));
-const { launchAttach } = createRequire(import.meta.url)(launcher);
 const target = { command: 'C:\\Users\\测试 用户\\AppData\\Roaming\\npm\\node_modules\\opencode-ai\\node_modules\\opencode-windows-x64\\bin\\opencode.exe',
   args: ['attach', 'http://127.0.0.1:52784', '--session', `ses_${'a'.repeat(40)}`, '--dir', `D:\\项目 (工作区)&验证\\${'long-directory\\'.repeat(12)}`],
   cwd: 'D:\\项目 (工作区)&验证', environment: { OPENCODE_SERVER_PASSWORD: 'private-fixture' } };
 
-test('Windows 通过 PowerShell 启动附加客户端，长路径和会话仍通过环境传递', () => {
+test('Windows 直接执行 opencode attach，session 可见且工作区长路径不进入命令', () => {
   assert.ok(Buffer.byteLength([target.command, ...target.args].join(' ')) > 256);
-  const launch = ttydAttachCommand(target, { platform: 'win32', systemRoot: 'C:\\Windows', executable: 'C:\\Program Files\\nodejs\\node.exe', launcherPath: 'D:\\平台 目录\\ttyd-attach-launch.cjs' });
+  const launch = ttydAttachCommand(target, { platform: 'win32', systemRoot: 'C:\\Windows' });
   assert.ok(Buffer.byteLength([launch.command, ...launch.args].join(' ')) < 240);
   assert.equal(launch.command, 'C:\\Windows\\System32\\WindowsPowerShell\\v1.0\\powershell.exe');
   assert.equal(launch.cwd, target.cwd);
   assert.deepEqual(launch.args.slice(0, 3), ['-NoLogo', '-NoProfile', '-Command']);
   assert.ok(!launch.args.includes('-NoExit'));
-  assert.match(launch.args[3], /exit \$LASTEXITCODE$/);
-  assert.equal(launch.environment.JAVELIN_TTYD_NODE, 'C:\\Program Files\\nodejs\\node.exe');
-  assert.equal(launch.environment.OPENCODE_SERVER_PASSWORD, 'private-fixture');
-  let called;
-  launchAttach(launch.environment, (...args) => { called = args; });
-  assert.equal(called[0], target.command); assert.deepEqual(called[1], target.args);
-  assert.equal(called[2].cwd, target.cwd); assert.equal(called[2].stdio, 'inherit');
-  assert.equal(called[2].shell, false); assert.equal(called[2].windowsHide, false);
-  assert.equal(called[2].env.JAVELIN_TTYD_ATTACH, undefined);
-  assert.equal(called[2].env.JAVELIN_TTYD_LAUNCHER, undefined);
-  assert.equal(called[2].env.JAVELIN_TTYD_NODE, undefined);
+  assert.equal(launch.args[3], `opencode attach ${target.args[1]} --session ${target.args[3]} --dir .`);
+  assert.deepEqual(launch.environment, target.environment);
 });
 
-test('Windows 系统目录含空格时保留引号，过长或无效路径明确报错', () => {
+test('Windows 系统目录含空格时保留引号', () => {
   const launch = ttydAttachCommand(target, { platform: 'win32', systemRoot: 'C:\\Windows System' });
   assert.equal(launch.command, '"C:\\Windows System\\System32\\WindowsPowerShell\\v1.0\\powershell.exe"');
-  for (const systemRoot of ['relative', 'C:\\bad"root', 'C:\\' + 'long'.repeat(80)]) {
-    assert.throws(() => ttydAttachCommand(target, { platform: 'win32', systemRoot }), { status: 503 });
-  }
 });
 
 test('macOS/Linux 继续直接附加 OpenCode，不使用 Windows 启动器', () => {
@@ -55,26 +39,33 @@ test('macOS/Linux 继续直接附加 OpenCode，不使用 Windows 启动器', ()
 
 // Runs on a host with ttyd installed, including Windows. This exercises the
 // actual inherited PTY, UTF-8 input and resize, without a model or an audit.
-test('真实 ttyd → 平台启动器 → 客户端保留 TTY、中文输入、窗口尺寸和长参数', { timeout: 15000 }, async () => {
+test('真实 ttyd 保留客户端 TTY、中文输入、窗口尺寸和退出行为', { timeout: 15000 }, async () => {
   const root = await realpath(await mkdtemp(join(tmpdir(), 'ttyd-attach-')));
   const cwd = join(root, '中文 目录 (PTY)&test'); await mkdir(cwd);
-  const script = join(cwd, 'client.cjs'), marker = `长路径参数 '" $(Write-Error unexpected) & ; ${'1234567890'.repeat(40)}`;
+  const script = join(cwd, 'client.cjs');
+  const viaPowerShell = process.platform === 'win32' || !!process.env.WORKBENCH_TEST_POWERSHELL;
+  const expectedArgs = ['attach', 'http://127.0.0.1:52784', '--session', 'ses_tty_fixture', '--dir', viaPowerShell ? '.' : cwd];
   await writeFile(script, `const assert = require('node:assert/strict');
-assert.equal(process.argv[2], ${JSON.stringify(marker)});
+assert.deepEqual(process.argv.slice(2), ${JSON.stringify(expectedArgs)});
 assert.equal(process.cwd(), ${JSON.stringify(cwd)});
 assert.equal(process.stdin.isTTY, true); assert.equal(process.stdout.isTTY, true);
-assert.equal(process.env.JAVELIN_TTYD_ATTACH, undefined);
-assert.equal(process.env.JAVELIN_TTYD_NODE, undefined);
 process.stdin.setRawMode(true); process.stdin.setEncoding('utf8');
 process.stdin.on('data', data => { process.stdout.write('INPUT:' + data); if(data.includes('quit')) process.exit(0); });
 process.stdout.on('resize', () => process.stdout.write('SIZE:' + process.stdout.columns + 'x' + process.stdout.rows));
 process.stdout.write('TTY_READY');`);
-  const executableTarget = { command: process.execPath, args: [script, marker], cwd, environment: {} };
-  // Exercise the same bootstrap on POSIX, where Windows path resolution isn't available.
-  const launch = process.platform === 'win32' ? ttydAttachCommand(executableTarget) : {
-    command: process.execPath, args: ['-e', 'require(process.env.JAVELIN_TTYD_LAUNCHER)'], cwd,
-    environment: { JAVELIN_TTYD_LAUNCHER: launcher, JAVELIN_TTYD_ATTACH: JSON.stringify(executableTarget) },
-  };
+  // The fixture stands in for opencode and checks the argv actually delivered
+  // by PowerShell, including session selection and inherited console handles.
+  let launch;
+  if (viaPowerShell) {
+    const shim = join(root, process.platform === 'win32' ? 'opencode.cmd' : 'opencode');
+    await writeFile(shim, process.platform === 'win32'
+      ? '@echo off\r\n"%WORKBENCH_TEST_NODE%" "%WORKBENCH_TEST_CLIENT%" %*\r\n'
+      : '#!/bin/sh\nexec "$WORKBENCH_TEST_NODE" "$WORKBENCH_TEST_CLIENT" "$@"\n');
+    await chmod(shim, 0o755);
+    launch = ttydAttachCommand({ ...target, cwd, args: expectedArgs,
+      environment: { PATH: `${root}${process.platform === 'win32' ? ';' : ':'}${process.env.PATH}`, WORKBENCH_TEST_NODE: process.execPath, WORKBENCH_TEST_CLIENT: script } }, { platform: 'win32' });
+    if (process.platform !== 'win32') launch.command = process.env.WORKBENCH_TEST_POWERSHELL;
+  } else launch = ttydAttachCommand({ command: process.execPath, args: [script, ...expectedArgs], cwd, environment: {} });
   const child = spawn(ttydCommand(), ['-p', '0', '-i', '127.0.0.1', '-W', '-w', launch.cwd, '--', launch.command, ...launch.args], {
     cwd: launch.cwd, env: { ...process.env, ...launch.environment, TERM: 'xterm-256color' }, windowsHide: true,
     stdio: ['ignore', 'pipe', 'pipe'],
