@@ -1,7 +1,17 @@
-import { build } from 'esbuild';
 import { readFile, writeFile } from 'node:fs/promises';
 import { fileURLToPath } from 'node:url';
 import { createHash } from 'node:crypto';
+
+let build;
+try { ({ build } = await import('esbuild')); }
+catch (error) {
+  if (error.code !== 'ERR_MODULE_NOT_FOUND') throw error;
+  console.error('监控构建依赖未安装完整。请在仓库根目录依次执行：\n'
+    + 'npm --prefix apps/workbench ci --include=dev --include=optional\n'
+    + 'npm --prefix apps/workbench run build\n'
+    + `原始错误：${error.message}`);
+  process.exit(1);
+}
 
 const root = new URL('../../../', import.meta.url);
 const base = new URL('.opencode/web/dynamic-validation-observatory/', root);
