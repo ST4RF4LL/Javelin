@@ -671,6 +671,8 @@ export class AuditRunner extends EventEmitter {
     this.targetOperationGuard = null;
     this.setModelResolver(modelResolver);
     this.dispatching = new Set();
+    this.deleting = new Set();
+    this.activeActions = new Set();
     this.completionWatchdogIntervalMs = Number.isFinite(Number(completionWatchdogIntervalMs))
       ? Math.max(1_000, Number(completionWatchdogIntervalMs))
       : COMPLETION_WATCHDOG_INTERVAL_MS;
@@ -1297,7 +1299,7 @@ export class AuditRunner extends EventEmitter {
   async dispatchQueuedAudit(id) {
     await this.ready;
     const audit = this.audits.get(id);
-    if (!this.enabled || !audit || isNativeAudit(audit) || audit.status !== "queued" || this.dispatching.has(id)) return null;
+    if (!this.enabled || !audit || isNativeAudit(audit) || audit.status !== "queued" || this.dispatching.has(id) || this.deleting.has(id)) return null;
     if (audit.product_campaign_id && this.productCampaignGuard && !this.productCampaignGuard(audit.product_campaign_id)) return null;
     const repository = this.repositoryForAudit(audit);
     if (!repository) {
@@ -1523,10 +1525,19 @@ export class AuditRunner extends EventEmitter {
     }
   }
 
-  async deleteAudit(id, { repositoryId, expectedVersion, artifactPaths = [] } = {}) {
+  async deleteAudit(id, options = {}) {
+    await this.ready;
+    if (this.deleting.has(id) || this.activeActions.has(id)) throw Object.assign(new Error("任务正在处理其他操作，请稍后重试。"), { statusCode: 409, code: "audit-operation-in-progress" });
+    this.deleting.add(id);
+    try { return await this.deleteAuditFiles(id, options); }
+    finally { this.deleting.delete(id); }
+  }
+
+  async deleteAuditFiles(id, { repositoryId, expectedVersion, artifactPaths = [] } = {}) {
     await this.ready;
     if (!AUDIT_ID.test(id ?? "")) throw Object.assign(new Error("audit_id 格式非法。"), { statusCode: 422, code: "audit-id-invalid" });
-    if (!REPOSITORY_ID.test(repositoryId ?? "") || !this.repositories.has(repositoryId)) {
+    const repository = this.runtimeRepositories().find(repository => repository.id === repositoryId);
+    if (!REPOSITORY_ID.test(repositoryId ?? "") || !repository) {
       throw Object.assign(new Error("审计所属仓库不在服务端白名单中。"), { statusCode: 422, code: "repository-not-allowed" });
     }
     const audit = this.audits.get(id);
@@ -1541,7 +1552,9 @@ export class AuditRunner extends EventEmitter {
       throw Object.assign(new Error("审计仍有未完成的运行状态，暂不能删除。"), { statusCode: 409, code: "audit-delete-active" });
     }
 
-    const reportsRoot = join(this.artifactsRoot, repositoryId);
+    const storageNamespace = repository.storage_namespace ?? repositoryId;
+    if (!REPOSITORY_ID.test(storageNamespace)) throw Object.assign(new Error("审计制品目录绑定无效。"), { statusCode: 409, code: "audit-artifact-path-invalid" });
+    const reportsRoot = join(this.artifactsRoot, storageNamespace);
     let removedArtifacts = 0;
     for (const artifactPath of [...new Set(artifactPaths)]) {
       if (typeof artifactPath !== "string" || !artifactPath || isAbsolute(artifactPath)) {
@@ -1566,7 +1579,7 @@ export class AuditRunner extends EventEmitter {
       join(reportsRoot, "runtime-testing", id),
       join(reportsRoot, "task-board", id),
     ]) await removeControlledPath(reportsRoot, directory);
-    await removeControlledPath(this.temporaryRoot, join(this.temporaryRoot, repositoryId, id));
+    await removeControlledPath(this.temporaryRoot, join(this.temporaryRoot, storageNamespace, id));
     await removeControlledPath(this.executionRoot, join(this.executionRoot, id));
     if (audit) await removeControlledPath(this.stateRoot, join(this.stateRoot, id));
 
@@ -2690,6 +2703,14 @@ export class AuditRunner extends EventEmitter {
   }
 
   async action(id, action, expectedVersion, idempotencyKey) {
+    await this.ready;
+    if (this.deleting.has(id) || this.activeActions.has(id)) throw Object.assign(new Error("任务正在处理其他操作，请稍后重试。"), { statusCode: 409, code: "audit-operation-in-progress" });
+    this.activeActions.add(id);
+    try { return await this.performAction(id, action, expectedVersion, idempotencyKey); }
+    finally { this.activeActions.delete(id); }
+  }
+
+  async performAction(id, action, expectedVersion, idempotencyKey) {
     await this.ready;
     if (!this.enabled) throw Object.assign(new Error('只读服务不能管理任务。'), { statusCode: 503, code: 'runner-disabled' });
     if (!idempotencyKey || idempotencyKey.length > 200) throw Object.assign(new Error("缺少有效的 Idempotency-Key。"), { statusCode: 400, code: "idempotency-key-required" });

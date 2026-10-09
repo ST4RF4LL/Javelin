@@ -513,6 +513,17 @@ export class ProductStore {
     const { snapshot_json: _snapshot, ...value } = row;
     return { ...value, snapshot: json(row.snapshot_json, {}), snapshot_digest: row.snapshot_digest };
   }
+  async unlinkAudit(auditId, targetId) {
+    return this.transaction(async () => {
+      const link = this.auditLink(auditId);
+      if (!link) return false;
+      if (link.target_id !== targetId) throw error("审计与对象绑定不一致。", 409, "audit-target-mismatch");
+      const target = this.targetById(targetId);
+      this.db.prepare("DELETE FROM audit_target_links WHERE audit_id=?").run(auditId);
+      this.event(target.product_id, "audit.deleted", "audit", auditId, { target_id: targetId });
+      return true;
+    });
+  }
   async auditLinksForProduct(productId) {
     await this.ready; this.assertProduct(productId);
     return new Map(this.db.prepare("SELECT l.audit_id,l.target_id,l.product_id_at_creation,l.product_name_at_creation,l.snapshot_digest FROM audit_target_links l JOIN audit_targets t ON t.id=l.target_id WHERE t.product_id=?").all(productId)

@@ -18,7 +18,7 @@
     "test:dynamic-validation-contract": "node tests/run-dynamic-validation-contract-tests.mjs && node tests/run-web-runtime-validation-tests.mjs",
     "test:dynamic-validation-core": "node tests/run-dynamic-validation-core-tests.mjs && npm run test:validation-evidence",
     "test:dynamic-validation-web": "node tests/run-dynamic-validation-observatory-tests.mjs",
-    "test:audit-workbench": "node tests/run-snapshot-cache-tests.mjs && node tests/run-audit-list-tests.mjs && node --test tests/run-audit-product-filter-ui-tests.mjs tests/run-audit-progress-tests.mjs && node tests/run-product-store-tests.mjs && node tests/run-audit-workbench-tests.mjs && node --test tests/run-windows-background-tests.mjs",
+    "test:audit-workbench": "node tests/run-snapshot-cache-tests.mjs && node tests/run-audit-list-tests.mjs && node --test tests/run-audit-product-filter-ui-tests.mjs tests/run-audit-progress-tests.mjs tests/run-audit-delete-tests.mjs && node tests/run-product-store-tests.mjs && node tests/run-audit-workbench-tests.mjs && node --test tests/run-windows-background-tests.mjs",
     "test:product-store": "node tests/run-product-store-tests.mjs",
     "start:audit-workbench": "node web/dynamic-validation-observatory/server.mjs",
     "start:audit-workbench:runner": "node web/dynamic-validation-observatory/server.mjs --enable-runner",

@@ -656,6 +656,34 @@ export function createAuditWorkbenchServer({
     }
   }
 
+  async function deleteAudit(request, auditId, productId = null) {
+    assertSafeMutation(request);
+    const body = await requestJson(request);
+    if (body.confirmation !== auditId) throw Object.assign(new Error("删除确认必须与 audit_id 完全一致。"), { statusCode: 422, code: "audit-delete-confirmation-invalid" });
+    if (productId) await auditForProduct(productId, auditId);
+    else await assertLegacyUndefinedAudit(auditId);
+    const data = await snapshot();
+    const audit = data.audits.find(item => item.id === auditId);
+    if (!audit) throw Object.assign(new Error("审计不存在。"), { statusCode: 404, code: "audit-not-found" });
+    const remove = async () => {
+      // Recheck ownership after obtaining the same target lock used by dispatch/transfer.
+      if (productId) await auditForProduct(productId, auditId);
+      else await assertLegacyUndefinedAudit(auditId);
+      const current = runner.getAudit(auditId) ?? audit;
+      const expected = expectedVersion(request);
+      if (Number(expected) !== current.version) throw Object.assign(new Error("审计版本已变化，请刷新后重试。"), { statusCode: 412, code: "version-mismatch" });
+      const activeValidations = dynamicRunner.listRuns().filter(run => run.audit_id === auditId && VALIDATION_RUNNING_STATES.has(run.status));
+      if (activeValidations.length) throw Object.assign(new Error("该审计仍有动态验证正在运行；请先取消并等待验证结束。"), { statusCode: 409, code: "audit-validation-active" });
+      const artifacts = data.artifacts.filter(artifact => artifact.audit_id === auditId && artifact.repository_id === audit.repository_id);
+      const result = await runner.deleteAudit(auditId, { repositoryId: audit.repository_id, expectedVersion: expected, artifactPaths: artifacts.map(artifact => artifact.path) });
+      const validationRunsRemoved = await dynamicRunner.deleteAuditRuns(auditId);
+      const findingWorkflowsRemoved = await findingWorkflow.deleteAudit(auditId, audit.repository_id);
+      await productStore.unlinkAudit(auditId, audit.repository_id);
+      return { ...result, removed_validation_runs: validationRunsRemoved, removed_finding_workflows: findingWorkflowsRemoved };
+    };
+    return productStore.targetById(audit.repository_id) ? withTargetOperationLock(audit.repository_id, remove) : remove();
+  }
+
   // Display reads share a bounded snapshot with live Runner state overlaid.
   async function buildSnapshot() {
     const operation = (async () => {
@@ -1029,6 +1057,10 @@ export function createAuditWorkbenchServer({
           return;
         }
         const productAudit = matchProductAuditPath(url.pathname);
+        if (request.method === "DELETE" && productAudit) {
+          json(response, 200, await deleteAudit(request, productAudit.auditId, productAudit.productId));
+          return;
+        }
         if (request.method === "GET" && productAudit) {
           const audit = await auditForProduct(productAudit.productId, productAudit.auditId);
           const data = await displaySnapshot(url);
@@ -1142,34 +1174,7 @@ export function createAuditWorkbenchServer({
       }
       const auditId = matchAuditPath(url.pathname);
       if (request.method === "DELETE" && auditId) {
-        assertSafeMutation(request);
-        const body = await requestJson(request);
-        if (body.confirmation !== auditId) throw Object.assign(new Error("删除确认必须与 audit_id 完全一致。"), { statusCode: 422, code: "audit-delete-confirmation-invalid" });
-        await assertLegacyUndefinedAudit(auditId);
-        const data = await snapshot();
-        const audit = data.audits.find(item => item.id === auditId);
-        if (!audit) throw Object.assign(new Error("审计不存在。"), { statusCode: 404, code: "audit-not-found" });
-        const expected = String(request.headers["if-match"] ?? "").replaceAll('"', "");
-        if (Number(expected) !== audit.version) throw Object.assign(new Error("审计版本已变化，请刷新后重试。"), { statusCode: 412, code: "version-mismatch" });
-        const runnerAudit = runner.getAudit(auditId);
-        if (runnerAudit && ["preparing", "recovering", "running", "pausing", "paused", "cancelling"].includes(runnerAudit.status)) {
-          throw Object.assign(new Error("运行中的审计不能删除；请先取消并等待任务结束。"), { statusCode: 409, code: "audit-delete-active" });
-        }
-        const activeValidations = dynamicRunner.listRuns().filter(run => run.audit_id === auditId && ["preparing", "running", "cancelling"].includes(run.status));
-        if (activeValidations.length) throw Object.assign(new Error("该审计仍有动态验证正在运行；请先取消并等待验证结束。"), { statusCode: 409, code: "audit-validation-active" });
-        const artifacts = data.artifacts.filter(artifact => artifact.audit_id === auditId && artifact.repository_id === audit.repository_id);
-        const validationRunsRemoved = await dynamicRunner.deleteAuditRuns(auditId);
-        const findingWorkflowsRemoved = await findingWorkflow.deleteAudit(auditId, audit.repository_id);
-        const result = await runner.deleteAudit(auditId, {
-          repositoryId: audit.repository_id,
-          expectedVersion: expected,
-          artifactPaths: artifacts.map(artifact => artifact.path),
-        });
-        json(response, 200, {
-          ...result,
-          removed_validation_runs: validationRunsRemoved,
-          removed_finding_workflows: findingWorkflowsRemoved,
-        });
+        json(response, 200, await deleteAudit(request, auditId));
         return;
       }
       if (request.method === "GET" && auditId) {

@@ -8,7 +8,7 @@ import { paginateAudits } from '../web/dynamic-validation-observatory/audit-list
 const source = await readFile(new URL('../web/dynamic-validation-observatory/public/app.js', import.meta.url), 'utf8');
 // Execute the real controller functions with fixture I/O; no browser, port,
 // Agent, or production task is started by these regression checks.
-const functionNames = ['renderAudits', 'loadAuditsPage', 'findAudit', 'auditProductId', 'selectAudit', 'requestAuditAction', 'retryAudit', 'selectAuditProductFilter', 'loadProductTargets', 'openAuditDialog'];
+const functionNames = ['renderAudits', 'loadAuditsPage', 'findAudit', 'auditProductId', 'selectAudit', 'requestAuditAction', 'retryAudit', 'selectAuditProductFilter', 'loadProductTargets', 'openAuditDialog', 'auditDeleteButton', 'openDeleteAuditDialog', 'closeDeleteAuditDialog', 'submitDeleteAudit'];
 const functions = functionNames.map(name => {
   const match = source.match(new RegExp(`^(?:async )?function ${name}\\([^]*?^}`, 'm'));
   assert.ok(match, name); return match[0];
@@ -22,6 +22,7 @@ class Element {
   addEventListener(name, listener) { this.listeners[name] = listener; }
   setAttribute() {}
   showModal() { this.open = true; }
+  close() { this.open = false; }
   get options() { return this.children; }
 }
 const audit = (id, productId, status = 'queued') => ({ id, name: id, repository_id: `${productId}-target`, repository_name: productId, status, version: 4, progress: 0, stage: '等待调度', stages: [], provenance: { audit_product_id: productId, product_id: productId, audit_managed: true } });
@@ -125,4 +126,48 @@ test('新版深链导航对齐产品筛选，显式全部保留可新建的实�
   assert.equal(f.state.auditProductFilter, 'p2'); assert.equal(f.state.selectedProductId, 'p2'); assert.equal(f.$('audit-query').value, 'task'); assert.equal(f.context.openedId, 'audit-p2');
   await f.context.navigate('audits', { product_id: '' });
   assert.equal(f.state.auditProductFilter, ''); assert.equal(f.state.selectedProductId, 'p2');
+});
+
+test('所有产品提供删除入口；运行和暂停任务禁用，打开确认框不发送删除', () => {
+  const f = fixture();
+  for (const status of ['queued', 'failed', 'interrupted', 'cancelled', 'completed', 'artifact_only', 'running', 'paused', 'preparing', 'cancelling']) {
+    const value = audit(`audit-${status}`, 'p2', status), button = f.context.auditDeleteButton(value);
+    assert.equal(button.disabled, ['running', 'paused', 'preparing', 'cancelling'].includes(status));
+    if (!button.disabled) {
+      let stopped = false; button.listeners.click({ stopPropagation() { stopped = true; } });
+      assert.equal(stopped, true); assert.equal(f.$('delete-audit-dialog').open, true);
+      assert.equal(f.$('delete-audit-id').textContent, value.id);
+      f.context.closeDeleteAuditDialog();
+    }
+  }
+  assert.equal(f.calls.length, 0);
+});
+
+test('全部筛选下删除使用任务所属产品，列表刷新后仍可确认；成功关闭当前详情', async () => {
+  const f = fixture(), value = audit('audit-delete-p2', 'p2', 'completed');
+  f.state.auditProductFilter = ''; f.state.audits = [value];
+  f.context.openDeleteAuditDialog(value);
+  f.state.audits = []; // Background pagination must not lose the pending selection.
+  f.state.selectedAuditId = value.id; f.$('audit-drawer').open = true;
+  f.context.respond = async () => ({ deleted: true, audit_id: value.id });
+  await f.context.submitDeleteAudit({ preventDefault() {} });
+  assert.equal(f.calls.length, 1); assert.equal(f.calls[0].url, '/api/v2/products/p2/audits/audit-delete-p2');
+  assert.equal(f.calls[0].options.method, 'DELETE'); assert.equal(f.calls[0].options.headers['If-Match'], '"4"');
+  assert.deepEqual(JSON.parse(f.calls[0].options.body), { confirmation: value.id });
+  assert.equal(f.$('audit-drawer').open, false); assert.equal(f.$('delete-audit-dialog').open, false);
+});
+
+test('删除版本冲突保留确认窗口和任务，历史制品走兼容接口', async () => {
+  const f = fixture(), value = audit('audit-delete-conflict', 'p2', 'completed');
+  f.state.audits = [value]; f.context.openDeleteAuditDialog(value);
+  f.context.respond = async () => { throw new Error('审计版本已变化，请刷新后重试。'); };
+  await f.context.submitDeleteAudit({ preventDefault() {} });
+  assert.equal(f.$('delete-audit-dialog').open, true); assert.equal(f.state.audits.length, 1);
+  assert.match(f.$('delete-audit-form-error').textContent, /版本已变化/);
+  f.calls.length = 0;
+  const historical = audit('audit-history', 'product-undefined', 'artifact_only');
+  f.state.audits = [historical]; f.context.openDeleteAuditDialog(historical);
+  f.context.respond = async () => ({ deleted: true, audit_id: historical.id });
+  await f.context.submitDeleteAudit({ preventDefault() {} });
+  assert.equal(f.calls[0].url, '/api/v1/audits/audit-history');
 });

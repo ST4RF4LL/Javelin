@@ -135,6 +135,7 @@ const state = {
   terminalGrid: null,
   terminalAuditId: null,
   pendingDeleteAuditId: null,
+  pendingDeleteAudit: null,
   pendingDeleteRepositoryId: null,
   pendingCancelValidationId: null,
   findings: [],
@@ -600,9 +601,9 @@ function renderAudits() {
         requestAuditAction(audit, "dispatch");
       });
       actionCell.append(start);
-    } else {
-      actionCell.textContent = "—";
     }
+    if (audit.repository_id) actionCell.append(auditDeleteButton(audit));
+    if (!actionCell.children.length) actionCell.textContent = "—";
     row.append(actionCell);
     row.addEventListener("click", () => selectAudit(audit.id).catch(showError));
     body.append(row);
@@ -782,12 +783,8 @@ function renderAuditDetail() {
       finally { retry.disabled = false; }
     });
     actions.append(retry);
-    if (auditProductId(audit.id) === "product-undefined") {
-      const remove = element("button", "button danger", "删除任务");
-      remove.addEventListener("click", () => openDeleteAuditDialog(audit));
-      actions.append(remove);
-    }
   }
+  if (audit.repository_id) actions.append(auditDeleteButton(audit));
   if (state.auditMonitor?.auditId !== audit.id) {
     destroyAuditMonitor();
     state.auditMonitor = WorkbenchMonitor.createAuditMonitor({ document, window, audit, renderOriginalEvent: renderAgentEvent });
@@ -1236,8 +1233,18 @@ async function dispatchQueueNow() {
   } catch (error) { showError(error); }
 }
 
+function auditDeleteButton(audit) {
+  const button = element("button", "button danger", "删除任务");
+  button.type = "button";
+  button.disabled = !["queued", "failed", "interrupted", "cancelled", "completed", "artifact_only"].includes(audit.status);
+  button.title = button.disabled ? "请先取消任务并等待结束，再删除" : "删除此任务及其报告、运行记录；保留源码目录";
+  button.addEventListener("click", event => { event.stopPropagation(); openDeleteAuditDialog(audit); });
+  return button;
+}
+
 function openDeleteAuditDialog(audit) {
   state.pendingDeleteAuditId = audit.id;
+  state.pendingDeleteAudit = audit;
   $("delete-audit-id").textContent = audit.id;
   $("delete-audit-form-error").hidden = true;
   $("delete-audit-dialog").showModal();
@@ -1284,12 +1291,13 @@ async function submitDeleteProject(event) {
 
 function closeDeleteAuditDialog() {
   state.pendingDeleteAuditId = null;
+  state.pendingDeleteAudit = null;
   $("delete-audit-dialog").close();
 }
 
 async function submitDeleteAudit(event) {
   event.preventDefault();
-  const audit = findAudit(state.pendingDeleteAuditId);
+  const audit = findAudit(state.pendingDeleteAuditId) ?? state.pendingDeleteAudit;
   const error = $("delete-audit-form-error");
   if (!audit) {
     error.textContent = "待删除的审计任务已不存在，请关闭后刷新。";
@@ -1299,14 +1307,19 @@ async function submitDeleteAudit(event) {
   const button = $("submit-delete-audit");
   button.disabled = true;
   try {
-    const result = await api(`/api/v1/audits/${encodeURIComponent(audit.id)}`, {
+    const scope = await resolveAuditScope(audit.id, { audit, api });
+    const path = scope.managed ? `/api/v2/products/${encodeURIComponent(scope.productId)}/audits/${encodeURIComponent(audit.id)}` : `/api/v1/audits/${encodeURIComponent(audit.id)}`;
+    const result = await api(path, {
       method: "DELETE",
       headers: { "Content-Type": "application/json", "If-Match": `"${audit.version}"` },
       body: JSON.stringify({ confirmation: audit.id }),
     });
     closeDeleteAuditDialog();
-    state.selectedAuditId = null;
-    state.selectedAudit = null;
+    if (state.selectedAuditId === audit.id) closeAuditDrawer();
+    state.audits = state.audits.filter(item => item.id !== audit.id);
+    state.workspace.audits = state.workspace.audits.filter(item => item.id !== audit.id);
+    state.auditController?.abort();
+    connectEventStream();
     invalidateFindings();
     toast(`已删除 ${result.audit_id}`);
     await load();
