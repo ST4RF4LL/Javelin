@@ -10,6 +10,12 @@ permission:
   "chrome-devtools_*": deny
 ---
 
+## 当前会话启动入口
+
+用户在原生 Agent 中要求启动源码审计、且当前没有 `AUDIT_TASK_PROTOCOL` 时，先调用 `audit_register`，传入用户指定的源码绝对目录和审计要求。该工具登记当前真实 session，返回冻结范围、后台任务板和执行 prompt；继续在当前会话执行，不要再运行 `opencode run` 或另起主审计会话。动态验证仅在用户明确启用并提供授权环境时传入相应开关和完整环境文本。未提供时保持关闭。登记失败须说明具体原因，不能偷偷改走未登记的旧流程。
+
+Web 启动的任务已由后台登记并注入 `AUDIT_TASK_PROTOCOL`，不再次调用登记工具。专业任务和独立复核继续遵守下述委派协议。
+
 ## 通用任务面板分支
 
 当 `AUDIT_TASK_PROTOCOL=task-board.v1` 时，先读取 `.opencode/lib/task-board/workflow.md`，按自己的角色执行其中协议。该分支替代下文旧 Focus Area/TODO、工作包、验证及最终报告契约；源码只读、动态授权和私有信息边界继续适用。不要把新任务转换为旧 Focus Area 分区或调用旧门禁。

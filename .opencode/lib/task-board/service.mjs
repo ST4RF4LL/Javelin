@@ -8,6 +8,7 @@ import { fileURLToPath } from "node:url";
 import { PROTOCOL, atomicJson, check, controlledBytes } from "./contract.mjs";
 import { TaskBoardStore } from "./store.mjs";
 import { acceptReview, finalizeBoard, prepareReview } from "./review.mjs";
+import { correctReport } from "./report-correction.mjs";
 import { BAC_AGENTS, TASK_PLAN, bacSelection } from "../bac/contract.mjs";
 import { prepareTaskBacPlan, taskBacEnabled } from "./bac.mjs";
 import { prepareMining } from "../agent-mining/service.mjs";
@@ -79,6 +80,7 @@ export class TaskBoardService {
       else if (request.url === "/seal") result = await this.store.seal(body);
       else if (request.url === "/skip") result = await this.store.skip(body);
       else if (request.url === "/review-input") result = await prepareReview(this.store, { runtimeRequired: this.runtimeRequired, bacMode: this.bacMode });
+      else if (request.url === "/correct-report") result = await correctReport(this.store, body);
       else if (request.url === "/review") result = await acceptReview(this.store, body);
       else if (request.url === "/finalize") {
         result = await finalizeBoard(this.store);
@@ -161,6 +163,7 @@ export class TaskBoardService {
     }
     const input = { protocol: PROTOCOL, audit_id: this.auditId, task: job.task, attempt_id: job.attempt.attempt_id,
       source_root: this.sourceRoot, scope_digest: this.scopeDigest, output_root: workRoot, report_path: join(workRoot, "report.json"), receipt_path: join(workRoot, "receipt.json"),
+      report_check_cli: join(this.workspaceRoot, ".opencode", "scripts", "task-report-check.mjs"),
       memory_context: memoryContext, memory_cli: this.memory ? join(this.workspaceRoot, ".opencode", "scripts", "audit-memory.mjs") : null,
       reports_root: this.reportsRoot, session_path: join(workRoot, "session.json"), ...bacContext, ...agentMiningContext, bac_mode: this.bacMode, runtime_protocol: this.runtimeRequired ? "runtime-testing.v1" : null };
     const inputPath = join(workRoot, "input.json"); await atomicJson(inputPath, input);

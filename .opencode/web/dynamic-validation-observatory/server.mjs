@@ -10,6 +10,7 @@ import MarkdownIt from "markdown-it";
 import { AuditQueueScheduler, QueueSettingsStore } from "./audit-queue-scheduler.mjs";
 import { AuditRunner } from "./audit-runner.mjs";
 import { EnvironmentHealthService } from "./environment-health.mjs";
+import { EnvironmentLeaseStore } from "../../lib/runtime-testing/environment-leases.mjs";
 import { FindingWorkflowStore } from "./finding-workflow.mjs";
 import { createProvenanceIndex, matchesProvenance } from "./provenance.mjs";
 import { listValidationRequests, listValidationRunDetails, listValidationRuns } from "./model.mjs";
@@ -34,6 +35,7 @@ import { renderBoardReport } from "../../lib/task-board/review.mjs";
 import { renderStructuredBoardReport } from "../../lib/task-board/report.mjs";
 import { createWorkbenchUiHandler, normalizeModernOrigin } from "./workbench-ui.mjs";
 import { runtimeBuild } from "./runtime-build.mjs";
+import { NativeSessionController } from '../../lib/audit-runtime/native-sessions.mjs';
 
 const HERE = dirname(fileURLToPath(import.meta.url));
 const PROJECT_ROOT = resolve(HERE, "../../..");
@@ -324,6 +326,8 @@ async function streamValidationEvents(request, response, runner, validationId) {
 }
 
 export function createAuditWorkbenchServer({
+  agentAccessToken = null,
+  runtimeService = null,
   runtimeRoot = DEFAULT_RUNTIME_ROOT,
   stateRoot = DEFAULT_STATE_ROOT,
   repositories = [],
@@ -353,6 +357,7 @@ export function createAuditWorkbenchServer({
   const workbenchUi = createWorkbenchUiHandler(modernWorkbenchOrigin);
   const resolvedRuntimeRoot = resolve(runtimeRoot);
   const runner = suppliedRunner ?? new AuditRunner({ stateRoot, platformRoot: PROJECT_ROOT, repositories, configPath: platformConfigPath, enabled: runnerEnabled });
+  const environmentLeases = new EnvironmentLeaseStore({ stateRoot: runner.stateRoot ?? stateRoot });
   const queueSettingsStore = suppliedQueueSettingsStore ?? new QueueSettingsStore({
     path: queueSettingsPath ?? join(dirname(resolve(stateRoot)), "workbench-settings.json"),
   });
@@ -398,6 +403,29 @@ export function createAuditWorkbenchServer({
   runner.memoryProvider = (audit, repository, paths) => productMemory.prepare(audit, repository, paths);
   runner.productCampaignGuard = id => productAudits.canDispatch(id);
   runner.productCampaignState = id => productMemory.store.db?.prepare('SELECT status FROM pm_campaigns WHERE id=?').get(id)?.status;
+  const nativeSessions = agentAccessToken ? new NativeSessionController({ runner, token: agentAccessToken,
+    createAudit: async (input, session) => {
+      await productCatalogReady;
+      const productId = input.product_id ?? UNDEFINED_PRODUCT_ID;
+      let targetId = input.target_id;
+      if (!targetId) {
+        const sourcePath = await realpath(input.source_root ?? session.directory);
+        const target = await nativeSessions.serial(`source:${productId}:${sourcePath}`, async () => {
+          const existing = (await productStore.targetIds(productId)).map(id => productStore.getTarget(productId, id))
+            .find(target => target.status === 'active' && target.source_scopes?.length === 1 && target.source_scopes[0].path === sourcePath);
+          return existing ?? await productStore.createTarget(productId, { name: input.name || sourcePath.split(/[\\/]/).at(-1), source_scopes: [{ name: 'source', path: sourcePath }] });
+        });
+        targetId = target.id;
+      }
+      return withTargetOperationLock(targetId, async () => {
+        const frozen = await productStore.targetExecutionSnapshot(productId, targetId);
+        const audit = await runner.createAuditFromTarget({ ...input, engine: session.engine, target_id: targetId,
+          execution_spec: frozen.snapshot, execution_spec_digest: frozen.digest },
+        input.idempotency_key ?? `native:${session.engine}:${session.session_id}:${input.audit_id ?? targetId}`, { nativeSession: session });
+        if (!productStore.auditLink(audit.id)) await productStore.linkAudit({ auditId: audit.id, productId, targetId, snapshot: frozen.snapshot, snapshotDigest: frozen.digest });
+        return audit;
+      });
+    } }) : null;
   const targetOperationLocks = new Map();
 
   async function withTargetOperationLock(targetId, operation) {
@@ -686,7 +714,7 @@ export function createAuditWorkbenchServer({
       const previous = audits.get(current.id);
       const audit = { ...previous };
       const fields = ["id", "name", "repository_id", "repository_name", "commit", "status", "version", "event_sequence", "created_at", "updated_at", "terminal", "queue", "paths", "provider_session_id", "task_context", "todo", "model", "error", "exit_code", "recovery_count", "last_recovered_at", "interrupted_at", "interruption_reason", "todo_completion", "stage_delivery", "context_window_recovery", "completion_source"];
-      fields.push("task_protocol", "task_board", "mining_strategy", "runtime_testing", "runtime_testing_state", "bac_analysis");
+      fields.push("task_protocol", "task_board", "mining_strategy", "runtime_testing", "runtime_testing_state", "bac_analysis", "execution");
       for (const field of fields) audit[field] = current[field] ?? null;
       if (!previous) Object.assign(audit, { stages: [], progress: 0, stage: "等待调度", finding_count: 0, artifact_count: 0, runtime_validation_count: 0 });
       if (current.stage_delivery_enforcement === "TODO_ENFORCED" && current.todo?.total > 0) {
@@ -761,6 +789,16 @@ export function createAuditWorkbenchServer({
     }
     try {
       const url = new URL(request.url ?? "/", "http://127.0.0.1");
+      if (url.pathname.startsWith('/api/internal/agent-sessions/')) {
+        if (!nativeSessions) throw Object.assign(new Error('请启动独立审计服务后登记当前会话。'), { statusCode: 503 });
+        nativeSessions.authorize(request);
+        if (request.method !== 'POST') throw Object.assign(new Error('会话入口只接受 POST。'), { statusCode: 405 });
+        const body = await requestJson(request);
+        if (url.pathname === '/api/internal/agent-sessions/register') json(response, 200, await nativeSessions.register(body));
+        else if (url.pathname === '/api/internal/agent-sessions/heartbeat') json(response, 200, await nativeSessions.heartbeat(body));
+        else throw Object.assign(new Error('会话入口不存在。'), { statusCode: 404 });
+        return;
+      }
       if (workbenchUi(request, response, url)) return;
       // v2 product-space APIs deliberately use the catalog as the authority.
       // v1 continues to expose the historical repository adapter unchanged.
@@ -921,6 +959,12 @@ export function createAuditWorkbenchServer({
             return;
           }
         }
+        const productFileCoverage = matchProductAuditPath(url.pathname, "file-coverage");
+        if (request.method === "GET" && productFileCoverage) {
+          await auditForProduct(productFileCoverage.productId, productFileCoverage.auditId);
+          json(response, 200, await runner.fileCoveragePage(productFileCoverage.auditId, Object.fromEntries(url.searchParams)));
+          return;
+        }
         const productTaskBoard = matchProductAuditPath(url.pathname, "task-board");
         if (request.method === "GET" && productTaskBoard) {
           await auditForProduct(productTaskBoard.productId, productTaskBoard.auditId);
@@ -993,7 +1037,7 @@ export function createAuditWorkbenchServer({
         }
       }
       if (request.method === "GET" && (url.pathname === "/api/health" || url.pathname === "/api/v1/runtime/health")) {
-        json(response, 200, { ok: true, service: "opencode-audit-workbench", runtime_build: runtimeBuild, runner: runner.health(), dynamic_runner: dynamicRunner.health(), request_history: { mode: "read_only" }, workbench_ui: { modernUrl: modernWorkbenchOrigin ? "/workbench" : null } });
+        json(response, 200, { ok: true, service: "opencode-audit-workbench", runtime_build: runtimeBuild, runtime_service: runtimeService, runner: runner.health(), dynamic_runner: dynamicRunner.health(), request_history: { mode: "read_only" }, workbench_ui: { modernUrl: modernWorkbenchOrigin ? "/workbench" : null } });
         return;
       }
       if (request.method === "GET" && url.pathname === "/api/v1/environment") {
@@ -1136,6 +1180,12 @@ export function createAuditWorkbenchServer({
         else json(response, 200, audit, { ETag: `"${audit.version}"` });
         return;
       }
+      const coverageAuditId = matchAuditPath(url.pathname, "file-coverage");
+      if (request.method === "GET" && coverageAuditId) {
+        await assertLegacyUndefinedAudit(coverageAuditId);
+        json(response, 200, await runner.fileCoveragePage(coverageAuditId, Object.fromEntries(url.searchParams)));
+        return;
+      }
       const boardAuditId = matchAuditPath(url.pathname, "task-board");
       if (request.method === "GET" && boardAuditId) {
         await assertLegacyUndefinedAudit(boardAuditId);
@@ -1239,7 +1289,9 @@ export function createAuditWorkbenchServer({
           idempotencyKey: request.headers["idempotency-key"],
         });
         const owner = recordOwnership(finding).product_id;
-        if (owner) await productMemory.syncLegacyFeedback(owner, finding, workflow);
+        // Historical artifact-only findings remain reviewable. Import into
+        // long-term memory requires an independently verifiable audit binding.
+        if (owner && runner.getAudit(finding.audit_id)) await productMemory.syncLegacyFeedback(owner, finding, workflow);
         snapshotCache.invalidate();
         json(response, 200, workflow, { ETag: `"${workflow.version}"` });
         return;
@@ -1272,6 +1324,19 @@ export function createAuditWorkbenchServer({
       if (request.method === "GET" && url.pathname === "/api/v1/validation-requests") {
         const items = (await validationRequests()).filter(item => matchesProvenance(item, url.searchParams));
         json(response, 200, { items, count: items.length });
+        return;
+      }
+      if (request.method === "GET" && url.pathname === "/api/v1/runtime-environment-leases") {
+        json(response, 200, await environmentLeases.list());
+        return;
+      }
+      const environmentLeaseRelease = url.pathname.match(/^\/api\/v1\/runtime-environment-leases\/([a-f0-9]{64})\/release$/);
+      if (request.method === "POST" && environmentLeaseRelease) {
+        assertSafeMutation(request);
+        if (!runner.enabled) throw Object.assign(new Error("只读服务不能解除环境占用。"), { statusCode: 409, code: "runner-disabled" });
+        const body = await requestJson(request);
+        const released = await environmentLeases.release(environmentLeaseRelease[1], body);
+        json(response, 200, { released });
         return;
       }
       if (request.method === "GET" && url.pathname === "/api/v1/runtime-audits") {
@@ -1401,6 +1466,7 @@ export function createAuditWorkbenchServer({
     }
   });
   server.shutdownRunners = async () => {
+    await nativeSessions?.close();
     await productAudits.shutdown();
     await queueScheduler.shutdown();
     await Promise.all([runner.shutdown(), dynamicRunner.shutdown()]);
@@ -1408,6 +1474,7 @@ export function createAuditWorkbenchServer({
     productStore.close();
   };
   server.productMemory = productMemory; server.productAudits = productAudits;
+  server.auditRunner = runner; server.dynamicAuditRunner = dynamicRunner;
   server.productStore = productStore;
   server.productCatalogReady = productCatalogReady;
   return server;

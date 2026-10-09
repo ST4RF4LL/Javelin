@@ -33,6 +33,17 @@ function commandPath(value, engineRoot) {
   return resolve(engineRoot, value);
 }
 
+export function configureTaskReviewPermissions(config, { workspaceRoot, reportsRoot }) {
+  // OpenCode checks absolute write targets, including the workspace symlink.
+  const edit = { "*": "deny" };
+  for (const directory of [resolve(workspaceRoot, "reports", "validation"), resolve(reportsRoot, "validation")]) {
+    edit[`${directory.replaceAll("\\", "/")}/**`] = "allow";
+  }
+  config.agent ??= {};
+  const role = "vulnerability-validator", agent = config.agent[role] ?? {};
+  config.agent[role] = { ...agent, permission: { ...agent.permission, edit } };
+}
+
 export async function buildOpenCodeEnvironment(configPath, baseEnvironment = process.env) {
   const absoluteConfigPath = resolve(configPath);
   const configDirectory = dirname(absoluteConfigPath);

@@ -511,7 +511,7 @@ if (mode === "run") {
   const objectRegistryRunner = new AuditRunner({ stateRoot: objectRegistryStateRoot, platformRoot, configPath: join(repositoryRoot, ".opencode", "opencode.json") });
   await objectRegistryRunner.ready;
   assert.equal((await objectRegistryRunner.listRepositories()).some(repository => repository.id === "fixture"), true);
-  assert.equal(Array.isArray(JSON.parse(await readFile(join(objectRegistryStateRoot, "repositories.json"), "utf8")).repositories), true);
+  assert.equal(Array.isArray(JSON.parse(await readFile(join(objectRegistryStateRoot, "repositories.json"), "utf8")).repositories), false, "只读 Runner 不迁移仓库登记文件");
   await objectRegistryRunner.shutdown();
 
   let spawnCall = null;
@@ -615,6 +615,7 @@ if (mode === "run") {
   assert.equal(queuedRunner.getAudit(queuedAudit.id).model, "global-provider/global-audit");
   assert.equal(await queuedRunner.modelForLaunch({ model: null }), null, "显式默认不得被全局模型覆盖");
   const originalContexts = {
+    memory_mode: 'full',
     additional_instructions_enabled: true,
     additional_instructions: "只验证指定入口。\n\n保留这段说明的分行与中文。",
     test_environment_enabled: true,
@@ -631,6 +632,7 @@ if (mode === "run") {
     audit_id: "audit-retry-context-edited", ...retryDraft, additional_instructions: "重试时修改的关注点。",
     test_environment_enabled: false }, "retry-context-edited");
   assert.deepEqual(await queuedRunner.retryDraft(editedRetry.id), {
+    memory_mode: 'full',
     additional_instructions_enabled: true, additional_instructions: "重试时修改的关注点。",
     test_environment_enabled: false, test_environment_context: "",
   });
@@ -901,6 +903,7 @@ if (mode === "run") {
     error: "工作台服务已重启，原 Runner 连接已中断。",
   }, null, 2)}\n`, "utf8");
   const reconciledRunner = new AuditRunner({
+    enabled: true,
     stateRoot: reconciledStateRoot,
     platformRoot,
     repositories: [{ id: "fixture", name: "测试仓库", path: repositoryRoot }],
@@ -1340,7 +1343,7 @@ if (mode === "run") {
       headers: { "Content-Type": "application/json", "If-Match": '"0"', "Idempotency-Key": "finding-workflow-001" },
       body: JSON.stringify({ status: "confirmed", note: "Owner 已确认该权限校验缺失。" }),
     });
-    assert.equal(workflowResponse.status, 200);
+    assert.equal(workflowResponse.status, 200, await workflowResponse.clone().text());
     const workflow = await workflowResponse.json();
     assert.equal(workflow.status, "confirmed");
     assert.equal(workflow.note, "Owner 已确认该权限校验缺失。");
@@ -1610,6 +1613,7 @@ if (mode === "run") {
     assert.equal(retryDraftResponse.status, 200);
     assert.equal(retryDraftResponse.headers.get("cache-control"), "no-store");
     assert.deepEqual(await retryDraftResponse.json(), {
+      memory_mode: 'full',
       additional_instructions_enabled: true,
       additional_instructions: "只验证 XSS 漏洞；其他类型只记录静态证据。",
       test_environment_enabled: true,
@@ -2007,12 +2011,12 @@ if (mode === "run") {
     assert.match(indexHtml, /确实缺少信息时说明具体缺口，静态审计继续/);
     assert.match(indexHtml, /环境接触 \+ 中期探索 \+ 按需确认/);
     assert.match(indexHtml, /未启用或未填写时自动跳过/);
-    assert.match(indexHtml, /任务创建时未填写测试环境也可在本页补录并逐次授权/);
+    assert.match(indexHtml, /验证动作/);
     assert.match(indexHtml, /人工补充验证需逐次授权并保存独立结果/);
     assert.doesNotMatch(indexHtml, /共享环境准备 240 秒、每报告 180 秒快速动态/);
     assert.match(indexHtml, /id="export-selected-bruno"/);
     assert.match(indexHtml, /导出 Bruno 集合（JSON）/);
-    assert.match(indexHtml, /人工发包请使用 Bruno/);
+    assert.match(indexHtml, /运行前补全凭据变量，并确认目标仍在授权范围内/);
     assert.doesNotMatch(indexHtml, /HTTP 请求工作台/);
     assert.doesNotMatch(indexHtml, />发送请求</);
     assert.doesNotMatch(indexHtml, /输入完整 audit_id/);
@@ -2024,9 +2028,9 @@ if (mode === "run") {
     const appSource = await appResponse.text();
     const stylesSource = await stylesResponse.text();
     assert.match(appSource, /npm --prefix \.opencode run start:audit-workbench:runner/);
-    assert.match(appSource, /agent-event-stream/);
+    assert.match(appSource, /monitor-event-viewport/);
     assert.match(appSource, /renderAgentEvent/);
-    assert.match(appSource, /output\.scrollTop = output\.scrollHeight/);
+    assert.match(appSource, /createAuditMonitor/);
     assert.match(stylesSource, /agent-event\.historical/);
     assert.match(stylesSource, /agent-event\.recent/);
     assert.match(stylesSource, /agent-event\.tool/);
@@ -2036,7 +2040,7 @@ if (mode === "run") {
     assert.match(appSource, /submitDeleteProject/);
     assert.match(appSource, /断点恢复/);
     assert.match(appSource, /ResizeObserver/);
-    assert.match(appSource, /terminal\/resize/);
+    assert.match(appSource, /ttyd/);
     assert.match(appSource, /syncAuditContextControls/);
     assert.match(appSource, /submitModelSettings/);
     assert.match(appSource, /task_test_environment_preconfigured/);
@@ -2057,7 +2061,8 @@ if (mode === "run") {
     assert.match(appSource, /invalidateFindings/);
     assert.doesNotMatch(appSource, /window\.confirm/);
     const referencedIds = [...appSource.matchAll(/\$\("([A-Za-z0-9_-]+)"\)/g)].map(match => match[1]);
-    assert.deepEqual([...new Set(referencedIds)].filter(id => !indexHtml.includes(`id="${id}"`)), []);
+    assert.match(appSource, /\[runtimePanel, "audit-runtime-section",/);
+    assert.deepEqual([...new Set(referencedIds)].filter(id => id !== 'audit-runtime-section' && !indexHtml.includes(`id="${id}"`)), []);
     assert.match(stylesSource, /@media \(max-width: 1080px\)/);
     assert.match(stylesSource, /@media \(max-width: 760px\)/);
   } finally {

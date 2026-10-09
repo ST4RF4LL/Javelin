@@ -2,6 +2,54 @@
 
 React / NestJS 新版已接入原平台的真实任务创建、调度和执行控制。业务数据、Runner、队列、授权规则及落盘记录沿用原平台；原界面和首版封存预览继续保留。
 
+## 文件覆盖率（Focus Area 文件关联）
+
+左侧“审计任务 → 文件覆盖率”进入 `/audits/coverage`，选择审计查看启动时冻结的全部文件。任务详情也有同名入口。灰色表示暂无 Focus Area 定位关联，黄色表示任务的 `code_refs` 精确指向该文件；展开可查看关联任务、状态、行号和符号。关联率按文件去重，搜索、筛选和分页不改变分母，页面每 10 秒读取新发布的定位。
+
+当前版本只统计定位关联，不表示文件已审查或漏洞已确认。目录/通配符、不在清单中的引用单列为定位缺口，API 任务不计入 Focus Area。没有源码清单的任务显示未就绪；没有通用任务面板的历史任务显示未采集关联。读取过程不启动 Agent、不扫描当前源码、不修改任务、报告或 watchdog。接口为 `GET /api/v2/products/:productId/audits/:auditId/file-coverage`，支持 `q`、`association=all|associated|unassociated`、`offset`、`limit`，返回契约为 `file-focus-coverage.v1`。
+
+定向检查：`node --test .opencode/tests/run-file-focus-coverage-tests.mjs`。首次部署后端接口需要正常重启平台，先确认没有活动审计。
+
+## 报告交付完整性与更正
+
+专业 worker 在写回执前使用 `task-report-check.mjs <input.json>` 检查真实生产会话和 BAC Finding 原样交付；接收端再次执行确定性校验，错误包含任务、Finding 与差异字段。独立内容复核继续保留。
+
+对于升级前已接收的组装错误，最终封存前可通过任务 CLI `correct-report <更正请求.json>` 提交新文件的路径/摘要、预期旧摘要与中文原因。服务保留原报告、旧复核绑定和更正记录，只切换当前版本；复核输入按内容摘要保存，更正后必须重新完成质量复核与独立三方验证。最终中文报告显示更正历史，已封存任务不接受此操作。更正不重跑挖掘任务，不解除动态环境隔离。
+
+最终封存的校验、文件写入和面板提交与更正使用同一提交锁，避免并发操作封存旧版本。任务启动时为质量复核角色注入当前工作区和实际报告根的 `validation` 绝对路径编辑白名单，解决 OpenCode 写文件时相对路径规则不匹配的问题；该角色其他绝对路径仍拒绝编辑，浏览器权限保持关闭。正方、反方与 Moderator 沿用既有角色权限和只读源码契约，保留临时组装制品的能力。
+
+## 运行监控、ttyd 终端与共享 OpenCode 会话（2026-10-08）
+
+交互终端已切换为宿主机原生 ttyd，网关按任务启动 ttyd 与独立 `opencode attach` 客户端。浏览器终端由 ttyd 提供，工作台保留任务绑定、状态检查和子窗口入口；JSON 监控源码位于 `.opencode/web/dynamic-validation-observatory/monitor/`。旧 `web-terminal-monitor@0.2.0` 安装包仅作为回退档案保留在 `vendor/`，不再是运行依赖。迁移前文件备份位于 `reports/workbench-migration/ttyd-20261008/before-ttyd.tar.gz`。
+
+先安装宿主机 ttyd，再构建监控资源并启动终端服务：
+
+```sh
+brew install ttyd # macOS；其他系统使用 ttyd 官方宿主机安装方式
+npm --prefix apps/workbench run build:monitor
+npm --prefix apps/workbench run start:monitor
+```
+
+ttyd 可执行路径通过 `WORKBENCH_TTYD_BIN` 覆盖。前端资源刷新即可加载；终端网关切换需要正常重启所属平台进程，重启前确认没有活动审计。已有运行任务保留原启动方式；更新后新建或通过原操作断点恢复的任务会启用共享服务。终端网关默认绑定 `127.0.0.1:4184`；仅复用协议、源码摘要和工作区一致的服务。每个任务及只读模式的 ttyd 使用随机本机端口和独立凭据，首次打开时启动，空闲两分钟后回收；原 tmux 仅可只读预览，交互只开放给当前运行审计的 OpenCode 会话，禁止创建任意 Shell。关闭页面或终端服务只释放附加客户端，不停止审计。
+
+- **任务事件（默认）**：沿用 JSON 日志和 SSE，不创建终端进程。显示主 Agent 和子 Agent 工具调用、结果与来源，支持筛选、搜索和跟随。当前页面最多缓存 500 条事件，进度以任务板交付为准。
+- **原始 JSON**：沿用原事件渲染器供排查。日志读取失败时保留上次结果。
+- **交互终端（按需）**：点击“交互终端 ↗”弹出独立子窗口，以 `opencode attach` 在新 PTY 中连接原任务的同一 session。可以输入后续指令，OpenCode 会话保存指令和响应，JSON 执行器继续收集执行输出。父页面继续显示 JSON 事件，重复点击聚焦同一子窗口；关闭子窗口只断开附加客户端，关闭任务详情也不会关闭子窗口。子窗口支持重连、全屏、尺寸调整与只读切换；旧 tmux 强制只读并保持原窗口尺寸。弹窗被浏览器拦截时提供新标签页入口。旧任务显示“原始终端（只读）↗”。
+
+每次执行在原有受控进程树中启动本机 `opencode serve`，随后执行 `opencode run --attach ... --session ... --format json`。服务继承原任务配置、插件和 `AUDIT_*` 环境；watchdog、任务板、长期记忆和交付判定沿用原逻辑。取消和收尾关闭任务所属服务；暂停与恢复向明确的任务子进程发送信号，避免只暂停日志客户端。中断恢复复用 session ID，但创建新服务与连接凭据。任务结束后终端不能绕过 Runner 继续执行，须使用原有恢复或新建重试操作。
+
+服务凭据仅保存在任务状态目录的 `opencode-server.json`（0600），不进入 API、URL 或前端；结束时移除。网关转发每个 WebSocket 消息前检查任务状态和绑定摘要，暂停、结束和旧连接不能继续输入；同时定期清理已失效的 ttyd。客户端只能提交任务编号，不能指定 Shell 命令、OpenCode 服务地址或任意 tmux socket。关闭网关仅结束 ttyd 和其附加客户端，不操作审计 Runner。4173 原入口、4181 新版及 `/legacy/` 均按需打开独立终端子窗口；任务详情不再内嵌终端。
+
+`build:monitor` 将组件与所需样式嵌入已有 `app.js/styles.css`，避免为本次更新更改后台静态路由。生成段不可手工修改。`check:monitor` 核对源码和已生成资源一致，`test:monitor` 验证日志适配、页面生命周期、原 tmux 只读边界，以及共享服务的输入、暂停、恢复、取消、崩溃与断开。下文较早的 EPERM、旧进程和端口说明是历史排查记录，不代表本次环境状态。
+
+2026-10-04 接入验收：27 项监控专项测试、7 项原功能继承测试、4 项产品记忆界面测试与 TypeScript 检查通过。使用 Chrome DevTools MCP 在真实 `test_long_memory` 任务上核验了终端只读连接、实时事件增长、来源与搜索筛选、视图展开和独立滚动位置、刷新保留同一终端节点，以及关闭重开。最终页面 console 的 error/warn 均为 0，验证期间未重启审计后台。
+
+2026-10-05 共享会话验收：76 项相关测试通过，TypeScript 与监控构建一致性检查通过；本机 OpenCode 1.18.34 配合本地模型响应替身，通过 Chrome DevTools MCP 验证了真实 TUI、同 session 输入、JSON 后续事件、断开重连与正常退出清理。正式页面默认显示事件，未自动创建终端。完整旧回归套件仍有历史记忆回填字段及漏洞确认状态断言未通过，未更改这些业务规则。记录位于 `reports/workbench-migration/shared-opencode-20261005/verification.json`。
+
+2026-10-05 子窗口验收：13 项前端测试与监控构建一致性检查通过。Chrome DevTools MCP 配合隔离的真实 OpenCode 会话验证点击弹窗、同窗口复用、关闭后任务继续运行、重新打开连接及父页面保持事件监控；父子页面 console error/warn 均为 0。此项只更新前端资源，未重启审计后台。记录位于 `reports/workbench-migration/terminal-popup-20261005/verification.json`。
+
+2026-10-08 ttyd 迁移验收：34 项监控测试与 7 项原功能回归通过，类型检查和生产构建通过。Chrome DevTools MCP 配合真实 OpenCode 1.18.34、本机模型响应替身验证 TUI、同 session 中文输入、只读限制、缩放、重连、关闭后重开、JSON 事件及任务结束清理；关闭页面后原任务继续运行。正式平台已加载 ttyd 1.7.7，未修改 watchdog 与 JSON 执行协议。证据位于 `reports/workbench-migration/ttyd-20261008/verification.json`。
+
 ## 启动并提交任务
 
 在仓库根目录执行，直接运行于宿主机：
@@ -25,7 +73,21 @@ npm --prefix .opencode run start:audit-workbench:platform
 
 启动脚本先检查原服务：4173 上已有可执行 Runner 时直接复用；默认原服务未运行时，在本机启动原平台并开启 Runner。已有只读服务、未知服务或无法确认服务状态时会明确退出，不自动关闭或替换原进程。请在原终端正常停止只读服务，再使用上述命令。自定义 `WORKBENCH_UPSTREAM` 时须先启动该上游，脚本不会自动启动远端或自定义端口的服务。
 
-保持终端运行。Ctrl+C 会停止本次启动的新服务，以及由本次启动脚本创建的原服务和所属任务进程；复用的原服务保持运行。原平台正常重启不会删除已落盘任务，但活动任务可能需要断点恢复。
+保持 Web 终端运行以访问页面。Ctrl+C 只关闭本次 Web 服务和终端连接；独立审计后台及其任务继续运行。后台状态和停止入口为 `node .opencode/scripts/audit-service.mjs status|stop`；存在运行、排队或暂停任务时拒绝停止。后台自身重启后，已落盘任务保留，后台创建的活动任务需要断点恢复，原生会话通过重新登记接回。
+
+## 双入口与执行会话
+
+Web 负责创建入口、进度展示、任务管理、人工复核和报告整合。`start-platform.mjs` 只连接独立执行服务，不再拥有审计进程的生命周期。执行服务对任务目录持有独占锁；只读 Runner 不迁移登记文件、不恢复或改写活动任务。
+
+- **Web 创建**：后台冻结源码范围、创建任务板和执行会话。公开详情中的 `execution` 提供引擎、入口、归属、运行标识和实际 session ID。前端以 audit ID 打开 ttyd，终端服务从私有连接文件解析同一个会话，认证信息不发给页面。
+- **原生 OpenCode 创建**：本项目配置加载当前会话插件。Orchestrator 先调用 `audit_register`；插件从 `ToolContext.sessionID` 取真实 ID，后台仅登记并准备任务板/制品服务，主任务继续留在当前会话。插件为该会话及其子会话注入 `AUDIT_*` 环境，回传事件，通过原生 SDK 执行暂停/恢复指令。原生终端进程由用户持有，后台不发送进程终止信号。
+- **恢复与完成**：重复登记复用原任务。原生会话失联后停止后台领取并保留制品；重新登记沿用已有范围和制品。暂停状态不会因重连而自动运行。两种入口都按既有任务板、报告摘要和独立复核门禁判定完成，`session.idle` 不等于审计完成。未授权动态测试保持 `SKIPPED`。
+
+原生入口配置变更需要 OpenCode 重新加载配置；已经运行且未加载插件的进程不会被平台自动重启。在本项目打开原生 OpenCode 后，直接说明要审计的源码目录即可。后台控制入口只接受本机私有连接文件中的令牌，不接受浏览器 Origin。主会话记录与专业 worker 会话各自独立；登记主会话不会停止专业任务调度。
+
+`audit-agent-session.v1` 提供与前端无关的登记/心跳协议；`.opencode/scripts/audit-session-mcp.mjs` 是通用 stdio MCP 桥接，提供 `audit_register`、`audit_command`、`audit_checkpoint`。宿主须传递真实当前 session ID，不能生成替代 ID。可将 Codex/Grow 的当前会话接到同一任务板、记忆接口与进度记录；此桥接不接管宿主输入、不承诺其 TUI 直连。当前后台创建主会话、专业 worker 和动态执行仍由 OpenCode 适配实现；Web 请求创建尚未适配的引擎会明确返回 `agent-launch-unavailable`，不会把该引擎名称静默当作 OpenCode 执行。其他引擎的完整启动、控制和专业执行适配需要单独验证，不能仅凭安装 CLI 就宣称可切换。
+
+验证入口：`node --test .opencode/tests/run-audit-runtime-tests.mjs`。测试使用隔离源码和受控执行替身，覆盖双入口、重复登记、事件、暂停/恢复、失联、单写入者、鉴权与真实报告门禁；不联系被测应用。
 
 ## 入口与回退
 
@@ -134,6 +196,10 @@ node apps/workbench/scripts/launch-task.mjs reports/workbench-migration/langflow
 本次实际执行 `npm --prefix .opencode run start:audit-workbench:platform` 仍因当前会话连接本机端口被 `EPERM` 拒绝而退出。旧进程未被停止，新平台与真实任务均未由此次尝试启动。需要恢复本机会话网络权限或由宿主机终端完成运行后，才能确认并修复现场剩余问题。
 
 ## 技术结构
+
+测试环境占用可在“运行环境 → 测试环境占用”中查看。列表显示目标、原任务、占用时间、动态阶段失败原因和清理状态。已结束且无清理遗留的旧占用会在下次申请时自动回收；清理未知或失败时，需要填写核对说明后解除。活动任务或仍有执行进程的占用不能解除，操作还会校验版本，防止旧页面释放新的占用。核对记录单独存档，原任务证据和清理结论不被改写；解除占用不会自动重启任务或访问测试目标。
+
+相关回归：`node .opencode/tests/run-runtime-environment-lease-tests.mjs`、`node .opencode/tests/run-runtime-testing-tests.mjs`。
 
 前端为 React、TypeScript、React Router、Vite、Tailwind CSS、shadcn/ui 与 TanStack Query；后端为 NestJS、Fastify 和 SSE。构建输出位于 `build/`，依赖由 `package-lock.json` 固定。
 

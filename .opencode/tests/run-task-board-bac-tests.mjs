@@ -4,6 +4,7 @@ import { test } from "node:test";
 import { mkdir, readFile, realpath, rm, writeFile } from "node:fs/promises";
 import { join } from "node:path";
 import { execFile } from "node:child_process";
+import http from "node:http";
 import { promisify } from "node:util";
 import { fileURLToPath } from "node:url";
 import { bacFixture, readJson, writeJson, reviewedFinding } from "./fixtures/bac.mjs";
@@ -16,6 +17,7 @@ import { createBoard, TaskBoardStore } from "../lib/task-board/store.mjs";
 import { prepareTaskBacPlan, summarizeTaskBac } from "../lib/task-board/bac.mjs";
 import { acceptReview, finalizeBoard, prepareReview, validateReviewBundle, verifyBoardCompletion } from "../lib/task-board/review.mjs";
 import { TaskBoardService } from "../lib/task-board/service.mjs";
+import { correctReport } from "../lib/task-board/report-correction.mjs";
 import { seal as sealRuntime } from "../lib/runtime-testing/contract.mjs";
 
 const execute = promisify(execFile);
@@ -108,11 +110,11 @@ async function bundle(f, options = {}) {
 }
 async function reviewDocuments(f, ref, input, { gap = false, taskGap = false, moderatorVerdict = "TRUE_POSITIVE" } = {}) {
   const base = { protocol: PROTOCOL, audit_id: f.auditId, input_sha256: ref.sha256 };
-  const result = { quality: await artifact(f.reports, "validation/quality.json", { ...base, role: "REPORT_REVIEW", agent_session_id: "quality-session",
+  const result = { quality: await artifact(f.reports, `validation/quality.${ref.sha256}.json`, { ...base, role: "REPORT_REVIEW", agent_session_id: "quality-session",
     assessments: [{ task_id: f.spec.task_id, status: taskGap ? "GAP" : "REVIEWED", reason: taskGap ? "专项证据结构尚须补齐。" : "已核查任务和源码证据。", evidence_refs: ["src/OrderService.java:4"], gaps: taskGap ? ["专项证据结构尚须补齐。"] : [] }],
     bac_analysis: { status: gap ? "GAP" : "REVIEWED", reason: gap ? "专项仍有未解析分支。" : "差分与复查附件均已核对。", evidence_refs: ["src/OrderService.java:4"] } }) };
   for (const [role, verdict] of [["AFFIRMATIVE", "PROVEN"], ["NEGATIVE", "NOT_REFUTED"], ["MODERATOR", moderatorVerdict]]) {
-    result[role.toLowerCase()] = await artifact(f.reports, `validation/${role}.json`, { ...base, role, agent_session_id: `session-${role}`,
+    result[role.toLowerCase()] = await artifact(f.reports, `validation/${role}.${ref.sha256}.json`, { ...base, role, agent_session_id: `session-${role}`,
       ...(result.affirmative ? { affirmative_sha256: result.affirmative.sha256 } : {}), ...(result.negative ? { negative_sha256: result.negative.sha256 } : {}),
       findings: input.candidates.map(row => ({ candidate_id: row.candidate_id, verdict: typeof verdict === "function" ? verdict(row) : verdict, reason: "离线样例复核。", evidence_refs: ["src/OrderService.java:4"], gaps: [] })) });
   }
@@ -134,7 +136,12 @@ async function malformedCompleteFixture(t, edit = () => {}) {
   review.evidence = [malformedBacEvidence()];
   f.report.bac_analysis.review = await artifact(f.reports, ref.path, seal(review));
   f.report.findings.push(ordinaryFinding());
-  await edit(f); await receive(f, f.report);
+  await receive(f, f.report);
+  // Simulate a pre-upgrade accepted report; new deliveries are tested separately.
+  await edit(f);
+  const reportRef = f.store.snapshot().tasks[0].report;
+  await writeFile(join(f.reports, reportRef.path), JSON.stringify(f.report));
+  await f.store.mutate(board => { board.tasks[0].report.sha256 = hash(JSON.stringify(f.report)); });
   return f;
 }
 
@@ -399,4 +406,138 @@ test("工作台新建任务默认冻结原生专项选择，读取重试草稿�
   assert.equal((await runner.retryDraft(created.id)).mining_strategy, "focus_area");
   assert.deepEqual((await readBoard(audit.task_board_path)).bac_analysis, board.bac_analysis);
   assert.equal(runner.taskBoardServices.size, 0);
+});
+
+
+test("接收前拒绝额外字段、候选改写或重复，提示精确到任务和 Finding；更正后可在同一尝试交付", async t => {
+  const f = await fixture(t); await claim(f); await compare(f); await deliver(f, { receiveReport: false });
+  for (const change of [r => { r.findings[0].origin_lens = "control-driven"; r.findings[0].bac_source_marker = true; },
+    r => { r.findings[0].title = "被改写"; }, r => { r.findings.push(r.findings[0]); }]) {
+    const bad = structuredClone(f.report); change(bad);
+    await assert.rejects(receive(f, bad), error => error.code === "bac-finding-binding-mismatch" && error.task_id === f.spec.task_id && error.finding_id === f.report.findings[0].finding_id);
+    assert.equal(f.store.snapshot().tasks[0].status, "RUNNING"); assert.equal(f.store.snapshot().tasks[0].report, null);
+  }
+  await receive(f, f.report); assert.equal(f.store.snapshot().tasks[0].status, "REPORTED");
+});
+
+test("已接收报告更正保留旧字节与复核，拒绝旧 bundle，新复核可以封存并显示更正记录", async t => {
+  const f = await fixture(t); await claim(f); await compare(f); await deliver(f);
+  const oldBundle = await bundle(f);
+  await acceptReview(f.store, oldBundle.result);
+  const good = structuredClone(f.report);
+  // Historical incident: worker appended metadata before the old receiver froze it.
+  f.report.findings[0].origin_lens = "control-driven"; f.report.findings[0].bac_source_marker = true;
+  const old = f.store.snapshot().tasks[0].report;
+  const oldBytes = Buffer.from(JSON.stringify(f.report)); await writeFile(join(f.reports, old.path), oldBytes);
+  await f.store.mutate(board => { board.tasks[0].report.sha256 = hash(oldBytes); });
+  await assert.rejects(prepareReview(f.store, { bacMode: "auto" }), /差异字段.*origin_lens.*bac_source_marker/);
+  const ref = await artifact(f.reports, "proposals/corrected.json", good);
+  const request = { task_id: f.spec.task_id, expected_sha256: hash(oldBytes), report: ref, reason: "移除组装阶段误加字段，原样恢复专项封存 Finding。" };
+  const result = await correctReport(f.store, request), after = f.store.snapshot();
+  assert.equal(after.validation.status, "NOT_STARTED"); assert.equal(after.validation.input, undefined);
+  assert.equal(after.tasks[0].attempt_count, 1); assert.equal(after.tasks[0].report.sha256, ref.sha256);
+  assert.equal(after.report_corrections.length, 1); assert.equal(result.correction.previous_validation.status, "REVIEWED");
+  assert.deepEqual(await readFile(join(f.reports, old.path)), oldBytes);
+  assert.equal(hash(await readFile(join(f.reports, oldBundle.ref.path))), oldBundle.ref.sha256);
+  assert.equal((await correctReport(f.store, request)).duplicate, true); assert.equal(f.store.snapshot().report_corrections.length, 1);
+  await assert.rejects(acceptReview(f.store, oldBundle.result), /绑定无效/);
+  const next = await bundle(f); assert.notEqual(next.ref.sha256, oldBundle.ref.sha256);
+  assert.equal(hash(await readFile(join(f.reports, oldBundle.ref.path))), oldBundle.ref.sha256);
+  await assert.rejects(acceptReview(f.store, oldBundle.result), /输入摘要不匹配/);
+  await acceptReview(f.store, next.result); await finalizeBoard(f.store);
+  const final = f.store.snapshot().final_report;
+  assert.match(await readFile(join(f.reports, final.path), "utf8"), /报告更正记录/);
+  assert.equal((await readJson(join(f.reports, final.model))).report_corrections.length, 1);
+  assert.equal((await verifyBoardCompletion({ audit: auditFor(f), reportsRoot: f.reports })).complete, true);
+  await assert.rejects(correctReport(f.store, request), /已经封存/);
+});
+
+test("更正拒绝旧版本、越界路径、伪造会话、专项候选变更及原报告被修改", async t => {
+  const f = await fixture(t); await claim(f); await compare(f); await deliver(f);
+  const before = f.store.snapshot(), previous = before.tasks[0].report;
+  const ref = await artifact(f.reports, "proposals/good.json", f.report);
+  const request = { task_id: f.spec.task_id, expected_sha256: previous.sha256, report: ref, reason: "测试受控更正。" };
+  await assert.rejects(correctReport(f.store, { ...request, expected_sha256: "0".repeat(64) }), /版本已变化/);
+  await assert.rejects(correctReport(f.store, { ...request, report: { ...ref, path: "../outside.json" } }));
+  for (const [key, change, error] of [["session", r => { r.agent_session_id = "invented-session"; }, /生产会话绑定无效/],
+    ["finding", r => { r.findings[0].title = "被篡改"; }, /未原样进入当前报告/]]) {
+    const report = structuredClone(f.report); change(report);
+    const bad = await artifact(f.reports, `proposals/${key}.json`, report);
+    await assert.rejects(correctReport(f.store, { ...request, report: bad }), error);
+  }
+  assert.deepEqual(f.store.snapshot(), before);
+  await writeFile(join(f.reports, previous.path), "changed");
+  await assert.rejects(correctReport(f.store, request), /原报告已被改写/);
+});
+
+test("worker 预检 CLI 在回执写入前拒绝额外字段，通过后不修改报告", async t => {
+  const f = await fixture(t); await claim(f); await compare(f); await deliver(f, { receiveReport: false });
+  const inputPath = join(f.root, "worker-input.json"), reportPath = join(f.root, "worker-report.json"), sessionPath = join(f.root, "session.json");
+  await writeJson(inputPath, { audit_id: f.auditId, task: f.spec, attempt_id: f.job.attempt.attempt_id, report_path: reportPath, session_path: sessionPath, reports_root: f.reports });
+  await writeJson(sessionPath, { agent_session_id: "source-session-1" });
+  const bad = structuredClone(f.report); bad.findings[0].bac_source_marker = true; await writeJson(reportPath, bad);
+  const checkCli = fileURLToPath(new URL("../scripts/task-report-check.mjs", import.meta.url));
+  await assert.rejects(execute(process.execPath, [checkCli, inputPath]), /bac_source_marker/);
+  await writeJson(reportPath, f.report); const before = await readFile(reportPath);
+  assert.equal(JSON.parse((await execute(process.execPath, [checkCli, inputPath])).stdout).valid, true);
+  assert.deepEqual(await readFile(reportPath), before);
+});
+
+
+test("更正命令通过任务服务鉴权，CLI 往返保留幂等性，并发旧版本只有一次生效", async t => {
+  const f = await fixture(t); await claim(f); await compare(f); await deliver(f);
+  const service = new TaskBoardService({ auditId: f.auditId }); service.store = f.store; service.pump = () => {};
+  const server = http.createServer((req, res) => service.handle(req, res));
+  await new Promise(resolve => server.listen(0, "127.0.0.1", resolve));
+  t.after(() => new Promise(resolve => { server.close(resolve); server.closeAllConnections(); }));
+  const endpoint = `http://127.0.0.1:${server.address().port}`;
+  const ref = await artifact(f.reports, "proposals/http.json", { ...f.report, summary: "修正摘要表述，专项证据与候选保持原样。" });
+  const request = { task_id: f.spec.task_id, expected_sha256: f.store.snapshot().tasks[0].report.sha256, report: ref, reason: "修正摘要表述。" };
+  const denied = await fetch(`${endpoint}/correct-report`, { method: "POST", headers: { "content-type": "application/json" }, body: JSON.stringify(request) });
+  assert.equal(denied.ok, false);
+  const connectionPath = join(f.root, "connection.json"), requestPath = join(f.root, "correction.json");
+  await writeJson(connectionPath, { protocol: PROTOCOL, endpoint, token: service.token }); await writeJson(requestPath, request);
+  const env = { ...process.env, AUDIT_TASK_PROTOCOL: PROTOCOL, AUDIT_TASK_BOARD_CONNECTION_PATH: connectionPath };
+  const taskCli = fileURLToPath(new URL("../scripts/task-board.mjs", import.meta.url));
+  assert.equal(JSON.parse((await execute(process.execPath, [taskCli, "correct-report", requestPath], { env })).stdout).corrected, true);
+  assert.equal(JSON.parse((await execute(process.execPath, [taskCli, "correct-report", requestPath], { env })).stdout).duplicate, true);
+  const expected = f.store.snapshot().tasks[0].report.sha256;
+  const requests = await Promise.all([1, 2].map(async i => ({ ...request, expected_sha256: expected,
+    report: await artifact(f.reports, `proposals/race-${i}.json`, { ...f.report, summary: `更正摘要 ${i}` }) })));
+  const results = await Promise.allSettled(requests.map(input => correctReport(f.store, input)));
+  assert.equal(results.filter(r => r.status === "fulfilled").length, 1);
+  assert.match(results.find(r => r.status === "rejected").reason.message, /版本已变化/);
+});
+
+for (const stage of ["review", "finalize"]) test(`更正抢先提交时，${stage} 不得提交旧复核或封存旧报告`, async t => {
+  const f = await fixture(t); await claim(f); await compare(f); await deliver(f);
+  const old = await bundle(f);
+  if (stage === "finalize") await acceptReview(f.store, old.result);
+  const request = { task_id: f.spec.task_id, expected_sha256: f.store.snapshot().tasks[0].report.sha256,
+    report: await artifact(f.reports, "proposals/concurrent.json", { ...f.report, summary: "更正后的报告摘要。" }), reason: "补充报告摘要。" };
+  const mutate = f.store.mutate.bind(f.store);
+  // Another request wins the store queue before the pending operation commits.
+  f.store.mutate = async operation => {
+    f.store.mutate = mutate;
+    await correctReport(f.store, request);
+    return mutate(operation);
+  };
+  await assert.rejects(stage === "review" ? acceptReview(f.store, old.result) : finalizeBoard(f.store),
+    stage === "review" ? /复核期间输入已改变/ : /后续复核未完成/);
+  assert.equal(f.store.snapshot().validation.status, "NOT_STARTED");
+  assert.equal(f.store.snapshot().final_report ?? null, null);
+  await assert.rejects(readFile(join(f.reports, `final/security-audit-report.${f.auditId}.md`)), { code: "ENOENT" });
+  const next = await bundle(f); await acceptReview(f.store, next.result); await finalizeBoard(f.store);
+  assert.equal((await verifyBoardCompletion({ audit: auditFor(f), reportsRoot: f.reports })).complete, true);
+});
+
+test("封存持有提交锁时，并发更正必须等待并拒绝，不能改写已封存版本", async t => {
+  const f = await fixture(t); await claim(f); await compare(f); await deliver(f);
+  await acceptReview(f.store, (await bundle(f)).result);
+  const request = { task_id: f.spec.task_id, expected_sha256: f.store.snapshot().tasks[0].report.sha256,
+    report: await artifact(f.reports, "proposals/late.json", { ...f.report, summary: "过晚提交的更正摘要。" }), reason: "补充摘要。" };
+  const [finalized, correction] = await Promise.allSettled([finalizeBoard(f.store), correctReport(f.store, request)]);
+  assert.equal(finalized.status, "fulfilled"); assert.equal(correction.status, "rejected");
+  assert.match(correction.reason.message, /已经封存/);
+  assert.equal((await verifyBoardCompletion({ audit: auditFor(f), reportsRoot: f.reports })).complete, true);
 });

@@ -247,6 +247,26 @@ export function validateReview(review, run, plan) {
   return review;
 }
 
+export function validateBacFindingBindings(findings, review, taskId = null) {
+  requireBac(Array.isArray(findings) && Array.isArray(review?.decisions), "报告或专项复查缺少候选列表。");
+  const accepted = review.decisions.filter(row => row.disposition === "ACCEPTED");
+  for (const decision of accepted) {
+    requireBac(nonempty(decision.finding?.finding_id), "专项接收项缺少 Finding ID。");
+    const matches = findings.filter(row => row?.finding_id === decision.finding.finding_id);
+    const finding = matches[0];
+    if (matches.length !== 1 || findingObjectDigest(finding) !== findingObjectDigest(decision.finding)) {
+      const fields = finding ? [...new Set([...Object.keys(finding), ...Object.keys(decision.finding)])]
+        .filter(key => objectDigest([finding[key]]) !== objectDigest([decision.finding[key]])) : [];
+      throw Object.assign(new Error(`越权专项：已接入候选未原样进入当前报告。任务 ${taskId ?? review.task_id ?? "未知"}；Finding ${decision.finding.finding_id}；${matches.length !== 1 ? "缺失或重复" : `差异字段：${fields.join("、")}`}。请原样使用专项 review 返回的 finding，不要追加展示字段。`),
+        { code: "bac-finding-binding-mismatch", task_id: taskId, finding_id: decision.finding.finding_id, fields });
+    }
+  }
+  const bound = new Set(accepted.map(row => row.finding.finding_id));
+  const linked = findings.filter(row => row?.bac_source);
+  requireBac(linked.length === bound.size && linked.every(row => bound.has(row.finding_id)), "报告含重复或无专项复查记录的 BAC 候选。");
+  return accepted;
+}
+
 export async function validateBacAttachment({ reportsRoot, attachment, item, auditId, findings = [], sessionId }) {
   requireBac(attachment?.contract_version === BAC_CONTRACT, "工作包缺少专项交付。");
   if (["GAP", "NOT_APPLICABLE"].includes(attachment.status)) {
@@ -273,14 +293,7 @@ export async function validateBacAttachment({ reportsRoot, attachment, item, aud
   requireBac(objectDigest(run.plan_binding) === item.bac_analysis?.plan_binding_digest
     && run.source_index_digest === item.bac_analysis?.source_index_digest, "专项引用了未分派的 Plan 或源码快照。");
   validateReview(review, run, run.plan_binding);
-  const accepted = review.decisions.filter(row => row.disposition === "ACCEPTED");
-  for (const decision of accepted) {
-    const finding = findings.find(row => row.finding_id === decision.finding.finding_id);
-    requireBac(finding && findingObjectDigest(finding) === findingObjectDigest(decision.finding), "已接入候选未原样进入当前报告。");
-  }
-  const bound = new Set(accepted.map(row => row.finding.finding_id));
-  const linked = findings.filter(row => row.bac_source);
-  requireBac(linked.length === bound.size && linked.every(row => bound.has(row.finding_id)), "报告含重复或无专项复查记录的 BAC 候选。");
+  const accepted = validateBacFindingBindings(findings, review, item.task_id);
   const gaps = [...run.result.limitations.map(row => JSON.stringify(row)), ...review.decisions.filter(row => row.disposition === "INCONCLUSIVE").map(row => row.reason)];
   if (!run.result.summary.analysis_complete) gaps.push("策略或路径覆盖尚未闭合。");
   if (run.result.out_of_model.length) gaps.push("存在模型外权限控制，须由原授权审计继续核对。");

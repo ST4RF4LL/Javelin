@@ -3,6 +3,10 @@ import { createBoard, readBoard } from "../../lib/task-board/store.mjs";
 import { TaskBoardService } from "../../lib/task-board/service.mjs";
 import { verifyBoardCompletion } from "../../lib/task-board/review.mjs";
 import { EventLogReader } from "./event-log-reader.mjs";
+import { executionBinding, isNativeAudit } from "../../lib/audit-runtime/contract.mjs";
+import { acquireStateLease } from "../../lib/audit-runtime/state-lease.mjs";
+import { fileFocusCoverage } from "./file-focus-coverage.mjs";
+import { controlledBytes } from "../../lib/task-board/contract.mjs";
 import { selection as runtimeSelection, authorize as authorizeRuntime } from "../../lib/runtime-testing/contract.mjs";
 import { RuntimeTestingService } from "../../lib/runtime-testing/service.mjs";
 import { knowledgeEnvironment } from "../../lib/knowledge-workflow.mjs";
@@ -16,8 +20,8 @@ import { execFile } from "node:child_process";
 import { promisify } from "node:util";
 import { appendFile, lstat, mkdir, open, readFile, readdir, realpath, rename, rm, stat, symlink, writeFile } from "node:fs/promises";
 import { basename, dirname, isAbsolute, join, parse, relative, resolve, sep } from "node:path";
-import { fileURLToPath } from "node:url";
-import { buildOpenCodeEnvironment, proxyEnvironmentFrom } from "./opencode-runtime-config.mjs";
+import { fileURLToPath, pathToFileURL } from "node:url";
+import { buildOpenCodeEnvironment, configureTaskReviewPermissions, proxyEnvironmentFrom } from "./opencode-runtime-config.mjs";
 import { DEFAULT_MODEL_SELECTION, normalizeOpenCodeModel } from "./opencode-model-settings.mjs";
 import { OpenCodeTmuxMonitor } from "./tmux-monitor.mjs";
 import { openCodeEventView } from "./opencode-event-view.mjs";
@@ -413,11 +417,12 @@ function proxyEnvironmentMetadata(environment) {
 }
 
 function publicAudit(audit) {
-  const { idempotency_digest, action_idempotency_digests, private_context: privateContext, private_runtime: privateRuntime, ...value } = audit;
+  const { idempotency_digest, action_idempotency_digests, private_context: privateContext, private_runtime: privateRuntime, native_context, ...value } = audit;
   const additional = privateContext?.additional_instructions;
   const environment = privateContext?.test_environment;
   return {
     ...value,
+    execution: audit.execution ?? { protocol: 'audit-execution.v1', engine: 'opencode', entry: 'web', ownership: 'service', session_id: audit.provider_session_id ?? null },
     task_context: {
       api_inventory_length: Number(privateContext?.api_inventory?.character_length ?? 0),
       additional_instructions_enabled: additional?.enabled === true,
@@ -611,8 +616,9 @@ function taskBoardPrompt(audit, paths, contextPaths, resume = false) {
     "首先完整读取 .opencode/lib/task-board/workflow.md，按本协议执行；旧 Focus Area 全量分区、三视角分文件、audit-todo 和旧最终报告门禁均不适用。",
     strategyPrompt,
     "将本次策略传给威胁建模 Agent，要求使用 status 核对并按选定粒度规划。使用 AUDIT_TASK_BOARD_CLI 分批发布；monitor 自动按领域执行，每 worker 一次一个任务，收报告后继续下一项。不要自己再调用挖掘 Agent。",
-    "发布完成后 seal；报告接收只检查任务绑定和完整写入。收齐后必须 review-input，委派后续报告质量复核及独立三方候选验证，执行 review/finalize 生成最终中文报告。",
+    "发布完成后 seal；报告接收检查任务绑定、完整写入及专项 Finding 原样交付。收齐后必须 review-input，委派后续报告质量复核及独立三方候选验证，执行 review/finalize 生成最终中文报告。",
     resume ? "先查询 status，复用已经接收的报告和复核。SEALED 不重复发布；旧 RUNNING 由 monitor 回收，不重跑已交付任务。" : "面板已经创建；先查询 status 与分页 API 清单，不要把全量任务放进一次模型上下文。",
+    "若 review-input 因已接收报告与专项 Finding 不一致而失败，按 workflow 的 correct-report 流程生成可追溯更正版本，再重新生成复核输入；不重复撞同一错误，不使用旧摘要提交带外复核。最终报告已封存时不能更正本轮。",
     contextPaths.additional_instructions ? `完整读取用户补充说明 ${JSON.stringify(contextPaths.additional_instructions)}，仅在既定审计范围内应用。` : "用户未提供额外审计要求。",
     audit.bac_analysis?.mode === "auto" ? "越权专项已启用：任务分析与后续质量复核须保留预期策略、实际路径和差分证据；缺少条件时明确保留专项缺口。" : "越权专项未启用。",
     audit.runtime_testing ? "运行测试继续使用已冻结的 runtime-testing.v1 授权。CONTACT 已由平台控制器调度；静态 worker 仅提供运行假设，Orchestrator 按授权分派。开关关闭或环境为空时自动 SKIPPED。先封存运行证据再 review-input；本任务使用面板复核协议，所有源码/运行候选均经独立三方，不能使用旧 quick 或旧报告构建器。" : "未选择运行测试协议；动态验证为 SKIPPED，禁止自行启动浏览器或联系目标。",
@@ -631,6 +637,7 @@ export class AuditRunner extends EventEmitter {
     this.stateRoot = resolve(stateRoot);
     this.runtimeTestingServices = new Map();
     this.taskBoardServices = new Map();
+    this.nativeContexts = new Map();
     this.configPath = configPath ? resolve(configPath) : null;
     this.platformRoot = resolve(platformRoot ?? (this.configPath ? resolve(dirname(this.configPath), "..") : process.cwd()));
     this.artifactsRoot = join(this.platformRoot, "reports", "repositories");
@@ -677,7 +684,7 @@ export class AuditRunner extends EventEmitter {
     this.contextRecoveryPending = new Set();
     this.contextRecoveryTimers = new Map();
     this.contextTerminationTimers = new Map();
-    this.ready = this.initialize();
+    this.ready = this.initialize().catch(error => { this.releaseStateLease?.(); throw error; });
   }
 
   enqueue(id, operation) {
@@ -690,6 +697,7 @@ export class AuditRunner extends EventEmitter {
 
   async initialize() {
     await mkdir(this.stateRoot, { recursive: true });
+    if (this.enabled) this.releaseStateLease = acquireStateLease(this.stateRoot);
     if (this.configPath) {
       try { this.configPath = await realpath(this.configPath); } catch {}
     }
@@ -707,7 +715,7 @@ export class AuditRunner extends EventEmitter {
     } catch (error) {
       if (error?.code !== "ENOENT") throw new Error(`审计项目注册表无效：${error.message}`);
     }
-    await this.persistRepositories();
+    if (this.enabled) await this.persistRepositories();
     const entries = await readdir(this.stateRoot, { withFileTypes: true });
     for (const entry of entries) {
       if (!entry.isDirectory()) continue;
@@ -716,7 +724,8 @@ export class AuditRunner extends EventEmitter {
         audit.todo_path ??= join(this.stateRoot, audit.id, "audit-todo.json");
         audit.todo_summary = await this.taskSummary(audit);
         this.audits.set(audit.id, audit);
-        if (audit.status === "queued") {
+        if (!this.enabled) continue;
+        if (audit.status === "queued" && !isNativeAudit(audit)) {
           audit.queue ??= { mode: "start", enqueued_at: audit.updated_at ?? audit.created_at ?? new Date().toISOString() };
           await this.persist(audit);
         } else if (ACTIVE.has(audit.status)) {
@@ -726,6 +735,10 @@ export class AuditRunner extends EventEmitter {
             terminalLive = await this.terminalMonitor.targetLive(audit.terminal.socket_name, audit.terminal.target).catch(() => false);
           }
           audit.status = "interrupted";
+          if (isNativeAudit(audit)) {
+            audit.execution.connected = false;
+            audit.execution.suspended ||= ['paused', 'pausing'].includes(previousStatus);
+          }
           audit.pid = null;
           audit.finished_at = new Date().toISOString();
           audit.interrupted_at = audit.finished_at;
@@ -744,8 +757,10 @@ export class AuditRunner extends EventEmitter {
         // Ignore incomplete state directories; they remain available for operator inspection.
       }
     }
-    await this.reconcileFinalReportArtifacts("startup-watchdog");
-    await this.reconcileTerminalCompletions("startup-watchdog");
+    if (this.enabled) {
+      await this.reconcileFinalReportArtifacts("startup-watchdog");
+      await this.reconcileTerminalCompletions("startup-watchdog");
+    }
     this.startCompletionWatchdog();
   }
 
@@ -785,6 +800,7 @@ export class AuditRunner extends EventEmitter {
   }
 
   async completeVerifiedAudit(audit, { reason, completionSource, data = {}, terminateRunner = false }) {
+    if (!this.enabled) return false;
     await this.stopTaskBoard(audit);
     await this.stopRuntimeTesting(audit);
     const child = terminateRunner ? this.processes.get(audit.id) : null;
@@ -802,7 +818,7 @@ export class AuditRunner extends EventEmitter {
       runner_termination_requested: Boolean(child),
       ...data,
     });
-    if (audit.terminal?.live) {
+    if (audit.terminal?.live && !isNativeAudit(audit)) {
       await this.terminalMonitor.abort(audit.terminal, audit.paths?.workspace_root).catch(() => {});
       if (!child) {
         await this.finalizeTerminal(audit).catch(() => {
@@ -817,9 +833,10 @@ export class AuditRunner extends EventEmitter {
   }
 
   async reconcileManagedCompletion(audit, reason = "watchdog", { allowRunning = false } = {}) {
+    if (!this.enabled) return false;
     if (!audit || audit.status === "completed" || this.completions.has(audit.id)) return false;
     if (audit.status === "failed" && hasNoTaskReports(audit)) return false;
-    const running = allowRunning && audit.status === "running" && this.processes.has(audit.id);
+    const running = allowRunning && audit.status === "running" && (this.processes.has(audit.id) || isNativeAudit(audit));
     if (this.processes.has(audit.id) && !running) return false;
     if (!RECOVERABLE.has(audit.status) && !running) return false;
     if (audit.stage_delivery_enforcement === "TODO_ENFORCED") {
@@ -877,7 +894,7 @@ export class AuditRunner extends EventEmitter {
       await this.reconcileFinalReportArtifacts(reason);
       let completed = 0;
       for (const audit of this.audits.values()) {
-        if (audit.status !== "running" || !this.processes.has(audit.id)) continue;
+        if (audit.status !== "running" || (!this.processes.has(audit.id) && !isNativeAudit(audit))) continue;
         await this.remindIncompleteFocusAreas(audit);
         if (await this.reconcileManagedCompletion(audit, reason, { allowRunning: true })) completed += 1;
       }
@@ -908,6 +925,7 @@ export class AuditRunner extends EventEmitter {
   }
 
   async reconcileLegacyCompletion(audit, reason = "watchdog") {
+    if (!this.enabled) return false;
     if (!audit || ["ENFORCED", "TODO_ENFORCED"].includes(audit.stage_delivery_enforcement) || audit.status === "completed") return false;
     if (this.processes.has(audit.id) || this.completions.has(audit.id) || !audit.paths?.reports_root) return false;
     let inferred;
@@ -926,6 +944,7 @@ export class AuditRunner extends EventEmitter {
   }
 
   async reconcileFinalReportArtifacts(reason = "watchdog") {
+    if (!this.enabled) return 0;
     let repaired = 0;
     for (const audit of this.audits.values()) {
       const reportsRoot = this.reportsRootForAudit(audit);
@@ -1217,6 +1236,21 @@ export class AuditRunner extends EventEmitter {
       next_offset: start + size < rows.length ? start + size : null };
   }
 
+  async fileCoveragePage(id, options = {}) {
+    const audit = this.audits.get(id);
+    if (!audit) throw Object.assign(new Error("未找到受管审计任务。"), { statusCode: 404 });
+    if (!audit.source_baseline?.path || !audit.paths?.reports_root) return {
+      protocol: "file-focus-coverage.v1", audit_id: id, available: false,
+      reason: "本次审计尚未生成文件清单，或历史任务未保存清单。任务启动并生成源码范围后可在这里查看。",
+    };
+    const baseline = relative(audit.paths.reports_root, audit.source_baseline.path).split(sep).join("/");
+    const [bytes, board] = await Promise.all([
+      controlledBytes(audit.paths.reports_root, baseline, 64 * 1024 * 1024),
+      audit.task_protocol === TASK_BOARD_PROTOCOL ? readBoard(audit.task_board_path) : null,
+    ]);
+    return fileFocusCoverage({ ...options, audit, manifest: JSON.parse(bytes.toString("utf8")), board });
+  }
+
   async stopTaskBoard(audit) {
     const service = this.taskBoardServices.get(audit.id);
     if (!service) return;
@@ -1262,7 +1296,7 @@ export class AuditRunner extends EventEmitter {
   async dispatchQueuedAudit(id) {
     await this.ready;
     const audit = this.audits.get(id);
-    if (!audit || audit.status !== "queued" || this.dispatching.has(id)) return null;
+    if (!this.enabled || !audit || isNativeAudit(audit) || audit.status !== "queued" || this.dispatching.has(id)) return null;
     if (audit.product_campaign_id && this.productCampaignGuard && !this.productCampaignGuard(audit.product_campaign_id)) return null;
     const repository = this.repositoryForAudit(audit);
     if (!repository) {
@@ -1613,6 +1647,7 @@ export class AuditRunner extends EventEmitter {
   }
 
   async createAudit(input, idempotencyKey) {
+    executionBinding({ engine: input.engine ?? 'opencode' });
     await this.ready;
     if (!this.enabled) throw Object.assign(new Error("运行驱动未启用；请用 --enable-runner 启动平台。"), { statusCode: 503, code: "runner-disabled" });
     if (!idempotencyKey || idempotencyKey.length > 200) throw Object.assign(new Error("缺少有效的 Idempotency-Key。"), { statusCode: 400, code: "idempotency-key-required" });
@@ -1709,10 +1744,12 @@ export class AuditRunner extends EventEmitter {
     return publicAudit(audit);
   }
 
-  async createAuditFromTarget(input, idempotencyKey) {
+  async createAuditFromTarget(input, idempotencyKey, { nativeSession = null } = {}) {
     await this.ready;
     if (!this.enabled) throw Object.assign(new Error("运行驱动未启用；请用 --enable-runner 启动平台。"), { statusCode: 503, code: "runner-disabled" });
     if (!idempotencyKey || idempotencyKey.length > 200) throw Object.assign(new Error("缺少有效的 Idempotency-Key。"), { statusCode: 400, code: "idempotency-key-required" });
+    const execution = executionBinding(nativeSession ? { engine: nativeSession.engine, entry: 'agent', sessionId: nativeSession.session_id, directory: nativeSession.directory } : { engine: input.engine ?? 'opencode' });
+    if (nativeSession) execution.registration_id = input.registration_id;
     const snapshot = structuredClone(input?.execution_spec);
     const snapshotDigest = input?.execution_spec_digest;
     if (!snapshot || !/^[a-f0-9]{64}$/i.test(snapshotDigest ?? "") || createHash("sha256").update(JSON.stringify(snapshot)).digest("hex") !== snapshotDigest || snapshot.target_id !== input.target_id || !Array.isArray(snapshot.source_scopes)) {
@@ -1763,13 +1800,14 @@ export class AuditRunner extends EventEmitter {
       repository_id: repository.id,
       repository_name: repository.name,
       source_kind: "directory",
+      execution,
       memory_mode: ["full", "facts_only", "off", "blind"].includes(input.memory_mode) ? input.memory_mode : "full",
       product_campaign_id: input.product_campaign_id ?? null,
       execution_spec: snapshot,
       execution_spec_digest: snapshotDigest,
       commit: null,
       branch: null,
-      status: "queued",
+      status: nativeSession ? "preparing" : "queued",
       version: 1,
       event_sequence: 0,
       created_at: created,
@@ -1791,7 +1829,7 @@ export class AuditRunner extends EventEmitter {
       last_recovered_at: null,
       interrupted_at: null,
       interruption_reason: null,
-      queue: { mode: "start", enqueued_at: created },
+      queue: nativeSession ? null : { mode: "start", enqueued_at: created },
       idempotency_digest: idempotencyDigest,
       todo_path: join(this.stateRoot, id, "audit-todo.json"),
     };
@@ -1811,12 +1849,24 @@ export class AuditRunner extends EventEmitter {
       additional_instructions_enabled: audit.private_context.additional_instructions.enabled,
       test_environment_enabled: audit.private_context.test_environment.enabled,
     });
-    if (this.queueScheduler && await this.queueScheduler.enqueueNewAudit()) return publicAudit(audit);
-    this.dispatchQueuedAudit(audit.id).catch(() => {});
+    if (nativeSession) {
+      audit.provider_session_id = execution.session_id;
+      try { await this.start(audit, repository, { nativeSession }); }
+      catch (error) {
+        await this.stopTaskBoard(audit); await this.stopRuntimeTesting(audit);
+        audit.status = 'interrupted'; audit.error = redact(error.message);
+        await this.record(audit, 'audit.interrupted', { reason: 'native-registration-failed' });
+        throw error;
+      }
+    } else {
+      if (this.queueScheduler && await this.queueScheduler.enqueueNewAudit()) return publicAudit(audit);
+      this.dispatchQueuedAudit(audit.id).catch(() => {});
+    }
     return publicAudit(audit);
   }
 
-  async start(audit, repository, { resume = false, existingSessionId = null } = {}) {
+  async start(audit, repository, { resume = false, existingSessionId = null, nativeSession = null } = {}) {
+    if (isNativeAudit(audit) && !nativeSession) throw new Error('外部会话只能重新登记，不能另起主任务。');
     audit.status = resume ? "recovering" : "preparing";
     audit.started_at ??= new Date().toISOString();
     audit.finished_at = null;
@@ -1877,9 +1927,10 @@ export class AuditRunner extends EventEmitter {
     };
     const sessionId = providerSessionId(existingSessionId ?? audit.provider_session_id ?? audit.terminal?.provider_session_id);
     const focusConfig = JSON.parse(environment.OPENCODE_CONFIG_CONTENT);
+    if (audit.task_protocol === TASK_BOARD_PROTOCOL) configureTaskReviewPermissions(focusConfig, { workspaceRoot: paths.workspace_root, reportsRoot: paths.reports_root });
     // Explicit loading also covers OPENCODE_DISABLE_PROJECT_CONFIG=true.
     const configuredPlugins = JSON.parse(await readFile(repository.config_path, "utf8")).plugin ?? [];
-    focusConfig.plugin = [...configuredPlugins, new URL("../../lib/focus-area-watchdog-plugin.mjs", import.meta.url).href];
+    focusConfig.plugin = [...configuredPlugins.map(plugin => typeof plugin === 'string' && plugin.startsWith('.') ? pathToFileURL(resolve(dirname(repository.config_path), plugin)).href : plugin), new URL("../../lib/focus-area-watchdog-plugin.mjs", import.meta.url).href];
     environment.OPENCODE_CONFIG_CONTENT = JSON.stringify(focusConfig);
     await this.redactionsForAudit(audit);
     const prompt = resume ? recoveryPrompt(audit, repository, paths, contextPaths) : auditPrompt(audit, repository, paths, contextPaths);
@@ -1929,6 +1980,19 @@ export class AuditRunner extends EventEmitter {
         reason: resume ? "recovery-launch" : "launch",
       });
     }
+    if (nativeSession) {
+      this.nativeContexts.set(audit.id, { environment, prompt, paths, model });
+      this.taskBoardServices.get(audit.id)?.resume();
+      await this.runtimeTestingServices.get(audit.id)?.contact();
+      audit.status = 'running'; audit.pid = null; audit.queue = null;
+      audit.execution_transport = 'registered-agent-session';
+      audit.execution.session_id = nativeSession.session_id;
+      audit.provider_session_id = nativeSession.session_id;
+      audit.terminal = { supported: false, live: false, status: 'external', message: '审计在登记的原生 Agent 会话中执行。' };
+      await this.record(audit, 'audit.session.registered', { execution: audit.execution });
+      return;
+    }
+    audit.execution ??= executionBinding();
     let command = this.command;
     let args = [
       "run", "--format", "json",
@@ -1962,6 +2026,7 @@ export class AuditRunner extends EventEmitter {
         });
         audit.execution_transport = audit.terminal.transport;
         audit.provider_session_id = providerSessionId(audit.terminal.provider_session_id);
+        audit.execution.session_id = audit.provider_session_id;
         if (!isAbsolute(audit.terminal.relay_spec_path ?? "")) throw new Error("终端输出中继配置缺失。");
         command = process.execPath;
         args = [TERMINAL_OUTPUT_RELAY, audit.terminal.relay_spec_path];
@@ -2131,6 +2196,7 @@ export class AuditRunner extends EventEmitter {
     const sessionId = providerSessionId(value?.sessionID ?? value?.session_id ?? value?.session?.id);
     if (!sessionId || audit.provider_session_id) return;
     audit.provider_session_id = sessionId;
+    if (audit.execution) audit.execution.session_id = sessionId;
     if (audit.terminal) {
       audit.terminal.provider_session_id = sessionId;
       audit.terminal.opencode_command = `opencode -s ${sessionId}`;
@@ -2144,8 +2210,10 @@ export class AuditRunner extends EventEmitter {
     const entry = { occurred_at: new Date().toISOString(), source, message };
     await appendFile(join(this.stateRoot, audit.id, "runner.log.jsonl"), `${JSON.stringify(entry)}\n`, { encoding: "utf8", mode: 0o600 });
     await this.record(audit, "agent.output", entry, { bumpVersion: false });
-    this.observeOperationTimeout(audit, source, message, entry);
-    this.observeContextWindowOverflow(audit, source, message, entry);
+    if (!isNativeAudit(audit)) {
+      this.observeOperationTimeout(audit, source, message, entry);
+      this.observeContextWindowOverflow(audit, source, message, entry);
+    }
   }
 
   markContextWindowOverflowObserved(audit, source, line) {
@@ -2615,12 +2683,17 @@ export class AuditRunner extends EventEmitter {
 
   async action(id, action, expectedVersion, idempotencyKey) {
     await this.ready;
+    if (!this.enabled) throw Object.assign(new Error('只读服务不能管理任务。'), { statusCode: 503, code: 'runner-disabled' });
     if (!idempotencyKey || idempotencyKey.length > 200) throw Object.assign(new Error("缺少有效的 Idempotency-Key。"), { statusCode: 400, code: "idempotency-key-required" });
     const audit = this.audits.get(id);
     if (!audit) throw Object.assign(new Error("审计不存在。"), { statusCode: 404, code: "audit-not-found" });
     const actionDigest = createHash("sha256").update(idempotencyKey).digest("hex");
     if ((audit.action_idempotency_digests ?? []).includes(actionDigest)) return publicAudit(audit);
     if (Number(expectedVersion) !== audit.version) throw Object.assign(new Error("审计版本已变化，请刷新后重试。"), { statusCode: 412, code: "version-mismatch" });
+    if (isNativeAudit(audit)) {
+      if (!this.nativeSessionController) throw Object.assign(new Error('当前会话尚未重新连接审计服务。'), { statusCode: 409, code: 'agent-session-offline' });
+      return this.nativeSessionController.action(audit, action, actionDigest, expectedVersion);
+    }
     if (action === "recover") {
       if (hasNoTaskReports(audit)) {
         throw Object.assign(new Error(NO_TASK_REPORTS_MESSAGE), { statusCode: 409, code: "task-board-no-reports" });
@@ -2749,6 +2822,7 @@ export class AuditRunner extends EventEmitter {
       enabled: this.enabled,
       command: this.command,
       active_processes: this.processes.size,
+      registered_agent_sessions: [...this.audits.values()].filter(audit => isNativeAudit(audit) && audit.execution.connected).length,
       active_tmux_monitors: [...this.audits.values()].filter(audit => audit.terminal?.live).length,
       registered_repositories: this.repositories.size,
       state_root: "server-managed",
@@ -2757,6 +2831,7 @@ export class AuditRunner extends EventEmitter {
 
   async shutdown() {
     await this.ready;
+    await this.nativeSessionController?.close();
     for (const id of this.taskBoardServices.keys()) await this.stopTaskBoard(this.audits.get(id));
     for (const id of this.runtimeTestingServices.keys()) await this.stopRuntimeTesting(this.audits.get(id));
     if (this.completionWatchdogTimer) clearInterval(this.completionWatchdogTimer);
@@ -2786,5 +2861,7 @@ export class AuditRunner extends EventEmitter {
     }
     while (this.completions.size) await Promise.allSettled([...this.completions.values()]);
     while (this.writeQueues.size) await Promise.allSettled([...this.writeQueues.values()]);
+    this.nativeContexts.clear();
+    this.releaseStateLease?.();
   }
 }

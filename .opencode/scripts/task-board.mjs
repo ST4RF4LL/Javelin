@@ -5,7 +5,7 @@ import { PROTOCOL, check, controlledBytes, hash } from "../lib/task-board/contra
 try {
   check(process.env.AUDIT_TASK_PROTOCOL === PROTOCOL, "当前任务未选择通用任务面板协议。");
   const [command = "status", argument, value] = process.argv.slice(2);
-  check(["status", "list", "publish", "seal", "skip", "review-input", "review", "finalize", "wait", "bind"].includes(command), "任务面板命令无效。");
+  check(["status", "list", "publish", "seal", "skip", "review-input", "review", "finalize", "wait", "bind", "correct-report"].includes(command), "任务面板命令无效。");
   if (command === "bind") {
     const bytes = await controlledBytes(process.env.AUDIT_REPORTS_ROOT, argument);
     process.stdout.write(`${JSON.stringify({ path: argument, sha256: hash(bytes) })}\n`);
@@ -14,7 +14,7 @@ try {
   const connection = JSON.parse(await readFile(process.env.AUDIT_TASK_BOARD_CONNECTION_PATH, "utf8"));
   check(connection.protocol === PROTOCOL && /^http:\/\/127\.0\.0\.1:\d+$/.test(connection.endpoint), "任务服务连接信息无效。");
   let body = {};
-  if (["publish", "skip", "review"].includes(command)) body = JSON.parse(await readFile(argument, "utf8"));
+  if (["publish", "skip", "review", "correct-report"].includes(command)) body = JSON.parse(await readFile(argument, "utf8"));
   if (command === "seal" && argument) body = { empty_reason: argument };
   if (command === "list") body = argument === "api" ? { source: "api", offset: Number(value) || 0 } : { status: argument || null, offset: Number(value) || 0 };
   const call = async route => {

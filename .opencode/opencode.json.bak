@@ -65,5 +65,8 @@
       "timeout": 30000,
       "enabled": false
     }
-  }
+  },
+  "plugin": [
+    "./lib/audit-runtime/opencode-session-plugin.mjs"
+  ]
 }

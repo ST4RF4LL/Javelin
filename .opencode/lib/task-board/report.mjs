@@ -81,6 +81,15 @@ export function renderStructuredBoardReport(model) {
   if (summary.mining_strategy !== "focus_area") lines.push(`- API 任务：${summary.tracks.api.reported}/${summary.tracks.api.total}。`, `- 用户提交 API ${summary.api_inventory.submitted} 项，相关任务全部交付 ${summary.api_inventory.reported} 项。`);
   lines.push("", `确认源码漏洞 ${model.findings.length} 条；排除及未确定候选 ${model.excluded_findings.length} 条；剩余缺口记录 ${model.residual_gaps.length} 条。`, "");
 
+  if (model.report_corrections?.length) {
+    section(3, "1.4 报告更正记录");
+    for (const row of model.report_corrections) {
+      field("更正任务", row.task_id); field("更正原因", row.reason); field("更正时间", row.corrected_at);
+      field("原始报告", row.previous.path); field("原始摘要", row.previous.sha256);
+      field("更正报告", row.replacement.path); field("更正摘要", row.replacement.sha256);
+    }
+    lines.push("原始交付已保留；本报告的质量复核与候选验证绑定更正后的输入。", "");
+  }
   section(2, "2. 已确认源码漏洞");
   model.findings.forEach((row, index) => {
     section(3, `2.${index + 1} ${row.title ?? row.finding_id}`);

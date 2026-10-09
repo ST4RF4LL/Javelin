@@ -1,0 +1,20 @@
+const escape = value => String(value).replace(/[&<>"']/g, c => ({ '&':'&amp;', '<':'&lt;', '>':'&gt;', '"':'&quot;', "'":'&#39;' }[c]));
+export function terminalPage({ title = '交互终端', auditId, generation = '', error = '' } = {}) {
+  const data = JSON.stringify({ auditId, generation }).replace(/</g, '\\u003c');
+  return `<!doctype html><html lang="zh-CN"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1"><title>${escape(title)} · ttyd</title>
+<style>html,body{margin:0;height:100%;background:#10151c;color:#e1e7ef;font:14px system-ui,sans-serif}body{display:flex;flex-direction:column}header{padding:14px 20px;background:#19222e;border-bottom:1px solid #354155;display:flex;gap:12px;align-items:center;flex-wrap:wrap}h1{font-size:16px;margin:0;flex:1}small{color:#a9b9cd}button,a{font:inherit;color:inherit;background:#263449;border:1px solid #475973;border-radius:7px;padding:8px 12px;text-decoration:none;cursor:pointer}button:hover{background:#354761}button:disabled{opacity:.45;cursor:default}main{flex:1;min-height:0;display:flex;flex-direction:column}#notice{padding:12px 20px;margin:0;color:#c4d2e4}#notice.error{color:#ffd29f;background:#32271e}iframe{border:0;flex:1;width:100%;background:#10151c}footer{padding:8px 20px;color:#9baec4;border-top:1px solid #354155;font-size:12px}</style></head><body>
+<header><h1>${escape(title)} <small>· ttyd</small></h1><span id="status" role="status">正在连接</span><button id="reconnect">重连</button><button id="mode">切换为只读</button><button id="fullscreen">全屏</button><a href="http://127.0.0.1:4181/audits${auditId ? `/${encodeURIComponent(auditId)}` : ''}" target="_blank" rel="noopener">返回工作台</a></header>
+<main><p id="notice" role="status">${escape(error || '正在读取此任务的终端连接…')}</p><iframe id="terminal" title="ttyd 交互终端" allow="clipboard-read; clipboard-write; fullscreen" hidden></iframe></main>
+<footer>关闭此页面仅断开终端客户端，审计任务继续运行。任务进度与交付状态请查看工作台。</footer>
+<script>const config=${data};
+const frame=document.querySelector('#terminal'),notice=document.querySelector('#notice'),status=document.querySelector('#status'),reconnect=document.querySelector('#reconnect'),mode=document.querySelector('#mode');
+let readOnly=false,busy=false,ended=false,timer;
+const endpoint=()=>'/api/audits/'+encodeURIComponent(config.auditId)+'/terminal?'+new URLSearchParams({generation:config.generation,readonly:readOnly?'1':'0'});
+function fail(message){status.textContent='连接不可用';notice.textContent=message;notice.className='error';notice.hidden=false;frame.hidden=true;frame.removeAttribute('src');ended=true;clearTimeout(timer);}
+async function request(method){const response=await fetch(endpoint(),{method,cache:'no-store',signal:AbortSignal.timeout(15000)});const result=await response.json();if(!response.ok)throw new Error(result.error||'终端连接失败');return result;}
+async function poll(){if(ended)return;try{await request('GET');}catch(error){fail(error.message);return;}timer=setTimeout(poll,2000);}
+async function connect(){if(busy||!config.auditId)return;busy=true;reconnect.disabled=true;mode.disabled=true;clearTimeout(timer);status.textContent='正在连接';notice.textContent='正在启动终端客户端…';notice.className='';notice.hidden=false;try{const result=await request('POST');readOnly=result.readOnly;mode.hidden=result.kind==='tmux';mode.textContent=readOnly?'切换为可操作':'切换为只读';config.generation=result.generation;frame.hidden=false;frame.src=result.url;status.textContent=readOnly?'只读终端':'交互终端';notice.textContent=readOnly?'只读连接；键盘输入不会发送。':'此终端连接当前审计会话，输入的指令会作用于该任务。';ended=false;timer=setTimeout(poll,2000);}catch(error){fail(error.message);}finally{busy=false;reconnect.disabled=false;mode.disabled=false;}}
+reconnect.onclick=connect;mode.onclick=()=>{readOnly=!readOnly;connect();};document.querySelector('#fullscreen').onclick=()=>document.fullscreenElement?document.exitFullscreen():document.documentElement.requestFullscreen();
+window.addEventListener('pagehide',()=>{ended=true;clearTimeout(timer);});if(config.auditId)connect();else{status.textContent='请从任务打开';reconnect.disabled=true;mode.hidden=true;}
+</script></body></html>`;
+}

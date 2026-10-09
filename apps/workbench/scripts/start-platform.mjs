@@ -2,12 +2,14 @@ import { fileURLToPath } from 'node:url';
 import { resolve } from 'node:path';
 import { existsSync } from 'node:fs';
 import { runtimeBuild } from '../../../.opencode/web/dynamic-validation-observatory/runtime-build.mjs';
+import { ensureWorkbenchTerminalMonitor } from './start-terminal-monitor.mjs';
+import { ensureAuditService } from '../../../.opencode/lib/audit-runtime/service-process.mjs';
 
 const root = fileURLToPath(new URL('../../../', import.meta.url));
 const apiEntry = new URL('../build/api/server/main.js', import.meta.url);
 const origin = process.env.WORKBENCH_UPSTREAM || 'http://127.0.0.1:4173';
 const port = Number(process.env.WORKBENCH_PORT || 4181);
-let app, ownedBackend, stopping = false;
+let app, ownedTerminal, stopping = false;
 
 export async function probeBackend(upstream, transport) {
   if (!transport) {
@@ -33,13 +35,8 @@ export async function probeBackend(upstream, transport) {
 }
 async function close() {
   if (stopping) return; stopping = true;
+  await ownedTerminal?.close();
   await app?.close();
-  if (ownedBackend) {
-    process.stdout.write('正在停止本次启动的原平台与所属执行进程…\n');
-    await ownedBackend.shutdownRunners();
-    ownedBackend.closeAllConnections();
-    if (ownedBackend.listening) await new Promise(resolve => ownedBackend.close(resolve));
-  }
 }
 async function main() {
   if (!Number.isInteger(port) || port < 1 || port > 65535 || port === 4173) throw new Error('WORKBENCH_PORT 需要是有效端口，且不能占用原平台的 4173。');
@@ -54,13 +51,12 @@ async function main() {
   // 先绑定新版端口，避免端口冲突时启动额外 Runner。
   await app.listen(port, '127.0.0.1');
   if (!existing) {
-    const { createAuditWorkbenchServer, parseArgs } = await import(new URL('../../../.opencode/web/dynamic-validation-observatory/server.mjs', import.meta.url));
-    ownedBackend = createAuditWorkbenchServer(parseArgs(['--host', '127.0.0.1', '--port', '4173', '--enable-runner', '--modern-ui-origin', `http://127.0.0.1:${port}`]));
-    await new Promise((resolve, reject) => { ownedBackend.once('error', reject); ownedBackend.listen(4173, '127.0.0.1', resolve); });
-    await ownedBackend.productCatalogReady;
+    await ensureAuditService({ origin: upstream.origin, modernOrigin: `http://127.0.0.1:${port}` });
     await probeBackend(upstream.origin);
   }
-  process.stdout.write(`\n新平台已启动：http://127.0.0.1:${port}\n原界面保留入口：http://127.0.0.1:${port}/legacy/\n原后台：${upstream.origin}（${existing ? '复用已有 Runner' : '本次启动，已开启 Runner'}）\n请求诊断：${process.env.WORKBENCH_DIAGNOSTICS_DIR || resolve(root, 'reports/platform/workbench-api/requests.jsonl')}\n请保持终端运行，在“创建审计”中提交你的任务。Ctrl+C 将关闭本次启动的服务。\n`);
+  try { ownedTerminal = await ensureWorkbenchTerminalMonitor(); }
+  catch (error) { process.stderr.write(`交互终端服务未就绪：${error.message}\n`); }
+  process.stdout.write(`\n新平台已启动：http://127.0.0.1:${port}\n原界面保留入口：http://127.0.0.1:${port}/legacy/\n独立审计后台：${upstream.origin}（${existing ? '复用已有服务' : '已在后台启动'}）\n请求诊断：${process.env.WORKBENCH_DIAGNOSTICS_DIR || resolve(root, 'reports/platform/workbench-api/requests.jsonl')}\nCtrl+C 只关闭 Web 与本次终端连接，审计任务继续运行。后台管理：node .opencode/scripts/audit-service.mjs status|stop\n`);
   process.once('SIGINT', () => { void close().catch(fail); });
   process.once('SIGTERM', () => { void close().catch(fail); });
 }

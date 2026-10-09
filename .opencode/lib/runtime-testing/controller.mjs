@@ -168,9 +168,23 @@ export class RuntimeTestingController {
       result = active.submission;
     } catch (error) {
       error = active.preparationError ?? error;
+      const terminationReason = error.code ?? "RUNTIME_EXECUTION_FAILED";
+      if (["runtime-no-submission", "RUNTIME_WORKER_FAILED"].includes(error.code)) {
+        const rejected = active.row.last_submission_error?.code ?? active.browserError;
+        if (rejected) error = fail(rejected);
+      }
       if (this.active === active) active.stopWorker?.();
-      result = { execution_status: error.code === "runtime-packet-timed-out" ? "TIMED_OUT" : "FAILED", outcome: "INCONCLUSIVE",
-        cleanup_status: this.state.browser_allocated ? "UNKNOWN" : "NOT_REQUIRED", summary: "运行测试未完成，已停止环境复用。",
+      const leaseBlocked = ["ENVIRONMENT_ALREADY_LEASED", "ENVIRONMENT_LEASE_REQUIRES_REVIEW"].includes(error.code);
+      const diagnostic = {
+        "contact-identities-not-observed": "平台未能从浏览器结果确认授权身份的访问记录，环境接触结果提交被拒绝。",
+        "xss-identities-not-observed": "浏览器证据未覆盖要求的独立身份，验证结果提交被拒绝。",
+        BROWSER_STRUCTURED_OUTPUT_MISSING: "浏览器未返回结构化页面记录，平台无法确认环境接触结果。",
+      }[error.code];
+      result = { execution_status: leaseBlocked ? "BLOCKED" : error.code === "runtime-packet-timed-out" ? "TIMED_OUT" : "FAILED", outcome: "INCONCLUSIVE",
+        ...(leaseBlocked ? { environment_lease: error.environment_lease ?? null } : {}),
+        termination_reason: terminationReason,
+        cleanup_status: this.state.browser_allocated ? "UNKNOWN" : "NOT_REQUIRED", summary: leaseBlocked ? "申请测试环境被阻止，本次尚未访问目标；请在运行环境页查看占用来源。"
+          : diagnostic ?? (active.row.last_submission_error ? `运行结果提交未通过平台校验（${error.code}），工作包未完成。` : "运行测试未完成，已停止环境复用。"),
         observations: [], evidence_ids: [...active.actionIds], changes: [], gaps: [`运行测试未完成：${String(error.code ?? "RUNTIME_EXECUTION_FAILED")}。`], reason: error.code ?? "RUNTIME_EXECUTION_FAILED" };
     } finally { this.clearTimer(timer); }
     // Persistence failures must not be rewritten as a second execution result.
@@ -278,6 +292,7 @@ export class RuntimeTestingController {
       }
       this.requireActive(token);
       const binding = await this.evidence(id, { tool: name, identity_id: args.identity_id, arguments: args, result }, active);
+      if (result?.isError && result.error?.code === "BROWSER_STRUCTURED_OUTPUT_MISSING") active.browserError = result.error.code;
       if (observedAuthorizedNavigation(name, args, result, this.authorization)) active.identitiesUsed.add(args.identity_id);
       active.actionIds.add(binding.id); await this.save();
       // Keep the legacy text while exposing MCP page/request IDs and typed data
@@ -290,13 +305,19 @@ export class RuntimeTestingController {
     const active = this.requireActive(token); await active.operation;
     this.requireActive(token);
     check(!active.environmentPreparing, "runtime-environment-preparation-in-progress");
-    validateSubmission(value, active.packet, active.actionIds);
-    if (active.packet.phase === "CONTACT" && value.execution_status === "COMPLETED") {
-      check(this.authorization.environment_ready !== false, "runtime-environment-not-prepared");
-      check(active.packet.identity_ids.every(id => active.identitiesUsed.has(id)), "contact-identities-not-observed");
-    }
-    if (value.outcome === "SUPPORTED" && active.packet.vulnerability_type_id === "JW-INJECT-06") {
-      check(active.packet.identity_ids.every(id => active.identitiesUsed.has(id)), "xss-identities-not-observed");
+    try {
+      validateSubmission(value, active.packet, active.actionIds);
+      if (active.packet.phase === "CONTACT" && value.execution_status === "COMPLETED") {
+        check(this.authorization.environment_ready !== false, "runtime-environment-not-prepared");
+        check(active.packet.identity_ids.every(id => active.identitiesUsed.has(id)), "contact-identities-not-observed");
+      }
+      if (value.outcome === "SUPPORTED" && active.packet.vulnerability_type_id === "JW-INJECT-06") {
+        check(active.packet.identity_ids.every(id => active.identitiesUsed.has(id)), "xss-identities-not-observed");
+      }
+    } catch (error) {
+      // Persist only the contract's fixed code, never rejected private input.
+      active.row.last_submission_error = { code: error.code ?? "runtime-submission-invalid", recorded_at: new Date().toISOString() };
+      await this.save(); throw error;
     }
     check(!active.submitting, "runtime-submission-duplicate"); active.submitting = true;
     active.submission = structuredClone(value);
@@ -324,10 +345,14 @@ export class RuntimeTestingController {
       if (active.packet.phase === "CLEANUP") this.state.cleanup_elapsed_ms += elapsed;
       else this.state.elapsed_ms += elapsed;
       Object.assign(active.row, { execution_status: safe.execution_status, outcome: safe.outcome, cleanup_status: safe.cleanup_status,
+        ...(safe.reason ? { reason: safe.reason } : {}),
         evidence_ids: [...active.actionIds], summary: safe.summary, result_path: path, result_digest: output.artifact_digest, elapsed_ms: elapsed });
       this.state.stages[active.packet.phase] = safe.execution_status; this.state.active_packet = null;
       this.state.cleanup_status = safe.cleanup_status;
-      if (["FAILED", "UNKNOWN"].includes(safe.cleanup_status) || ["FAILED", "TIMED_OUT", "CANCELLED"].includes(safe.execution_status)) {
+      if (safe.environment_lease) this.state.environment_lease = safe.environment_lease;
+      if (safe.execution_status === "BLOCKED" && !this.state.browser_allocated) {
+        this.state.status = "BLOCKED"; this.state.reason = safe.reason ?? "ENVIRONMENT_CONTACT_INCOMPLETE";
+      } else if (["FAILED", "UNKNOWN"].includes(safe.cleanup_status) || ["FAILED", "TIMED_OUT", "CANCELLED"].includes(safe.execution_status)) {
         this.state.status = "QUARANTINED"; this.state.reason = safe.reason ?? "ENVIRONMENT_STATE_UNKNOWN";
       } else if (active.packet.phase === "CONTACT" && safe.execution_status !== "COMPLETED") {
         this.state.status = "BLOCKED"; this.state.reason = "ENVIRONMENT_CONTACT_INCOMPLETE";

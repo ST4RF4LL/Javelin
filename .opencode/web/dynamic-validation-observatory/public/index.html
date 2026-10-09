@@ -119,6 +119,7 @@
             <div class="page-heading"><div><p class="eyebrow">PLATFORM READINESS</p><h2>运行环境</h2><p id="environment-caption">正在检查操作系统、OpenCode、静态分析器和浏览器能力…</p></div></div>
             <div id="runtime-grid" class="metric-grid"></div>
             <div id="capability-grid" class="capability-grid"></div>
+            <article class="panel environment-panel"><div class="section-title"><div><p class="eyebrow">TEST ENVIRONMENT USAGE</p><h2>测试环境占用</h2></div><button class="text-button" id="refresh-environment-leases">刷新占用</button></div><p class="context-note">查看是哪次任务占用了环境。原任务已结束且无需清理的占用会自动回收；清理结果未知时，可核对后解除。</p><div id="environment-leases"></div></article>
             <article class="panel environment-panel"><div class="section-title"><div><p class="eyebrow">COMPONENT HEALTH</p><h2>组件健康</h2></div><button class="text-button" id="refresh-environment">重新探测</button></div><div id="environment-table" class="data-table"></div></article>
             <article class="panel boundary-panel"><div class="section-title"><div><p class="eyebrow">BOUNDARIES</p><h2>平台安全边界</h2></div></div><ul class="boundary-list"><li>服务仅监听 localhost / 127.0.0.1 / [::1]。</li><li>审计项目由操作员指定工作台所在机器上的绝对目录，并在服务端规范化、校验和持久登记。</li><li>目标源码目录与工作台 OpenCode Agent/MCP 配置相互隔离。</li><li>OpenCode 通过参数数组与固定 orchestrator prompt 启动，<code>shell=false</code>。</li><li>默认拒绝脏工作树和未 checkout 的目标 ref。</li><li>新建任务按所选参与方式、动作和总预算执行环境接触、中期测试与按需确认；未提供有效环境时自动跳过。贯穿式测试由用户确认环境并授权目标，不根据公网或内网分类拒绝。人工补充验证需逐次授权并保存独立结果，沿用原有 localhost 契约。</li></ul></article>
           </section>
@@ -178,7 +179,7 @@
           <label for="api-inventory">API 审查清单<textarea id="api-inventory" name="api_inventory" rows="6" maxlength="120000" spellcheck="false" placeholder="每行一个接口，可附业务说明；也支持 JSON 数组。&#10;GET /orders/{id} 查询订单详情&#10;POST /orders/{id}/refund 申请退款" disabled></textarea></label>
           <p class="context-note">每个清单条目都会先定位相关代码，再派发审查。切换策略时保留当前输入，提交时仅使用所选策略。</p>
         </div>
-        <div class="form-row"><label>audit_id<input name="audit_id" pattern="[A-Za-z0-9][A-Za-z0-9._-]{2,127}" placeholder="audit-2026-001" required></label><label>版本备注<input name="ref" value="当前目录快照" maxlength="200"></label></div>
+        <div class="form-row"><label>audit_id<input name="audit_id" pattern="[A-Za-z0-9][A-Za-z0-9._\x2d]{2,127}" placeholder="audit-2026-001" required></label><label>版本备注<input name="ref" value="当前目录快照" maxlength="200"></label></div>
         <p class="context-note">目录不要求 Git。任务实际启动前会生成范围清单与逐文件摘要；多范围对象会保存，但在跨范围关联流水线启用前不能启动。</p>
         <div class="audit-contexts">
           <section class="audit-context-option" data-context-option>

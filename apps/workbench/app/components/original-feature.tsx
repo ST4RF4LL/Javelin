@@ -48,7 +48,7 @@ export function OriginalFeature({ view, auditId, hidden = false }: { view: Origi
         if (key === 'querySelector' || key === 'querySelectorAll') return body[key].bind(body);
         const value = Reflect.get(target, key, target); return typeof value === 'function' ? value.bind(target) : value;
       } });
-      mounted = module.mountWorkbench({ document: scopedDocument, initialView: location.current.view, onNavigate: (next: OriginalView) => { if (next !== location.current.view) navigate(routes[next]); }, onMutation: () => { void queryClient.invalidateQueries(); } });
+      mounted = module.mountWorkbench({ document: scopedDocument, initialView: location.current.view, onNavigate: (next: OriginalView) => { if (next !== location.current.view) navigate(routes[next]); }, onFileCoverage: (id: string) => navigate(`/audits/coverage?audit_id=${encodeURIComponent(id)}`), onMutation: () => { void queryClient.invalidateQueries(); } });
       shownView.current = location.current.view;
       // 原页面按资源到达逐步显示，模型或目录读取不能阻塞整个页面。
       if (!disposed) { setController(mounted!); setLoading(false); }
@@ -70,5 +70,8 @@ export function OriginalFeature({ view, auditId, hidden = false }: { view: Origi
     window.addEventListener('workbench:refresh', refresh);
     return () => window.removeEventListener('workbench:refresh', refresh);
   }, [controller]);
+  useEffect(() => {
+    if (hidden) host.current?.shadowRoot?.querySelectorAll<HTMLDialogElement>('dialog[open]').forEach(dialog => dialog.close());
+  }, [hidden]);
   return <div className="page-enter original-feature" hidden={hidden}>{loading && <p role="status">正在加载完整工作台功能…</p>}{error && <div className="task-alert" role="alert"><p>{error}</p><Button variant="outline" onClick={() => setAttempt(value => value + 1)}>重新加载</Button></div>}<div ref={host} hidden={loading} /></div>;
 }

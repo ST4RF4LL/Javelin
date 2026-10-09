@@ -2,11 +2,12 @@ import { createHash } from "node:crypto";
 import { execFile } from "node:child_process";
 import { mkdir, readFile, rm, writeFile } from "node:fs/promises";
 import { arch as osArch, platform as osPlatform } from "node:os";
-import { basename, join } from "node:path";
+import { basename, dirname, join, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
 import { promisify } from "node:util";
 import { resolveExecutablePath, resolvedOpenCodeExecutables } from "./executable-resolution.mjs";
 import { isProxyEnvironmentVariable } from "./opencode-runtime-config.mjs";
+import { SHARED_CONNECTION_FILE } from './opencode-shared-run.mjs';
 
 const execFileAsync = promisify(execFile);
 const LAUNCHER = fileURLToPath(new URL("./tmux-launcher.mjs", import.meta.url));
@@ -57,6 +58,7 @@ export class OpenCodeTmuxMonitor {
     if (this.probeResult && !force) return this.probeResult;
     let openCodeError = null;
     let openCodeCommand = null;
+    let sharedServer = false;
     const openCodeCandidates = await resolvedOpenCodeExecutables({ command: this.command, environment: this.environment, platform: this.platform, architecture: this.architecture, resolveCommand: this.resolveCommand });
     for (const resolved of openCodeCandidates) {
       try {
@@ -65,6 +67,7 @@ export class OpenCodeTmuxMonitor {
         const missing = ["--format", "--session", "--agent", "--dir", "--title"].filter(flag => !help.includes(flag));
         if (missing.length) throw new Error(`OpenCode run 缺少 ${missing.join("、")}`);
         openCodeCommand = resolved;
+        sharedServer = help.includes('--attach');
         break;
       } catch (error) {
         openCodeError = error;
@@ -112,6 +115,7 @@ export class OpenCodeTmuxMonitor {
     }
     this.probeResult = {
       available: true,
+      shared_server: sharedServer,
       backend: multiplexer.backend,
       opencode_command: openCodeCommand,
       multiplexer_command: multiplexer.command,
@@ -207,6 +211,9 @@ export class OpenCodeTmuxMonitor {
     await Promise.all([rm(outputPath, { force: true }), rm(exitPath, { force: true })]);
     await writeFile(runSpecPath, `${JSON.stringify({
       command: this.command,
+      shared_server: probe.shared_server === true,
+      state_directory: auditStateRoot,
+      audit_id: audit.id,
       args,
       cwd: executionDirectory,
       environment: runtimeOverrides(environment),
@@ -220,6 +227,7 @@ export class OpenCodeTmuxMonitor {
       const terminal = {
         backend: this.multiplexerBackend ?? "tmux",
         transport: "opencode-run+terminal-multiplexer",
+        shared_server: probe.shared_server === true,
         supported: true,
         status: "ready",
         live: true,
@@ -237,6 +245,10 @@ export class OpenCodeTmuxMonitor {
         message: providerSessionId ? `OpenCode run 已续接原会话并在隔离 ${this.multiplexerBackend ?? "tmux"} 中运行。` : `OpenCode run 已在隔离 ${this.multiplexerBackend ?? "tmux"} 会话中运行。`,
       };
       const initialOutput = await this.initialRunOutput(terminal);
+      if (terminal.shared_server) {
+        const connection = await readFile(join(auditStateRoot, SHARED_CONNECTION_FILE), 'utf8').then(JSON.parse).catch(() => null);
+        if (connection?.audit_id === audit.id) terminal.server_generation = connection.generation;
+      }
       const discoveredSessionId = providerSessionId ?? sessionFromOutput(initialOutput);
       if (discoveredSessionId) {
         terminal.provider_session_id = discoveredSessionId;
@@ -276,6 +288,39 @@ export class OpenCodeTmuxMonitor {
     const result = await this.tmux(terminal.socket_name, ["list-panes", "-t", terminal.target, "-F", "#{pane_pid}"]);
     const pid = Number(String(result.stdout ?? "").trim().split(/\s+/)[0]);
     if (!Number.isSafeInteger(pid) || pid <= 1) throw new Error("无法解析 OpenCode run pane PID。");
+    if (terminal.shared_server) {
+      const directory = dirname(terminal.output_path ?? '');
+      if (dirname(resolve(directory)) !== resolve(this.stateRoot) || this.socketName(basename(directory)) !== terminal.socket_name) throw new Error('共享服务目录与当前任务不匹配。');
+      const binding = JSON.parse(await readFile(join(directory, SHARED_CONNECTION_FILE), 'utf8'));
+      if (binding.launcher_pid !== pid) throw new Error('共享服务的所属进程已变化。');
+      // Some tmux/macOS combinations immediately continue a stopped foreground
+      // process group. Signal this owned tree explicitly, children first on STOP.
+      const snapshot = await this.execute('ps', ['-axo', 'pid=,ppid='], { encoding: 'utf8', timeout: 5000, maxBuffer: 4 * 1024 * 1024 });
+      const pairs = String(snapshot.stdout).split('\n').flatMap(line => {
+        const match = line.match(/^\s*(\d+)\s+(\d+)\s*$/);
+        return match ? [[Number(match[1]), Number(match[2])]] : [];
+      });
+      const owned = [pid], seen = new Set(owned);
+      for (let i = 0; i < owned.length; i++) for (const [child, parent] of pairs) {
+        if (parent === owned[i] && child > 1 && !seen.has(child)) { seen.add(child); owned.push(child); }
+      }
+      if (!seen.has(binding.server_pid)) throw new Error('未找到当前任务的 OpenCode 服务进程。');
+      // Leave the tmux foreground supervisor alive. Stopping it makes tmux
+      // continue the foreground group on macOS, including its stopped children.
+      const workers = owned.filter(target => target !== pid);
+      const targets = signal === 'SIGSTOP' ? [...workers].reverse() : workers;
+      const changed = [];
+      try {
+        for (const target of targets) {
+          try { process.kill(target, signal); changed.push(target); }
+          catch (error) { if (error.code !== 'ESRCH') throw error; }
+        }
+      } catch (error) {
+        if (signal === 'SIGSTOP') for (const target of changed) { try { process.kill(target, 'SIGCONT'); } catch {} }
+        throw error;
+      }
+      return;
+    }
     try {
       process.kill(-pid, signal);
     } catch (error) {

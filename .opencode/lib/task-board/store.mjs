@@ -3,6 +3,7 @@ import { mkdir, readFile, rm, writeFile } from "node:fs/promises";
 import { dirname, join, relative } from "node:path";
 import { PROTOCOL, TERMINAL, atomicJson, check, controlledBytes, digest, hash, normalizeApiList, normalizeTask, selectMiningStrategy, summarize, timestamp } from "./contract.mjs";
 import { TASK_PLAN, bacSelection } from "../bac/contract.mjs";
+import { checkReportIntegrity } from "./report-integrity.mjs";
 
 // Only snapshots prepared by this store can enter the shared commit path.
 // Keep validated bytes private so callers cannot replace them after validation.
@@ -130,12 +131,13 @@ export class TaskBoardStore {
     check(receipt?.protocol === PROTOCOL && receipt.audit_id === this.auditId && receipt.task_id === taskId && receipt.attempt_id === attemptId, "报告回执与当前任务或执行尝试不匹配。");
     check(["REPORTED", "GAP"].includes(receipt.outcome), "回执结果必须为 REPORTED 或 GAP。");
     check(receipt.outcome !== "GAP" || typeof receipt.reason === "string" && receipt.reason.trim(), "缺口交付必须说明原因。");
-    // Receipt checks deliberately do not parse or judge substantive report content.
+    // Bind immutable bytes and check deterministic BAC identity before acceptance.
     const bytes = receipt.outcome === "REPORTED" ? await controlledBytes(inputRoot, receipt.report_path) : null;
     const reportDigest = bytes ? hash(bytes) : null;
     // Recovery needs whole JSON, while normal receipt acceptance still leaves
     // malformed/report-quality gaps to the independent review as before.
     if (requireCompleteJson && bytes && receipt.report_path.endsWith(".json")) JSON.parse(bytes.toString("utf8"));
+    if (bytes) await checkReportIntegrity(bytes, { reportsRoot: this.reportsRoot, taskId });
     const snapshot = Object.freeze({});
     preparedReceipts.set(snapshot, { store: this, taskId, attemptId, receipt: structuredClone(receipt), bytes, reportDigest });
     return snapshot;
@@ -156,6 +158,7 @@ export class TaskBoardStore {
         return { received: true, duplicate: true };
       }
       check(task.status === "RUNNING", "任务当前未运行。");
+      if (bytes) await checkReportIntegrity(bytes, { reportsRoot: this.reportsRoot, taskId });
       if (bytes) {
         const extension = receipt.report_path.endsWith(".md") ? "md" : "json";
         const file = join(this.reportsRoot, "task-board", this.auditId, "reports", `${hash(taskId).slice(0, 24)}.${attemptId}.${extension}`);

@@ -311,14 +311,14 @@ test("服务把完整 prompt 传入 worker，登记后才取得环境租约并�
   const privateRoot = join(root, "state", "audit", "runtime-testing");
   const service = new RuntimeTestingService({ root: join(root, "reports"), privateRoot, authorization: initial.public, privateContext: initial.private,
     browserFactory: async () => fakeBrowser(counts), worker: async ({ controller, active, privateContext }) => {
-      workerCalls++; assert.equal(privateContext.prompt, prompt); assert.equal(service.keys.length, 0);
+      workerCalls++; assert.equal(privateContext.prompt, prompt); assert.equal(service.leases.length, 0);
       await controller.configureEnvironment(active.token, interpretedEnvironment());
-      assert.equal(service.keys.length, 1); assert.equal(counts.calls, 0);
+      assert.equal(service.leases.length, 1); assert.equal(counts.calls, 0);
       const result = await controller.call(active.token, "navigate_page", { identity_id: "account-1", url: "http://192.0.2.10:31943" });
       await controller.submit(active.token, submission({ evidence_ids: [result.evidence_id] }));
     } });
   try {
-    await service.start(); assert.equal(workerCalls, 0); assert.equal(service.keys.length, 0);
+    await service.start(); assert.equal(workerCalls, 0); assert.equal(service.leases.length, 0);
     await service.contact(); await service.draining;
     assert.equal(workerCalls, 1); assert.equal(service.controller.state.status, "READY");
     const privateEnvironment = JSON.parse(await readFile(join(privateRoot, "environment.json"), "utf8"));
@@ -398,6 +398,79 @@ test("XSS 支持需要两个身份的实际工具记录，脱敏保留固定 pro
     await controller.submit(active.token, result); await controller.finish(active, active.submission); await controller.close();
     const evidence = await verifyRuntimeEvidenceFiles(join(root, "evidence-set.json"));
     assert.equal(evidence.packets[1].result.proof.method, "REAL_APPLICATION_INPUT");
+  } finally { await controller.cancel(); }
+});
+
+test("CONTACT 提交被拒绝后进程正常退出，保留具体拒绝原因和原始终止原因", async t => {
+  const root = await temporary(t); const auth = grant();
+  const controller = new RuntimeTestingController({ root, authorization: auth.public, browserFactory: async () => ({
+    tools: async () => [], close: async () => {}, call: async () => ({ content: [{ type: "text", text: "## Pages\n1: about:blank\n2: Langflow (http://127.0.0.1:8080/flows) [selected]" }] }),
+  }), worker: async ({ controller, active }) => {
+    const evidence = await controller.call(active.token, "new_page", { identity_id: "anonymous", url: "http://127.0.0.1:8080" });
+    await assert.rejects(controller.submit(active.token, submission({ evidence_ids: [evidence.evidence_id] })), /contact-identities-not-observed/);
+  } });
+  try {
+    const state = await controller.run(packet(auth.public));
+    assert.equal(state.status, "QUARANTINED"); assert.equal(state.reason, "contact-identities-not-observed");
+    assert.equal(state.baseline_packet, null); assert.equal(state.cleanup_status, "UNKNOWN");
+    assert.equal(state.packets[0].last_submission_error.code, "contact-identities-not-observed");
+    assert.match(state.packets[0].summary, /提交被拒绝/);
+    const result = JSON.parse(await readFile(join(root, "packets/contact-1.result.json"), "utf8"));
+    assert.equal(result.reason, "contact-identities-not-observed"); assert.equal(result.termination_reason, "runtime-no-submission");
+  } finally { await controller.cancel(); }
+});
+
+test("CONTACT 拒绝错误页面、其他 origin 和失败导航，修正后允许提交", async t => {
+  const root = await temporary(t); const auth = grant(); let response;
+  const controller = new RuntimeTestingController({ root, authorization: auth.public, browserFactory: async () => ({
+    tools: async () => [], close: async () => {}, call: async () => response,
+  }), worker: async ({ controller, active }) => {
+    for (const invalid of [
+      { structuredContent: { pages: [{ id: 1, url: "http://127.0.0.1:8080", selected: true }, { id: 2, url: "about:blank" }] } },
+      { structuredContent: { pages: [{ id: 2, url: "http://unlisted.invalid", selected: true }] } },
+      { isError: true, structuredContent: { pages: [{ id: 2, url: "http://127.0.0.1:8080", selected: true }] } },
+    ]) {
+      response = invalid;
+      const evidence = await controller.call(active.token, "navigate_page", { identity_id: "anonymous", pageId: 2, url: "http://127.0.0.1:8080" });
+      await assert.rejects(controller.submit(active.token, submission({ evidence_ids: [evidence.evidence_id] })), /contact-identities-not-observed/);
+    }
+    response = { structuredContent: { pages: [{ id: 2, url: "http://127.0.0.1:8080/flows", selected: true }] } };
+    const evidence = await controller.call(active.token, "navigate_page", { identity_id: "anonymous", pageId: 2, url: "http://127.0.0.1:8080" });
+    await controller.submit(active.token, submission({ evidence_ids: [evidence.evidence_id] }));
+  } });
+  try {
+    const state = await controller.run(packet(auth.public));
+    assert.equal(state.status, "READY"); assert.equal(state.baseline_packet, "contact-1");
+    assert.equal(state.packets[0].execution_status, "COMPLETED");
+  } finally { await controller.cancel(); }
+});
+
+test("浏览器缺少结构化输出时立即明确报错，保留原文但不从标题解析访问证明", async () => {
+  const auth = grant(); let response = { content: [{ type: "text", text: "## Pages\n2: Langflow (http://127.0.0.1:8080/flows) [selected]" }] };
+  const browser = new ChromeRuntimeBrowser(auth.public, { clientFactory: async () => ({ listTools: async () => ({ tools: [] }),
+    callTool: async () => response, close: async () => {} }) });
+  try {
+    for (const name of ["new_page", "navigate_page", "list_pages"]) {
+      const result = await browser.call(name, { identity_id: "anonymous", url: "http://127.0.0.1:8080" }, packet(auth.public));
+      assert.equal(result.isError, true); assert.equal(result.error.code, "BROWSER_STRUCTURED_OUTPUT_MISSING");
+      assert.deepEqual(result.content, response.content); assert.equal(result.structuredContent, undefined);
+    }
+    assert.deepEqual(await browser.call("take_snapshot", { identity_id: "anonymous" }, packet(auth.public)), response);
+    response = { structuredContent: { message: "Unable to navigate in the selected page: net::ERR_CONNECTION_REFUSED.", pages: [{ id: 2, url: "http://127.0.0.1:8080", selected: true }] } };
+    assert.equal((await browser.call("navigate_page", { identity_id: "anonymous", pageId: 2 }, packet(auth.public))).isError, true);
+  } finally { await browser.close(); }
+});
+
+test("浏览器输出协议失败且未提交时，展示浏览器错误而不是笼统的未提交", async t => {
+  const root = await temporary(t); const auth = grant();
+  const controller = new RuntimeTestingController({ root, authorization: auth.public, browserFactory: async () => new ChromeRuntimeBrowser(auth.public, {
+    clientFactory: async () => ({ listTools: async () => ({ tools: [] }), callTool: async () => ({ content: [] }), close: async () => {} }),
+  }), worker: async ({ controller, active }) => {
+    await controller.call(active.token, "new_page", { identity_id: "anonymous", url: "http://127.0.0.1:8080" });
+  } });
+  try {
+    const state = await controller.run(packet(auth.public));
+    assert.equal(state.reason, "BROWSER_STRUCTURED_OUTPUT_MISSING"); assert.match(state.packets[0].summary, /结构化页面记录/);
   } finally { await controller.cancel(); }
 });
 

@@ -387,6 +387,11 @@ test("新建工作台任务默认进入面板，API 原文可恢复，monitor �
   assert.equal((await runner.taskBoardPage(created.id)).items.length, 0);
   await runner.dispatchQueuedAudit(created.id);
   assert.equal(launch.options.env.AUDIT_TASK_PROTOCOL, PROTOCOL); assert.equal(launch.options.env.AUDIT_TODO_PATH, "");
+  const reviewConfig = JSON.parse(launch.options.env.OPENCODE_CONFIG_CONTENT);
+  assert.deepEqual(reviewConfig.agent["vulnerability-validator"].permission.edit, { "*": "deny",
+    [`${join(launch.options.env.AUDIT_WORKSPACE_ROOT, "reports", "validation").replaceAll("\\", "/")}/**`]: "allow",
+    [`${join(launch.options.env.AUDIT_REPORTS_ROOT, "validation").replaceAll("\\", "/")}/**`]: "allow" });
+  for (const role of ["vulnerability-affirmative", "vulnerability-negative", "vulnerability-moderator"]) assert.equal(reviewConfig.agent[role], undefined);
   assert.match(launch.args.at(-1), /monitor 自动按领域执行/);
   assert.equal(runner.getAudit(created.id).runtime_testing_state.status, "SKIPPED");
   const service = runner.taskBoardServices.get(created.id);

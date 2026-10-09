@@ -15,7 +15,15 @@
 7. mining_complete=true 仅表示本轮报告收齐或缺口已登记。total>0 且 reported=0 表示没有收到任何源码审计报告，必须说明审计执行未完成，不能输出“未发现漏洞”或“审计成功”。仍需封存失败与缺口记录，修复后新建审计，不重写本轮 GAP。若启用运行协议，按 runtime-testing workflow close/cancel 并封存 evidence-set，原有 CONTACT/EXPLORE/CONFIRM/CLEANUP 授权边界保持有效。
 8. 执行 `review-input` 生成摘要绑定的全量复核输入，得到受控报告根相对路径与 sha256。委派 vulnerability-validator，要求阅读本文件的后续复核协议，完成所有任务（包括零发现报告）的质量复核，并对所有源码及运行候选执行独立正方、反方、Moderator。不得调用旧 quick runner、旧 intake/路由/最终报告构建脚本。
 9. 收到复核 bundle 后执行 `review <bundle文件绝对路径>`，再执行 `finalize`。finalize 确定性生成最终中文报告及 canonical findings，只有 Moderator TRUE_POSITIVE 进入确认源码漏洞；仅运行环境候选单列。报告质量不足、未确认候选、跳过与 BAC 缺口全部保留。finalize 返回 delivery_outcome=NO_REPORTS 时，明确交付的是执行失败记录，平台将本轮标为失败；封存成功不等于审计执行成功。打印报告路径后结束，不等待旧 TODO、Stage 或 Coverage Ledger 门禁。
-10. 恢复时复用已接收报告和已绑定复核。status 的 publication=SEALED 时不重新发布，mining_complete=true 时不重跑挖掘任务；只补齐后续复核/报告。更正已交付结果时保留原始报告，记录后续任务建议，封存后的本轮不再扩展范围。
+10. 恢复时复用已接收报告和已绑定复核。status 的 publication=SEALED 时不重新发布，mining_complete=true 时不重跑挖掘任务；只补齐后续复核/报告。最终报告封存前如发现确定性的报告组装错误，使用下述更正流程；最终报告封存后的本轮不再扩展范围。
+
+### 报告更正（最终封存前）
+
+`review-input` 若指出专项 Finding 与封存复查对象不一致，不要反复重试或生成无法绑定的带外复核。完整读取出错报告与已绑定的专项 review，保留原报告，将与专项原文一致的更正版本写入 reports_root 内的新文件。保持 audit/task/attempt/agent_session_id，不改变冻结范围，不修改专项封存制品。原因和变更须基于现有证据，不重写其他无关发现或删除缺口。
+
+运行 `bind <新文件相对路径>` 获得新摘要，准备 `{ "task_id":"任务编号", "expected_sha256":"当前已接收报告摘要", "report":{"path":"新文件相对路径","sha256":"新摘要"}, "reason":"具体中文更正原因" }`，执行 `correct-report <该 JSON 的完整路径>`。服务保留旧报告和旧复核绑定，校验更正版本后切换当前引用；报告历史写入 report_corrections，复核状态重置。版本过期或已最终封存时拒绝更正。
+
+更正成功后重新运行 review-input，再执行独立质量复核与三方验证，不能沿用旧摘要或把带外复核直接记为成功。最终报告记录更正历史。这个入口不重跑已交付任务、不解除动态环境隔离，也不绕过来源和摘要检查。
 
 ## Threat Modeler
 

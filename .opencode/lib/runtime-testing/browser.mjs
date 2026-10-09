@@ -28,6 +28,14 @@ function browserResult(name, result) {
   if (name === "navigate_page" && /^Unable to (?:navigate(?: back| forward)? in the selected page|reload the selected page):/m.test(result?.structuredContent?.message ?? "")) {
     return { ...result, isError: true };
   }
+  // Page titles/text are untrusted and cannot replace typed navigation evidence.
+  // MCP 1.8.0 makes structuredContent opt-in; detect a launch/config regression
+  // at the browser boundary instead of silently rejecting CONTACT later.
+  if (["new_page", "navigate_page", "list_pages"].includes(name) && !result?.isError
+    && !Array.isArray(result?.structuredContent?.pages)) {
+    return { ...result, isError: true, error: { code: "BROWSER_STRUCTURED_OUTPUT_MISSING",
+      message: "浏览器未返回结构化页面记录，平台无法确认访问结果；请检查 Chrome DevTools MCP 的结构化输出配置。" } };
+  }
   return result;
 }
 
@@ -108,7 +116,7 @@ export class ChromeRuntimeBrowser {
     if (!this.clientFactory) {
       const env = Object.fromEntries(Object.entries(process.env).filter(([key, value]) => typeof value === "string" && !/(proxy|AUDIT_.*TOKEN|AUDIT_TEST_ENVIRONMENT)/i.test(key)));
       const transport = new StdioClientTransport({ command: process.platform === "win32" ? "npx.cmd" : "npx", args: ["--yes", "chrome-devtools-mcp@1.8.0",
-        "--isolated=true", "--headless=true", "--redact-network-headers=true", "--no-usage-statistics", "--no-performance-crux",
+        "--isolated=true", "--headless=true", "--experimental-structured-content=true", "--redact-network-headers=true", "--no-usage-statistics", "--no-performance-crux",
         `--chrome-arg=--proxy-server=${this.proxy.url}`, "--chrome-arg=--proxy-bypass-list=<-loopback>",
         "--chrome-arg=--disable-quic", "--chrome-arg=--force-webrtc-ip-handling-policy=disable_non_proxied_udp",
         "--chrome-arg=--disable-background-networking"], env, stderr: "ignore" });

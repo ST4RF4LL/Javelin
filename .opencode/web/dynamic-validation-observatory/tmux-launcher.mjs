@@ -5,6 +5,7 @@ import { createWriteStream } from "node:fs";
 import { readFile, writeFile } from "node:fs/promises";
 import { isAbsolute } from "node:path";
 import { isProxyEnvironmentVariable } from "./opencode-runtime-config.mjs";
+import { startSharedRun } from "./opencode-shared-run.mjs";
 
 function fail(message) {
   process.stderr.write(`${message}\n`);
@@ -42,6 +43,23 @@ const diagnostic = spec.diagnostic_path
   ? createWriteStream(spec.diagnostic_path, { flags: "w", encoding: "utf8", mode: 0o600 })
   : null;
 diagnostic?.on("error", () => {});
+
+if (spec.shared_server === true) {
+  if (!isAbsolute(spec.state_directory ?? '') || !/^[a-z0-9][a-z0-9._-]{2,127}$/i.test(spec.audit_id ?? '')) fail('共享服务的任务绑定非法。');
+  let result;
+  try {
+    result = await startSharedRun(spec, { environment: { ...process.env, ...environment }, output(chunk) {
+      process.stdout.write(chunk); diagnostic?.write(chunk);
+    } });
+  } catch (error) {
+    const message = `共享 OpenCode 启动或执行失败：${error.message}`;
+    process.stderr.write(`${message}\n`); diagnostic?.write(`${message}\n`);
+    result = { code: 1, signal: null, error: message };
+  }
+  if (spec.exit_path) await writeFile(spec.exit_path, `${JSON.stringify(result)}\n`, { encoding: 'utf8', mode: 0o600 });
+  if (diagnostic) await new Promise(resolve => diagnostic.end(resolve));
+  process.exit(Number.isInteger(result.code) ? result.code : 1);
+}
 
 const child = spawn(spec.command, spec.args, {
   cwd: spec.cwd,

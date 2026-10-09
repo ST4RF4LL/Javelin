@@ -1,6 +1,6 @@
 import http from "node:http";
-import { randomUUID, createHash } from "node:crypto";
-import { readFile, mkdir, rm, writeFile } from "node:fs/promises";
+import { randomUUID } from "node:crypto";
+import { readFile, mkdir, rm } from "node:fs/promises";
 import { join, dirname } from "node:path";
 import { fileURLToPath } from "node:url";
 import { spawn } from "node:child_process";
@@ -8,22 +8,18 @@ import { RuntimeTestingController, atomicJson } from "./controller.mjs";
 import { ChromeRuntimeBrowser } from "./browser.mjs";
 import { PROTOCOL, check, fail, validatePacket } from "./contract.mjs";
 import { workerInput } from "./environment-prompt.mjs";
+import { EnvironmentLeaseStore } from "./environment-leases.mjs";
 
-const originOwners = new Map();
 const gateway = fileURLToPath(new URL("./worker-mcp.mjs", import.meta.url));
 const workerInstructions = fileURLToPath(new URL("./worker-instructions.md", import.meta.url));
-const leaseKey = origin => {
-  const url = new URL(origin);
-  if (["localhost", "127.0.0.1", "[::1]"].includes(url.hostname)) return `${url.protocol}//loopback:${url.port || (url.protocol === "https:" ? 443 : 80)}`;
-  return `origin:${url.origin}`;
-};
 
 export class RuntimeTestingService {
   constructor({ root, privateRoot, authorization, privateContext, command, environment, workspaceRoot, model, onChange = async () => {}, browserFactory, worker, spawnProcess = spawn }) {
     this.root = root; this.privateRoot = privateRoot; this.command = command; this.environment = environment;
     this.workspaceRoot = workspaceRoot; this.model = model; this.onChange = onChange; this.token = randomUUID();
-    this.queue = []; this.draining = null; this.accepting = true; this.server = null; this.keys = [];
-    this.lockPaths = [];
+    this.queue = []; this.draining = null; this.accepting = true; this.server = null;
+    this.environmentLeases = new EnvironmentLeaseStore({ stateRoot: dirname(dirname(privateRoot)) });
+    this.leases = []; this.leaseOwner = randomUUID();
     this.spawnProcess = spawnProcess;
     this.controller = new RuntimeTestingController({ root, authorization, privateContext,
       prepareEnvironment: grant => this.acquireEnvironment(grant),
@@ -48,6 +44,7 @@ export class RuntimeTestingService {
       catch (error) {
         if (!["ENVIRONMENT_ALREADY_LEASED", "ENVIRONMENT_LEASE_REQUIRES_REVIEW"].includes(error.code)) throw error;
         this.controller.state.status = "BLOCKED"; this.controller.state.reason = error.code;
+        this.controller.state.environment_lease = error.environment_lease ?? null;
         await this.controller.close(); await this.changed(); return this;
       }
     }
@@ -69,31 +66,20 @@ export class RuntimeTestingService {
     await this.changed(); return this;
   }
   async acquireEnvironment(authorization) {
-    const keys = [...new Set(authorization.origins.map(leaseKey))];
-    check(keys.length > 0 && this.keys.length === 0, "runtime-environment-lease-invalid");
-    check(!keys.some(key => originOwners.has(key)), "ENVIRONMENT_ALREADY_LEASED");
-    this.keys = keys; for (const key of keys) originOwners.set(key, this);
-    const release = async () => {
-      for (const path of this.lockPaths.splice(0)) await rm(path, { force: true });
-      for (const key of this.keys) if (originOwners.get(key) === this) originOwners.delete(key);
-      this.keys = [];
-    };
-    try {
-      const leasesRoot = join(dirname(dirname(this.privateRoot)), "runtime-environment-leases");
-      await mkdir(leasesRoot, { recursive: true });
-      for (const key of keys.sort()) {
-        const path = join(leasesRoot, `${createHash("sha256").update(key).digest("hex")}.json`);
-        await writeFile(path, JSON.stringify({ audit_id: authorization.audit_id, owner: this.token, reason: "环境使用中；异常退出后禁止自动清除租约。" }), { flag: "wx", mode: 0o600 });
-        this.lockPaths.push(path);
-      }
-      return release;
-    } catch (error) {
-      await release();
-      if (error.code === "EEXIST") throw fail("ENVIRONMENT_LEASE_REQUIRES_REVIEW");
-      throw error;
-    }
+    check(authorization.origins.length > 0 && this.leases.length === 0, "runtime-environment-lease-invalid");
+    const leases = await this.environmentLeases.acquire({ origins: authorization.origins, auditId: authorization.audit_id,
+      runtimeRoot: this.root, owner: this.leaseOwner });
+    this.leases = leases;
+    return async () => { await this.environmentLeases.abandon(leases); if (this.leases === leases) this.leases = []; };
   }
-  async changed() { await this.onChange({ ...this.controller.snapshot(), queued_packets: this.queue.map(packet => ({ id: packet.id, phase: packet.phase })) }); }
+  async settleEnvironment() {
+    if (!this.controller.closed || !this.leases.length) return;
+    await this.environmentLeases.finish(this.leases, this.controller.state); this.leases = [];
+  }
+  async changed() {
+    await this.settleEnvironment();
+    await this.onChange({ ...this.controller.snapshot(), queued_packets: this.queue.map(packet => ({ id: packet.id, phase: packet.phase })) });
+  }
   async handle(request, response) {
     try {
       check(request.method === "POST" && !request.headers.origin, "runtime-http-request-invalid");
@@ -235,10 +221,7 @@ export class RuntimeTestingService {
       // Observability or artifact I/O failures must not leave a listening API.
       if (this.server) { this.server.closeAllConnections(); await new Promise(resolve => this.server.close(resolve)); this.server = null; }
       await rm(join(this.privateRoot, "endpoint.json"), { force: true });
-      if (this.controller.state?.status !== "QUARANTINED") {
-        for (const key of this.keys) if (originOwners.get(key) === this) originOwners.delete(key);
-        for (const path of this.lockPaths.splice(0)) await rm(path, { force: true });
-      }
+      await this.settleEnvironment();
     }
   }
 }

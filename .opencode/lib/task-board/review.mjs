@@ -9,6 +9,7 @@ import { BAC_EVIDENCE_STRUCTURE_ERROR } from "../bac/contract.mjs";
 
 const nonempty = value => typeof value === "string" && value.trim();
 const reviewState = board => ({ scope_digest: board.scope_digest, api_sources_digest: digest(board.api_sources), publication: board.publication, tasks: board.tasks.map(task => ({ task_id: task.task_id, spec_digest: task.spec_digest, status: task.status, report: task.report, reason: task.reason })), ...(board.mining_strategy ? { mining_strategy: board.mining_strategy } : {}),
+  ...(board.report_corrections?.length ? { report_corrections: board.report_corrections } : {}),
   ...(taskBacEnabled(board) ? { bac_analysis: board.bac_analysis, bac_attempts: board.tasks.map(task => {
     const attempt = board.attempts.find(row => row.attempt_id === task.attempt_id);
     return { task_id: task.task_id, attempt_id: task.attempt_id, bac_plan: attempt?.bac_plan, bac_gap: attempt?.bac_gap, session_id: attempt?.session_id };
@@ -83,8 +84,8 @@ export async function prepareReview(store, { runtimeRequired = false, bacMode = 
     ...(board.mining_strategy ? { mining_strategy: board.mining_strategy } : {}),
     ...(bacSummary ? { bac_summary: bacSummary } : {}),
     board_digest: digest(reviewState(board)), bac_mode: bacMode, tasks, candidates, runtime };
-  const path = `validation/task-board.${board.audit_id}.input.json`;
   const bytes = Buffer.from(`${JSON.stringify(input, null, 2)}\n`);
+  const path = `validation/task-board.${board.audit_id}.input.${hash(bytes)}.json`;
   await mkdir(dirname(join(store.reportsRoot, path)), { recursive: true });
   await writeFile(join(store.reportsRoot, path), bytes, { mode: 0o600 });
   const ref = binding(path, bytes);
@@ -164,7 +165,7 @@ export async function acceptReview(store, bundle) {
   const checked = await validateReviewBundle(store.snapshot(), store.reportsRoot, bundle);
   await store.mutate(board => {
     check(!board.final_report || digest(board.validation.bundle) === digest(bundle), "已封存报告的复核不能替换，请在后续审计中补充。");
-    check(board.validation.input.sha256 === checked.quality.input_sha256, "复核期间输入已改变。");
+    check(board.validation.input?.sha256 === checked.quality.input_sha256, "复核期间输入已改变。");
     board.validation = { status: "REVIEWED", input: board.validation.input, bundle, assessments: checked.quality.assessments, reviewed_at: timestamp() };
   });
   return { reviewed: checked.input.tasks.length, candidates: checked.input.candidates.length };
@@ -244,26 +245,29 @@ function finalModel(board, { input, quality, roles }) {
     ...(reportVersion >= 2 ? { report_version: reportVersion, delivery_outcome: deliveryOutcome(summary) } : {}),
     board_digest: input.board_digest, inputs: { intake: board.validation.input, ...board.validation.bundle }, summary, tasks: input.tasks,
     assessments: quality.assessments, findings, excluded_findings: excluded, runtime_findings: runtimeFindings,
+    ...(board.report_corrections?.length ? { report_corrections: board.report_corrections } : {}),
     runtime: input.runtime?.evidence ?? null, bac_analysis: quality.bac_analysis ? { ...quality.bac_analysis,
       ...(input.bac_summary ? { summary: input.bac_summary } : {}) } : null, residual_gaps: [...new Set(residualGaps)] };
 }
 
 export async function finalizeBoard(store) {
-  const board = store.snapshot();
-  check(store.summary().mining_complete && board.validation.status === "REVIEWED", "报告尚未收齐或后续复核未完成。");
-  const model = finalModel(board, await validateReviewBundle(board, store.reportsRoot, board.validation.bundle));
-  const modelPath = `final/task-board-report-model.${board.audit_id}.json`, reportPath = `final/security-audit-report.${board.audit_id}.md`;
-  if (board.final_report) {
-    check((await controlledBytes(store.reportsRoot, reportPath)).toString("utf8") === renderBoardReport(model)
-      && digest(JSON.parse((await controlledBytes(store.reportsRoot, modelPath)).toString("utf8"))) === digest(model), "已封存报告发生变化，不能静默覆盖。");
+  // Serialize validation, artifact writes and sealing with report corrections.
+  return store.mutate(async board => {
+    check(summarize(board).mining_complete && board.validation.status === "REVIEWED", "报告尚未收齐或后续复核未完成。");
+    const model = finalModel(board, await validateReviewBundle(board, store.reportsRoot, board.validation.bundle));
+    const modelPath = `final/task-board-report-model.${board.audit_id}.json`, reportPath = `final/security-audit-report.${board.audit_id}.md`;
+    if (board.final_report) {
+      check((await controlledBytes(store.reportsRoot, reportPath)).toString("utf8") === renderBoardReport(model)
+        && digest(JSON.parse((await controlledBytes(store.reportsRoot, modelPath)).toString("utf8"))) === digest(model), "已封存报告发生变化，不能静默覆盖。");
+      return { report_path: reportPath, delivery_outcome: deliveryOutcome(model.summary), findings: model.findings.length, gaps: model.residual_gaps.length };
+    }
+    await atomicJson(join(store.reportsRoot, modelPath), model);
+    const markdown = renderBoardReport(model);
+    await writeFile(join(store.reportsRoot, reportPath), markdown, { mode: 0o600 });
+    await atomicJson(join(store.reportsRoot, "correlation", `task-board.${board.audit_id}.json`), { protocol: PROTOCOL, audit_id: board.audit_id, canonical_findings: [...model.findings, ...model.excluded_findings] });
+    board.final_report = { path: reportPath, sha256: hash(markdown), model: modelPath, model_sha256: hash(`${JSON.stringify(model, null, 2)}\n`), report_version: model.report_version };
     return { report_path: reportPath, delivery_outcome: deliveryOutcome(model.summary), findings: model.findings.length, gaps: model.residual_gaps.length };
-  }
-  await atomicJson(join(store.reportsRoot, modelPath), model);
-  const markdown = renderBoardReport(model);
-  await writeFile(join(store.reportsRoot, reportPath), markdown, { mode: 0o600 });
-  await atomicJson(join(store.reportsRoot, "correlation", `task-board.${board.audit_id}.json`), { protocol: PROTOCOL, audit_id: board.audit_id, canonical_findings: [...model.findings, ...model.excluded_findings] });
-  await store.mutate(next => { next.final_report = { path: reportPath, sha256: hash(markdown), model: modelPath, model_sha256: hash(`${JSON.stringify(model, null, 2)}\n`), report_version: model.report_version }; });
-  return { report_path: reportPath, delivery_outcome: deliveryOutcome(model.summary), findings: model.findings.length, gaps: model.residual_gaps.length };
+  });
 }
 
 export async function verifyBoardCompletion({ audit, reportsRoot }) {
