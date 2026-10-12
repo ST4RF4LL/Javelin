@@ -6,6 +6,7 @@ import { runtimeCandidates, verifyRuntimeEvidenceFiles } from "../runtime-testin
 import { renderStructuredBoardReport } from "./report.mjs";
 import { summarizeTaskBac, taskBacEnabled } from "./bac.mjs";
 import { BAC_EVIDENCE_STRUCTURE_ERROR } from "../bac/contract.mjs";
+import { assembleBatchBundle, prepareReviewBatches, validateBatchBundle } from "./review-batches.mjs";
 
 const nonempty = value => typeof value === "string" && value.trim();
 const reviewState = board => ({ scope_digest: board.scope_digest, api_sources_digest: digest(board.api_sources), publication: board.publication, tasks: board.tasks.map(task => ({ task_id: task.task_id, spec_digest: task.spec_digest, status: task.status, report: task.report, reason: task.reason })), ...(board.mining_strategy ? { mining_strategy: board.mining_strategy } : {}),
@@ -48,7 +49,7 @@ async function invalidBacEvidence(summary, root, candidates, board, inputTasks, 
   return { tasks, blockedCandidates };
 }
 
-export async function prepareReview(store, { runtimeRequired = false, bacMode = "off" } = {}) {
+export async function prepareReview(store, { runtimeRequired = false, bacMode = "off", bounded = false } = {}) {
   check(store.summary().mining_complete, "任务发布或挖掘尚未结束，不能进入报告复核。");
   const board = store.snapshot(), tasks = [], candidates = [];
   if (board.bac_analysis) check(board.bac_analysis.mode === bacMode, "复核专项选择与任务创建时不一致。");
@@ -103,7 +104,10 @@ export async function prepareReview(store, { runtimeRequired = false, bacMode = 
     check(digest(reviewState(next)) === input.board_digest, "复核准备期间任务范围已变化。");
     if (next.validation.input?.sha256 !== ref.sha256) next.validation = { status: "NOT_STARTED", input: ref };
   });
-  return { ...ref, task_count: tasks.length, candidate_count: candidates.length };
+  const state = store.snapshot();
+  const batchPlan = bounded && candidates.length && !state.final_report && state.validation.status !== "REVIEWED"
+    ? await prepareReviewBatches(store) : state.validation.batch_plan;
+  return { ...ref, task_count: tasks.length, candidate_count: candidates.length, ...(batchPlan ? { batch_plan: batchPlan } : {}) };
 }
 
 async function boundJson(root, ref) {
@@ -158,8 +162,11 @@ export async function validateReviewBundle(board, root, bundle) {
     && nonempty(quality.bac_analysis.reason) && Array.isArray(quality.bac_analysis.evidence_refs)
     && (quality.bac_analysis.status !== "REVIEWED" || quality.bac_analysis.evidence_refs.length), "启用的越权专项必须复核并保留证据或具体缺口。");
   if (input.bac_summary?.status === "PARTIAL") check(quality.bac_analysis?.status === "GAP", "专项制品仍有缺口，不能以文字复核标为完成。");
-  const roles = {}, ids = input.candidates.map(row => row.candidate_id);
-  if (ids.length) {
+  let roles = {}; const ids = input.candidates.map(row => row.candidate_id);
+  if (ids.length && board.validation.batch_plan) {
+    roles = await validateBatchBundle(board, root, input, bundle, sessions);
+    for (const row of roles.moderator.findings) check(!invalidBac.blockedCandidates.has(row.candidate_id) || row.verdict !== "TRUE_POSITIVE", "专项附件证据结构无效的 BAC 候选不得确认为真实漏洞。");
+  } else if (ids.length) {
     for (const [key, role, verdicts] of [
       ["affirmative", "AFFIRMATIVE", ["PROVEN", "NOT_PROVEN", "INCONCLUSIVE"]],
       ["negative", "NEGATIVE", ["REFUTED", "NOT_REFUTED", "INCONCLUSIVE"]],
@@ -179,11 +186,12 @@ export async function validateReviewBundle(board, root, bundle) {
 }
 
 export async function acceptReview(store, bundle) {
+  bundle = assembleBatchBundle(store.snapshot(), bundle);
   const checked = await validateReviewBundle(store.snapshot(), store.reportsRoot, bundle);
   await store.mutate(board => {
     check(!board.final_report || digest(board.validation.bundle) === digest(bundle), "已封存报告的复核不能替换，请在后续审计中补充。");
     check(board.validation.input?.sha256 === checked.quality.input_sha256, "复核期间输入已改变。");
-    board.validation = { status: "REVIEWED", input: board.validation.input, bundle, assessments: checked.quality.assessments, reviewed_at: timestamp() };
+    board.validation = { ...board.validation, status: "REVIEWED", bundle, assessments: checked.quality.assessments, reviewed_at: timestamp() };
   });
   return { reviewed: checked.input.tasks.length, candidates: checked.input.candidates.length };
 }

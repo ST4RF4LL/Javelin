@@ -23,7 +23,7 @@ export function createFileSweep(manifest, board) {
       reason: excluded ? file.type !== "file" ? "符号链接或非普通文件不跟随读取。" : "二进制文件不进入逐文件文本浏览。" : null,
       attempt_id: null, read_ranges: [], line_count: null, summary: null, task_ids: [] };
   });
-  return { protocol: SWEEP_PROTOCOL, scope_digest: manifest.scope_digest, manifest_digest: digest(JSON.stringify(manifest)),
+  return { protocol: SWEEP_PROTOCOL, discovery_version: 2, scope_digest: manifest.scope_digest, manifest_digest: digest(JSON.stringify(manifest)),
     policy: manifest.policy ?? {}, exclusions: manifest.exclusions ?? [], files };
 }
 
@@ -66,7 +66,7 @@ function activeFile(board, input) {
 }
 
 // Only server-read ranges count as browsing evidence. A range is not a claim of semantic review.
-export async function readFilePage(board, sourceRoot, input) {
+export async function readFilePage(board, sourceRoot, input, { maximumLines = 300 } = {}) {
   const file = activeFile(board, input);
   const root = await realpath(sourceRoot), path = resolve(root, file.path);
   const within = value => { const rel = relative(root, value); return rel && rel !== ".." && !rel.startsWith(`..${sep}`) && !isAbsolute(rel); };
@@ -81,7 +81,7 @@ export async function readFilePage(board, sourceRoot, input) {
   const lines = text ? text.split(/\r?\n/) : [];
   if (text.endsWith("\n")) lines.pop();
   const start = input.start_line ?? 1, limit = input.limit ?? 120;
-  check(Number.isInteger(start) && start >= 1 && start <= Math.max(1, lines.length) && Number.isInteger(limit) && limit >= 1 && limit <= 300, "读取行范围无效（每次最多 300 行）。");
+  check(Number.isInteger(start) && start >= 1 && start <= Math.max(1, lines.length) && Number.isInteger(limit) && limit >= 1 && limit <= maximumLines, `读取行范围无效（每次最多 ${maximumLines} 行）。`);
   const selected = []; let length = 0;
   for (const line of lines.slice(start - 1, start - 1 + limit)) {
     if (length + line.length > 64_000) break;
@@ -95,6 +95,7 @@ export async function readFilePage(board, sourceRoot, input) {
 }
 export function recordFileRead(board, page) {
   const file = activeFile(board, page);
+  delete file.read_error;
   file.line_count = page.line_count;
   const ranges = [...file.read_ranges, ...(page.line_count ? [[page.start_line, page.end_line]] : [])].sort((a, b) => a[0] - b[0]);
   file.read_ranges = [];
@@ -114,6 +115,8 @@ export function completeFile(board, input) {
     return { recorded: true, duplicate: true };
   }
   const file = activeFile(board, input);
+  const fullyRead = file.line_count === 0 || file.line_count !== null && file.read_ranges.length === 1 && file.read_ranges[0][0] === 1 && file.read_ranges[0][1] === file.line_count;
+  if (outcome === "GAP" && board.file_sweep.discovery_version >= 2) check(file.read_error || fullyRead, "尚未浏览的文件不能直接登记 GAP；预算或上下文不足时请暂存进度并 defer，保留待处理状态。");
   if (outcome === "BROWSED") check(file.line_count === 0 || file.line_count !== null && file.read_ranges.length === 1 && file.read_ranges[0][0] === 1 && file.read_ranges[0][1] === file.line_count, "文件尚未完整读取，不得标为已浏览；请继续分页读取或记录 GAP。");
   const generated = board.tasks.filter(task => task.source_ref === file.file_id);
   check(generated.every(task => taskIds.includes(task.task_id)), "浏览记录遗漏了本文件已经发布的 Focus Area。");

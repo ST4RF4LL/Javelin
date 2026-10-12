@@ -5,13 +5,15 @@ import { randomUUID } from "node:crypto";
 import { mkdir, readFile, rm } from "node:fs/promises";
 import { dirname, join } from "node:path";
 import { fileURLToPath } from "node:url";
-import { PROTOCOL, atomicJson, check, controlledBytes } from "./contract.mjs";
+import { PROTOCOL, atomicJson, check, controlledBytes, hash } from "./contract.mjs";
 import { TaskBoardStore } from "./store.mjs";
 import { acceptReview, finalizeBoard, prepareReview } from "./review.mjs";
 import { correctReport } from "./report-correction.mjs";
 import { BAC_AGENTS, TASK_PLAN, bacSelection } from "../bac/contract.mjs";
 import { prepareTaskBacPlan, taskBacEnabled } from "./bac.mjs";
 import { prepareMining } from "../agent-mining/service.mjs";
+import { nextReviewBatch, submitReviewBatch } from "./review-batches.mjs";
+import { FileFactsCache, nextFileBatch, completeFileBatch, relatedTasks } from "./file-batches.mjs";
 
 const guardian = fileURLToPath(new URL("./worker-host.mjs", import.meta.url));
 const instructionPath = fileURLToPath(new URL("./worker.md", import.meta.url));
@@ -34,11 +36,12 @@ export async function workerConfiguration(environment, task) {
 
 export class TaskBoardService {
   constructor({ path, reportsRoot, privateRoot, workspaceRoot, sourceRoot, auditId, scopeDigest, environment = process.env, command = "opencode", model = null,
-    runtimeRequired = false, bacMode = "off", concurrency = 4, leaseMs = 30 * 60_000, onChange = async () => {}, onLog = async () => {}, worker = null, spawnProcess = spawn, memory = null, agentSlots = globalAgentSlots, fileManifestPath = null }) {
+    runtimeRequired = false, bacMode = "off", concurrency = 4, leaseMs = 30 * 60_000, onChange = async () => {}, onLog = async () => {}, onPauseRequested = async () => {}, worker = null, spawnProcess = spawn, memory = null, agentSlots = globalAgentSlots, fileManifestPath = null }) {
     Object.assign(this, { path, reportsRoot, privateRoot, workspaceRoot, sourceRoot, auditId, scopeDigest, environment, command, model, runtimeRequired, bacMode, leaseMs, onLog, worker, spawnProcess });
     this.concurrency = Math.min(6, Math.max(1, concurrency)); this.token = randomUUID(); this.active = new Map(); this.paused = false; this.closed = false; this.lastDispatch = new Map();
     this.memory = memory; this.memoryTokens = new Map(); this.agentSlots = agentSlots;
     this.fileManifestPath = fileManifestPath;
+    this.onPauseRequested = onPauseRequested;
     this.store = new TaskBoardStore({ path, reportsRoot, auditId, scopeDigest, onChange });
   }
   async start() {
@@ -48,6 +51,8 @@ export class TaskBoardService {
       if (board.mining_strategy === "file_sweep") {
         check(this.fileManifestPath, "逐文件模式缺少冻结文件清单。");
         await this.store.initializeFiles(JSON.parse(await readFile(this.fileManifestPath, "utf8")));
+        const rules = await Promise.all(["./workflow.md", "./file-screening.md", "../../agents/security-threat-modeler.md"].map(path => readFile(new URL(path, import.meta.url), "utf8")));
+        if (!["off", "blind"].includes(this.environment.AUDIT_MEMORY_MODE)) this.fileFacts = new FileFactsCache({ root: join(this.reportsRoot, "task-board", "file-facts"), rulesDigest: hash(JSON.stringify(rules)) });
       }
       if (board.bac_analysis) check(board.bac_analysis.mode === this.bacMode, "任务面板与运行配置的专项选择不同。");
       else if (!board.tasks.length && !board.final_report) await this.store.mutate(next => { next.bac_analysis = { ...bacSelection(this.bacMode), task_plan_contract: TASK_PLAN }; });
@@ -82,6 +87,11 @@ export class TaskBoardService {
         const rows = body.source === "api" ? board.api_sources : board.tasks.filter(task => !body.status || task.status === body.status);
         result = { total: rows.length, items: rows.slice(offset, offset + limit), next_offset: offset + limit < rows.length ? offset + limit : null };
       } else if (request.url === "/files") result = this.store.files(body);
+      else if (["/file-batch", "/file-batch-complete"].includes(request.url)) {
+        check(!this.paused && !this.closed, "任务已暂停或停止，文件浏览暂不可写入。");
+        result = request.url === "/file-batch" ? await nextFileBatch(this.store, this.sourceRoot, body, this.fileFacts)
+          : await completeFileBatch(this.store, this.sourceRoot, body, this.fileFacts);
+      } else if (request.url === "/task-find") result = relatedTasks(this.store.snapshot(), body);
       else if (["/file-claim", "/file-read", "/file-complete"].includes(request.url)) {
         check(!this.paused && !this.closed, "任务已暂停或停止，文件浏览暂不可写入。");
         result = request.url === "/file-claim" ? await this.store.claimFile(body)
@@ -89,7 +99,19 @@ export class TaskBoardService {
       } else if (request.url === "/publish") result = await this.store.publish(body);
       else if (request.url === "/seal") result = await this.store.seal(body);
       else if (request.url === "/skip") result = await this.store.skip(body);
-      else if (request.url === "/review-input") result = await prepareReview(this.store, { runtimeRequired: this.runtimeRequired, bacMode: this.bacMode });
+      else if (request.url === "/defer") {
+        check(typeof body.reason === "string" && body.reason.trim() && body.reason.length <= 2000, "暂停须说明具体预算或执行限制。");
+        await this.store.mutate(board => { board.suspension = { reason: body.reason.trim(), requested_at: new Date().toISOString() }; });
+        await this.pause();
+        result = { paused: true, reason: body.reason.trim(), instruction: "进度已保存，保留待处理文件和任务；停止本次编排，恢复后继续。" };
+        response.once("finish", () => { Promise.resolve().then(() => this.onPauseRequested(body.reason.trim())).catch(error => this.log("stderr", `平台暂停通知失败：${error.message}`)); });
+      }
+      else if (request.url === "/review-input") result = await prepareReview(this.store, { runtimeRequired: this.runtimeRequired, bacMode: this.bacMode, bounded: true });
+      else if (request.url === "/review-next") result = await nextReviewBatch(this.store);
+      else if (request.url === "/review-submit") {
+        check(!this.paused && !this.closed, "任务已暂停或停止，暂不接收新的复核结果。");
+        result = await submitReviewBatch(this.store, body);
+      }
       else if (request.url === "/correct-report") result = await correctReport(this.store, body);
       else if (request.url === "/review") result = await acceptReview(this.store, body);
       else if (request.url === "/finalize") {
@@ -295,7 +317,11 @@ export class TaskBoardService {
     for (const active of this.active.values()) { active.deliveryRevoked = true; active.controller.abort(); }
     await Promise.allSettled([...this.active.values()].map(active => active.promise));
   }
-  resume() { this.paused = false; this.pump(); }
+  resume() {
+    this.paused = false;
+    if (this.store.board?.suspension) return this.store.mutate(board => { delete board.suspension; }).then(() => this.pump());
+    this.pump();
+  }
   async shutdown() {
     if (this.shutdownPromise) return this.shutdownPromise;
     this.shutdownPromise = (async () => {

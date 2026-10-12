@@ -108,7 +108,15 @@ export class TaskBoardStore {
     return this.mutate(board => completeFile(board, input));
   }
   async readFile(sourceRoot, input) {
-    const page = await readFilePage(this.snapshot(), sourceRoot, input);
+    let page;
+    try { page = await readFilePage(this.snapshot(), sourceRoot, input); }
+    catch (error) {
+      if (error.code === "ENOENT" || /源码已变化|摘要已变化|有效 UTF-8|浏览上限|超长行|源码根|链接超出/.test(error.message)) await this.mutate(board => {
+        const file = board.file_sweep?.files.find(row => row.file_id === input.file_id);
+        if (file?.status === "READING" && file.attempt_id === input.attempt_id) file.read_error = String(error.message).slice(0, 1000);
+      });
+      throw error;
+    }
     await this.mutate(board => recordFileRead(board, page));
     return page;
   }
@@ -116,19 +124,24 @@ export class TaskBoardStore {
   async publish({ tasks = [] }) {
     check(Array.isArray(tasks) && tasks.length > 0 && tasks.length <= 100, "每次发布 1 至 100 个任务。");
     return this.mutate(board => {
-      const published = [];
+      const published = [], reused = [];
       for (const input of tasks) {
-        const spec = normalizeTask(input, board), specDigest = digest(spec);
+        const spec = normalizeTask(input, board);
         const existing = board.tasks.find(task => task.task_id === spec.task_id);
-        if (existing) { check(existing.spec_digest === specDigest, "已有任务内容不同；请使用新的任务 ID 发布补充任务。"); published.push(existing.task_id); continue; }
+        if (existing) { check(existing.spec_digest === digest(spec), "已有任务内容不同；请使用新的任务 ID 发布补充任务。"); published.push(existing.task_id); continue; }
         check(board.publication.state === "OPEN", "本轮任务发布已封存。");
         if (board.mining_strategy === "file_sweep") check(board.file_sweep.files.find(file => file.file_id === spec.source_ref)?.status === "READING", "新增 Focus Area 须来自当前正在浏览的文件。");
+        const sameCause = spec.kind === "focus_area" && spec.root_cause && board.tasks.find(task => task.kind === spec.kind && task.domain === spec.domain && task.root_cause
+          && digest(task.root_cause) === digest(spec.root_cause) && digest(task.bac_analysis ?? null) === digest(spec.bac_analysis ?? null)
+          && digest(task.agent_mining ?? null) === digest(spec.agent_mining ?? null));
+        const coveredLocations = sameCause && spec.code_refs.every(ref => sameCause.code_refs.some(known => known.path === ref.path && known.line === ref.line && known.symbol === ref.symbol));
+        if (coveredLocations) { published.push(sameCause.task_id); reused.push({ requested_task_id: spec.task_id, task_id: sameCause.task_id }); continue; }
         if (spec.parent_task_id) check(board.tasks.some(task => task.task_id === spec.parent_task_id), "关联的原任务不存在。");
         check(board.tasks.length < 10_000, "本轮任务数量超过上限。");
-        board.tasks.push({ ...spec, spec_digest: specDigest, status: "PENDING", attempt_id: null, attempt_count: 0, report: null, reason: null, created_at: timestamp() });
+        board.tasks.push({ ...spec, spec_digest: digest(spec), ...(sameCause ? { related_task_id: sameCause.task_id } : {}), status: "PENDING", attempt_id: null, attempt_count: 0, report: null, reason: null, created_at: timestamp() });
         published.push(spec.task_id);
       }
-      return { published };
+      return { published, ...(reused.length ? { reused } : {}) };
     });
   }
   async seal({ empty_reason: emptyReason = null } = {}) {
@@ -145,7 +158,7 @@ export class TaskBoardStore {
   async claim(domain, leaseMs) {
     return this.mutate(board => {
       if (board.tasks.some(task => task.domain === domain && task.status === "RUNNING")) return null;
-      const task = board.tasks.find(task => task.domain === domain && task.status === "PENDING");
+      const task = board.tasks.filter(task => task.domain === domain && task.status === "PENDING").sort((a, b) => (a.priority ?? 2) - (b.priority ?? 2))[0];
       if (!task) return null;
       const attemptId = `attempt-${randomUUID()}`;
       task.status = "RUNNING"; task.attempt_id = attemptId; task.attempt_count++;
@@ -212,7 +225,8 @@ export class TaskBoardStore {
     check(typeof reason === "string" && reason.trim() && reason.length <= 4000, "跳过任务必须提供具体原因。");
     return this.mutate(board => {
       const task = board.tasks.find(row => row.task_id === taskId);
-      check(task && ["PENDING", "FAILED"].includes(task.status), "只能显式关闭待处理或失败的任务。");
+      const failures = task?.failure_count ?? board.attempts.filter(attempt => attempt.task_id === taskId && attempt.status === "FAILED").length;
+      check(task?.status === "FAILED" && failures >= 3, "只有实际执行失败达到三次的任务才能 skip；待处理任务须保留，预算不足请 defer 暂停。");
       task.status = "GAP"; task.reason = reason.trim(); task.completed_at = timestamp();
     });
   }

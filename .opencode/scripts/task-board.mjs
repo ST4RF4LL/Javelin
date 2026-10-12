@@ -5,7 +5,7 @@ import { PROTOCOL, check, controlledBytes, hash } from "../lib/task-board/contra
 try {
   check(process.env.AUDIT_TASK_PROTOCOL === PROTOCOL, "当前任务未选择通用任务面板协议。");
   const [command = "status", argument, value] = process.argv.slice(2);
-  check(["status", "list", "files", "file-claim", "file-read", "file-complete", "publish", "seal", "skip", "review-input", "review", "finalize", "wait", "bind", "correct-report"].includes(command), "任务面板命令无效。");
+  check(["status", "list", "files", "file-claim", "file-read", "file-complete", "file-batch", "file-batch-complete", "task-find", "defer", "publish", "seal", "skip", "review-input", "review-next", "review-submit", "review", "finalize", "wait", "bind", "correct-report"].includes(command), "任务面板命令无效。");
   if (command === "bind") {
     const bytes = await controlledBytes(process.env.AUDIT_REPORTS_ROOT, argument);
     process.stdout.write(`${JSON.stringify({ path: argument, sha256: hash(bytes) })}\n`);
@@ -14,7 +14,8 @@ try {
   const connection = JSON.parse(await readFile(process.env.AUDIT_TASK_BOARD_CONNECTION_PATH, "utf8"));
   check(connection.protocol === PROTOCOL && /^http:\/\/127\.0\.0\.1:\d+$/.test(connection.endpoint), "任务服务连接信息无效。");
   let body = {};
-  if (["publish", "skip", "review", "correct-report", "file-read", "file-complete"].includes(command)) body = JSON.parse(await readFile(argument, "utf8"));
+  if (["publish", "skip", "review", "review-submit", "correct-report", "file-read", "file-complete", "file-batch-complete", "task-find", "defer"].includes(command)
+    || command === "file-batch" && argument) body = JSON.parse(await readFile(argument, "utf8"));
   if (command === "files") body = { status: argument || "all", offset: Number(value) || 0 };
   if (command === "file-claim") body = argument ? { file_id: argument } : {};
   if (command === "seal" && argument) body = { empty_reason: argument };
@@ -28,7 +29,7 @@ try {
     const deadline = Date.now() + Math.min(30, Math.max(1, Number(argument) || 30)) * 1000;
     do {
       result = await call("status");
-      if (result.mining_complete || ["RESOLVE_FAILURES", "PUBLISH"].includes(result.next_action)) break;
+      if (result.mining_complete || ["RESOLVE_FAILURES", "PUBLISH", "PAUSED"].includes(result.next_action)) break;
       await new Promise(resolve => setTimeout(resolve, 1000));
     } while (Date.now() < deadline);
   } else result = await call(command);

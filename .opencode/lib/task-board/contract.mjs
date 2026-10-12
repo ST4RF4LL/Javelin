@@ -72,8 +72,20 @@ export function normalizeTask(input, board) {
     check(ref.line == null || Number.isInteger(ref.line) && ref.line > 0, "代码行号无效。");
     return { path: ref.path, ...(ref.line ? { line: ref.line } : {}), ...(typeof ref.symbol === "string" ? { symbol: ref.symbol.slice(0, 500) } : {}) };
   });
+  let rootCause = null;
+  if (input.root_cause != null) {
+    check(input.root_cause && typeof input.root_cause === "object", "根因定位无效。");
+    rootCause = {};
+    for (const key of ["path", "symbol", "weakness", "trust_boundary", "preconditions"]) {
+      check(typeof input.root_cause[key] === "string" && input.root_cause[key].trim() && input.root_cause[key].length <= 1000, "根因定位须包含文件、符号、弱点、信任边界与前提条件。");
+      rootCause[key] = input.root_cause[key].trim();
+    }
+    check(codeRefs.some(ref => ref.path === rootCause.path), "根因文件必须出现在代码定位中。");
+  }
+  check(input.priority == null || [1, 2, 3].includes(input.priority), "任务优先级为 1（高风险）、2（一般疑点）、3（边界探索）。");
   return { task_id: input.task_id, kind: input.kind, title: input.title.trim(), domain: input.domain,
     agent_name: DOMAINS[input.domain], prompt: input.prompt, source_ref: input.source_ref, code_refs: codeRefs,
+    ...(rootCause ? { root_cause: rootCause } : {}), ...(input.priority != null ? { priority: input.priority } : {}),
     ...(input.bac_analysis != null ? { bac_analysis: normalizeBacTask(input.bac_analysis) } : {}),
     ...(input.agent_mining != null ? { agent_mining: agentMiningSelection(input.agent_mining) } : {}),
     parent_task_id: input.parent_task_id ?? null, scope_digest: board.scope_digest };
@@ -130,7 +142,9 @@ export function summarize(board) {
     publication: board.publication.state, progress: total ? Math.round((reported + gap) * 100 / total) : 0,
     delivery_percentage: total ? Number((reported * 100 / total).toFixed(2)) : null, tracks,
     api_inventory: { submitted: board.api_sources.length, reported: apiReported, coverage_basis: "USER_SUPPLIED_LIST" },
-    validation: { status: board.validation?.status ?? "NOT_STARTED", reviewed: board.validation?.assessments?.length ?? 0 },
-    next_action: board.publication.state !== "SEALED" ? "PUBLISH" : count("FAILED") ? "RESOLVE_FAILURES"
+    validation: { status: board.validation?.status ?? "NOT_STARTED", reviewed: board.validation?.assessments?.length ?? 0,
+      ...(board.validation?.batch_plan ? { total_batches: board.validation.batch_count, completed_batches: (board.validation.batch_results ?? []).filter(row => row.moderator).length } : {}) },
+    ...(board.suspension ? { suspension: board.suspension } : {}),
+    next_action: board.suspension ? "PAUSED" : board.publication.state !== "SEALED" ? "PUBLISH" : count("FAILED") ? "RESOLVE_FAILURES"
       : complete ? board.final_report ? "DONE" : board.validation?.status === "REVIEWED" ? "FINALIZE" : "VALIDATE" : "WAIT" };
 }

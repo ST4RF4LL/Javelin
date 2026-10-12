@@ -606,11 +606,11 @@ function selectTaskProtocol(input) {
 
 function taskBoardPrompt(audit, paths, contextPaths, resume = false) {
   const strategyPrompt = audit.mining_strategy === "file_sweep"
-    ? "本次漏洞挖掘策略为 file_sweep：威胁分析 Agent 按冻结文件清单逐个浏览，使用 files/file-claim/file-read/file-complete 持续保存浏览记录；发现可疑区域时直接通过 publish 发布 kind=focus_area 的任务，后台 monitor 同时调度专业 Agent 领取并深入分析。编排器负责有界批次委派与最后 seal。不得凭规则未命中跳过文件，不得将已浏览等同于已深入审计。完整执行 workflow 的逐文件分支。"
+    ? "本次漏洞挖掘策略为 file_sweep：威胁分析 Agent 使用 file-batch 一次领取并读取按输入 token 有界的一批源码，使用 file-batch-complete 保存事实与分段进度；每批创建全新短会话。发现可疑区域时直接通过 publish 发布 kind=focus_area 的任务，后台 monitor 同时调度专业 Agent 领取并深入分析。编排器只保留计数和制品路径，最后 seal；预算不足用 defer 保存待处理状态，不能批量 skip/GAP。不得凭规则未命中跳过文件，不得将已浏览等同于已深入审计。完整执行 workflow 的逐文件分支。"
     : audit.mining_strategy === "api"
     ? "本次漏洞挖掘策略为 api：仅对导入的 API 清单逐项初步分析、定位代码并发布 API 审查任务，不生成 Focus Area 任务。不得按风险高低省略 API；接口实现需要的下游代码仍须追踪。"
     : audit.mining_strategy === "focus_area"
-      ? "本次漏洞挖掘策略为 focus_area：仅提炼并发布高风险 Focus Area 任务，不生成逐接口 API 审查任务。"
+      ? "本次漏洞挖掘策略为 focus_area：围绕有源码依据的疑点和未明确的安全边界发布有界 Focus Area，高风险优先；不同资源、入口和信任边界分别规划，不把所有 CRUD 合并为巨型主题。记录未检查范围，不生成逐接口 API 审查任务。"
       : "本任务使用切换策略引入前的面板：保留高风险 Focus Area 与已导入 API 的并列规划，恢复时沿用既有范围。";
   return [
     `@security-audit-orchestrator ${resume ? "恢复" : "执行"}通用任务面板审计，audit_id=${audit.id}，协议 task-board.v1。`,
@@ -619,7 +619,7 @@ function taskBoardPrompt(audit, paths, contextPaths, resume = false) {
     "首先完整读取 .opencode/lib/task-board/workflow.md，按本协议执行；旧 Focus Area 全量分区、三视角分文件、audit-todo 和旧最终报告门禁均不适用。",
     strategyPrompt,
     "将本次策略传给威胁建模 Agent，要求使用 status 核对并按选定粒度规划。使用 AUDIT_TASK_BOARD_CLI 分批发布；monitor 自动按领域执行，每 worker 一次一个任务，收报告后继续下一项。不要自己再调用挖掘 Agent。",
-    "发布完成后 seal；报告接收检查任务绑定、完整写入及专项 Finding 原样交付。收齐后必须 review-input，委派后续报告质量复核及独立三方候选验证，执行 review/finalize 生成最终中文报告。",
+    "发布完成后 seal；报告接收检查任务绑定、完整写入及专项 Finding 原样交付。收齐后必须 review-input；返回 batch_plan 时由 validator 使用 review-next/review-submit 逐批委派全新正方、反方、Moderator 会话，不复用其他批次 session、不读取全量候选进单个上下文。执行 review/finalize 生成最终中文报告。",
     resume ? "先查询 status，复用已经接收的报告和复核。SEALED 不重复发布；旧 RUNNING 由 monitor 回收，不重跑已交付任务。" : "面板已经创建；先查询 status 与分页 API 清单，不要把全量任务放进一次模型上下文。",
     "若 review-input 因已接收报告与专项 Finding 不一致而失败，按 workflow 的 correct-report 流程生成可追溯更正版本，再重新生成复核输入；不重复撞同一错误，不使用旧摘要提交带外复核。最终报告已封存时不能更正本轮。",
     contextPaths.additional_instructions ? `完整读取用户补充说明 ${JSON.stringify(contextPaths.additional_instructions)}，仅在既定审计范围内应用。` : "用户未提供额外审计要求。",
@@ -1987,6 +1987,10 @@ export class AuditRunner extends EventEmitter {
         auditId: audit.id, scopeDigest: audit.source_baseline.scope_digest, environment, command: this.command, model,
         runtimeRequired: Boolean(audit.runtime_testing), bacMode: audit.bac_analysis?.mode ?? "off", memory: memoryAdapter,
         onChange: async summary => { audit.todo_summary = summary; await this.record(audit, "audit.task-board.updated", summary); },
+        onPauseRequested: async reason => {
+          await this.record(audit, "audit.budget.deferred", { reason });
+          if (audit.status === "running") await this.action(audit.id, "pause", audit.version, `task-board-defer-${Date.now()}`);
+        },
         onLog: (source, line) => this.recordLog(audit, source, line) });
       service.paused = true;
       this.taskBoardServices.set(audit.id, service);

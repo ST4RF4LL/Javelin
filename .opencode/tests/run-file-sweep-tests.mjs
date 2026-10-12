@@ -81,8 +81,11 @@ test('零 Area 仍复核浏览记录，封存发现阶段报告；不能冒充�
  const verified=await verifyBoardCompletion({audit:{id:auditId,mining_strategy:'file_sweep',task_board_path:f.path,source_baseline:{scope_digest:scope}},reportsRoot:f.reportsRoot});assert.deepEqual(verified.errors,[]);
  await finalizeBoard(f.store);
 });
-test('全部浏览缺口可以收尾，但不报成功或未发现漏洞',async t=>{
- const f=await fixture(t,{'auth.py':'# source'});const file=await f.store.claimFile({});await f.store.completeFile({...completion(file),outcome:'GAP',summary:'当前编码与工具无法完成浏览。'},f.sourceRoot);await f.store.seal({empty_reason:'文件浏览存在缺口。'});
+test('实际读取失败可以保留缺口收尾，但不能用预算不足跳过未读文件',async t=>{
+ const f=await fixture(t,{'auth.py':'# source'});const file=await f.store.claimFile({});
+ await assert.rejects(()=>f.store.completeFile({...completion(file),outcome:'GAP',summary:'本轮预算不足。'},f.sourceRoot),/不能直接登记 GAP/);
+ await writeFile(join(f.sourceRoot,'auth.py'),'changed');await assert.rejects(()=>f.store.readFile(f.sourceRoot,file),/摘要已变化/);
+ await f.store.completeFile({...completion(file),outcome:'GAP',summary:'当前编码与工具无法完成浏览。'},f.sourceRoot);await f.store.seal({empty_reason:'文件浏览存在缺口。'});
  assert.equal(deliveryOutcome(f.store.summary()),'NO_REPORTS');const ref=await prepareReview(f.store);await assert.rejects(async()=>acceptReview(f.store,{quality:await quality(f,ref)}),/必须保留/);
  const q=await quality(f,ref,{file_discovery:{status:'GAP',reason:'文件尚未实际浏览。',evidence_refs:['浏览记录'],gaps:['需补充浏览']}});await acceptReview(f.store,{quality:q});const result=await finalizeBoard(f.store);assert.equal(result.delivery_outcome,'NO_REPORTS');assert.match(await readFile(join(f.reportsRoot,result.report_path),'utf8'),/当前编码与工具无法完成浏览/);
 });

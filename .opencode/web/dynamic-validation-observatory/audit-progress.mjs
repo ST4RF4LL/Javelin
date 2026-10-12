@@ -33,7 +33,9 @@ export function applyAuditProgress(audit) {
     : !sealed
     ? total ? `发布中 · 已发布 ${total} 项，已交报告 ${reported} 份` : "规划中 · 尚未发布任务"
     : !total ? "本轮无审计任务" : `报告交付 ${reported}/${total} · ${progress}%${board.gap ? ` · 缺口 ${board.gap}` : ""}`;
-  return { ...audit, task_board: board, execution_incomplete: noReports && finalized, stage, stages, progress, progress_text: progressText, progress_source: "task-board" };
+  const reviewProgress = board.validation?.total_batches > 0 && mined
+    ? ` · 复核批次 ${board.validation.completed_batches ?? 0}/${board.validation.total_batches}` : "";
+  return { ...audit, task_board: board, execution_incomplete: noReports && finalized, stage, stages, progress, progress_text: progressText + reviewProgress, progress_source: "task-board" };
 }
 
 export function mergeAuditPresentation(current, snapshot = {}) {

@@ -42,6 +42,8 @@ permission:
 
 ## 通用任务面板分支
 
+当本次委派为 file_sweep 的文件初筛批次，直接读取 `.opencode/lib/task-board/file-screening.md` 并处理一个批次；不加载下文旧分区、建模制品和全范围 Recon 契约。每批新建会话，返回紧凑计数与制品路径；BAC 策略专项委派仍走独立策略分支。
+
 当 `AUDIT_TASK_PROTOCOL=task-board.v1` 时，先读取 `.opencode/lib/task-board/workflow.md`，按自己的角色执行其中协议。该分支替代下文旧 Focus Area/TODO、工作包、验证及最终报告契约；源码只读、动态授权和私有信息边界继续适用。不要把新任务转换为旧 Focus Area 分区或调用旧门禁。
 
 
