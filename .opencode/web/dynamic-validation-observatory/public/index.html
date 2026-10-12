@@ -43,7 +43,7 @@
             </div>
           </section>
 
-          <section id="view-projects" class="view"><div class="page-heading"><div><p class="eyebrow">PRODUCT SPACES / AUDIT TARGETS</p><h2>产品与测试对象</h2><p>绑定产品目录，自动管理多级模块与 Git / 无 Git Repo，并复用历次审计经验。</p></div><div class="topbar-actions"><button id="add-product" class="button secondary">＋ 新建产品</button><button id="add-project" class="button primary">＋ 新建对象</button></div></div><article class="panel"><div class="section-title"><div><p class="eyebrow">ACTIVE PRODUCT</p><h2>当前产品空间</h2></div><div class="topbar-actions"><label>产品 <select id="product-selector"></select></label><button id="transfer-selected-targets" class="button secondary" disabled>批量修改归属</button><button id="product-archive" class="button secondary">归档产品</button></div></div><div id="project-table" class="data-table"></div></article><div id="product-memory-workspace"></div></section>
+          <section id="view-projects" class="view"><div class="page-heading"><div><p class="eyebrow">PRODUCT SPACES / AUDIT TARGETS</p><h2>产品与测试对象</h2><p>绑定产品目录，自动管理多级模块与 Git / 无 Git Repo，并复用历次审计经验。</p></div><div class="topbar-actions"><button id="add-product" class="button secondary">＋ 新建产品</button><button id="add-project" class="button primary">＋ 新建对象</button></div></div><article class="panel"><div class="section-title"><div><p class="eyebrow">ACTIVE PRODUCT</p><h2>当前产品空间</h2></div><div class="topbar-actions"><label>产品 <select id="product-selector"></select></label><button id="batch-create-selected-targets" type="button" class="button primary" hidden disabled>批量创建任务</button><button id="transfer-selected-targets" class="button secondary" disabled>批量修改归属</button><button id="product-archive" class="button secondary">归档产品</button></div></div><div id="project-table" class="data-table"></div></article><div id="product-memory-workspace"></div></section>
 
           <section id="view-audits" class="view">
             <div class="page-heading"><div><p class="eyebrow">END-TO-END RUNS</p><h2>审计任务</h2><p>查看每个 audit_id 的阶段、制品、覆盖率与运行状态。</p></div><button id="dispatch-queue" class="button secondary">立即调度队列</button></div>
@@ -58,6 +58,13 @@
               <span id="audit-list-status" role="status"></span>
             </div>
             <p class="audit-list-hint">点击任务展开详情。非运行任务包括已完成、失败、中断、取消、排队和暂停的任务。</p>
+            <div class="audit-batch-toolbar" role="group" aria-label="审计任务批量操作">
+              <label><input id="audit-select-page" type="checkbox" /> 全选当前页可删除任务</label>
+              <span id="audit-selection-count" role="status">已选 0 个任务</span>
+              <button id="clear-audit-selection" type="button" class="button secondary" disabled>清空选择</button>
+              <button id="batch-delete-audits" type="button" class="button danger" disabled>批量删除</button>
+              <small>翻页保留选择，切换筛选会清空。运行中和暂停任务请先取消。</small>
+            </div>
             <article class="panel">
               <div id="audit-table" class="data-table"></div>
               <nav id="audit-pagination" class="finding-pagination" aria-label="审计任务分页" hidden>
@@ -172,6 +179,7 @@
           <div class="strategy-switch">
             <label class="strategy-option"><input type="radio" name="mining_strategy" value="focus_area" checked><span>高风险 Focus Area</span></label>
             <label class="strategy-option"><input type="radio" name="mining_strategy" value="api"><span>逐接口 API 审查</span></label>
+            <label class="strategy-option"><input type="radio" name="mining_strategy" value="file_sweep"><span>逐文件地毯式审计</span></label>
           </div>
           <p id="mining-strategy-description" class="context-note" aria-live="polite">由威胁建模提炼高风险主题，按 Focus Area 定向深入分析。</p>
         </fieldset>
@@ -266,6 +274,17 @@
         <p class="delete-warning">将删除任务 <strong id="delete-audit-id" class="mono"></strong> 在工作台中的运行状态、可归属报告、临时文件、执行工作区以及关联验证/处置状态。被审计源码目录不会被修改。</p>
         <div id="delete-audit-form-error" class="notice error" hidden></div>
         <div class="dialog-actions"><button type="button" class="button secondary" data-close-delete-audit>取消</button><button id="submit-delete-audit" class="button danger" type="submit">确认删除</button></div>
+      </form>
+    </dialog>
+    <dialog id="batch-delete-dialog" aria-labelledby="batch-delete-title">
+      <form id="batch-delete-form">
+        <div class="dialog-heading"><div><p class="eyebrow">BATCH DELETE</p><h2 id="batch-delete-title">批量删除审计任务</h2></div><button type="button" class="icon-button" aria-label="关闭批量删除" data-close-batch-delete>×</button></div>
+        <p class="delete-warning">将删除所选任务的运行记录、可归属报告、临时文件、执行工作区及关联验证/处置状态。源码目录保留。删除后无法通过工作台恢复。</p>
+        <p id="batch-delete-summary" role="status" aria-live="polite"></p>
+        <ul id="batch-delete-list" aria-label="待删除任务及处理结果"></ul>
+        <p id="batch-delete-result-hint" class="muted" hidden>版本、状态或归属变化的任务需要在列表刷新并重新勾选；其他未成功或未处理项保留选择，核对后可再次批量删除。</p>
+        <div id="batch-delete-error" class="notice error" hidden></div>
+        <div class="dialog-actions"><button type="button" class="button secondary" data-close-batch-delete data-batch-delete-footer>取消</button><button id="stop-batch-delete" type="button" class="button secondary" hidden>停止后续删除</button><button id="submit-batch-delete" class="button danger" type="submit">确认删除</button></div>
       </form>
     </dialog>
     <dialog id="validation-dialog">

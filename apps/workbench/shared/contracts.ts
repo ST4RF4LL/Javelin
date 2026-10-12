@@ -24,11 +24,12 @@ export interface AuditPage { items: Audit[]; count: number; page: number; pageSi
 export type AuditAction = 'pause' | 'resume' | 'recover' | 'cancel' | 'dispatch';
 export interface TaskProduct { id: string; name: string; status: string }
 export interface TaskTarget { id: string; name: string; path: string; runnable: boolean; reason: string }
+export interface BatchAuditSelection { productId: string; targetIds: string[] }
 export interface TaskOptions { runnerEnabled: boolean; products: TaskProduct[]; models: { value: string; label: string }[]; selectedModel: string }
 export interface TaskModels { models: { value: string; label: string }[]; selectedModel: string }
 export interface RealAuditInput {
   productId: string; targetId: string; auditId: string; name: string; model: string;
-  miningStrategy: 'focus_area' | 'api'; apiInventory: string; memoryMode: string; bacAnalysis: string;
+  miningStrategy: 'focus_area' | 'api' | 'file_sweep'; apiInventory: string; memoryMode: string; bacAnalysis: string;
   additionalInstructionsEnabled: boolean; additionalInstructions: string;
   testEnvironmentEnabled: boolean; testEnvironmentContext: string;
   runtimeTesting: { mode: string; budgetMinutes: number; identityMode: string; testInput: boolean; testMutation: boolean };

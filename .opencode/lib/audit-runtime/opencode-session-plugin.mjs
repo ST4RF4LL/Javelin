@@ -58,7 +58,7 @@ export default async function nativeAuditSessionPlugin({ client, directory }, op
         description: '在当前真实 Agent session 登记源码审计，接入后台任务板、Web 进度和报告。保留当前主会话，读取返回的审计 prompt 后继续。只在用户要求启动审计时调用。',
         args: { source_root: tool.schema.string().describe('用户要求审计的源码绝对目录'), name: tool.schema.string().optional(),
           product_id: tool.schema.string().optional(), target_id: tool.schema.string().optional(),
-          mining_strategy: tool.schema.enum(['focus_area', 'api']).optional(), api_inventory: tool.schema.string().optional(),
+          mining_strategy: tool.schema.enum(['focus_area', 'api', 'file_sweep']).optional(), api_inventory: tool.schema.string().optional(),
           memory_mode: tool.schema.enum(['full', 'facts_only', 'off', 'blind']).optional(),
           bac_analysis: tool.schema.enum(['auto', 'off']).optional(),
           additional_instructions: tool.schema.string().optional(),

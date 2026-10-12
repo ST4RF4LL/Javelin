@@ -1,58 +1,13 @@
 import type { Audit, RealAuditInput, TaskTarget } from '../../shared/contracts';
 
-export function directoryKey(path: string) {
-  const trimmed = path.trim().replace(/[\\/]+$/, '');
-  return /^(?:[a-z]:[\\/]|\\\\|\/\/)/i.test(trimmed) ? trimmed.replace(/\\/g, '/').toLowerCase() : trimmed;
-}
-
 export function repositoryName(path: string) {
   return path.trim().replace(/[\\/]+$/, '').split(/[\\/]/).pop() || 'repo';
 }
 
-export function parseRepositoryPaths(text: string) {
-  const paths: string[] = [];
-  const seen = new Set<string>();
-  for (const [index, line] of text.split(/\r?\n/).entries()) {
-    let path = line.trim();
-    if (!path) continue;
-    if ((path.startsWith('"') && path.endsWith('"')) || (path.startsWith("'") && path.endsWith("'"))) path = path.slice(1, -1).trim();
-    if (path.length > 4096 || !/^(?:\/|[a-z]:[\\/]|\\\\[^\\]+\\[^\\]+)/i.test(path)) throw new Error(`第 ${index + 1} 行请填写本机绝对目录，每行一个。`);
-    const key = directoryKey(path);
-    if (!seen.has(key)) { seen.add(key); paths.push(path); }
-  }
-  if (!paths.length) throw new Error('请至少填写一个本机源码目录。');
-  return paths;
-}
-
-export async function registerBatchRepositories(
-  paths: string[], existing: TaskTarget[], register: (input: { name: string; path: string }) => Promise<TaskTarget>,
-) {
-  const targets = [...existing];
-  const selectedIds: string[] = [];
-  const failures: { path: string; message: string }[] = [];
-  for (const path of paths) {
-    try {
-      const matching = targets.filter(target => directoryKey(target.path) === directoryKey(path));
-      let target = matching.find(target => target.runnable) || matching[0];
-      if (!target) {
-        target = await register({ name: repositoryName(path).slice(0, 160), path });
-        targets.push(target);
-      }
-      if (!target.runnable) throw new Error(target.reason || '源码目录不可用');
-      selectedIds.push(target.id);
-    } catch (error) {
-      failures.push({ path, message: error instanceof Error ? error.message : '目录登记失败，请重试。' });
-    }
-  }
-  return { targets, selectedIds: [...new Set(selectedIds)], failures };
-}
-
-export function uniqueRepositories(targets: TaskTarget[]) {
-  const seen = new Set<string>();
-  return targets.filter(target => {
-    const key = directoryKey(target.path);
-    if (!target.runnable || seen.has(key)) return false;
-    seen.add(key); return true;
+export function resolveBatchTargets(targetIds: string[], targets: TaskTarget[]): TaskTarget[] {
+  const byId = new Map(targets.map(target => [target.id, target]));
+  return [...new Set(targetIds)].map(id => byId.get(id) || {
+    id, name: id, path: '', runnable: false, reason: '项目已移出当前产品或已归档，请返回列表重新选择。',
   });
 }
 
@@ -72,7 +27,10 @@ export interface BatchAuditItem {
 }
 
 export function prepareBatchAudits(config: RealAuditInput, targets: TaskTarget[], date = new Date()): BatchAuditItem[] {
-  return uniqueRepositories(targets).map(target => ({
+  const selected = resolveBatchTargets(targets.map(target => target.id), targets);
+  const unavailable = selected.find(target => !target.runnable);
+  if (unavailable) throw new Error(`${unavailable.name}：${unavailable.reason || '项目不可运行'}`);
+  return selected.map(target => ({
     input: { ...structuredClone(config), targetId: target.id, auditId: `audit-${crypto.randomUUID()}`, name: batchAuditName(target.path, date) },
     key: crypto.randomUUID(), path: target.path, status: 'pending',
   }));

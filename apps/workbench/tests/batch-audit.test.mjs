@@ -1,7 +1,7 @@
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
 import { api, ApiError } from '../app/lib/api.ts';
-import { batchAuditName, parseRepositoryPaths, prepareBatchAudits, registerBatchRepositories, submitBatchAudits, uniqueRepositories } from '../app/lib/batch-audit.ts';
+import { batchAuditName, prepareBatchAudits, resolveBatchTargets, submitBatchAudits } from '../app/lib/batch-audit.ts';
 
 const config = {
   productId: 'product-batch', targetId: '', auditId: 'unused', name: '', model: 'fixture-model',
@@ -13,33 +13,30 @@ const config = {
 const target = (id, path, extras = {}) => ({ id, name: `显示名-${id}`, path, runnable: true, reason: '', ...extras });
 const targets = [target('repo-a', '/repos/order-service'), target('repo-b', 'D:\\团队 repos\\payment-service')];
 
-test('批量目录支持 macOS、Windows、UNC、空格和成对引号；重复路径只添加一次', () => {
-  assert.deepEqual(parseRepositoryPaths('  "/repos/order service/"\r\n/repos/order service\n"D:\\Team repos\\api"\n d:/team repos/api/ \n\\\\server\\share\\repo\n\n'), ['/repos/order service/', 'D:\\Team repos\\api', '\\\\server\\share\\repo']);
-  assert.deepEqual(parseRepositoryPaths('/repos/Repo\n/repos/repo'), ['/repos/Repo', '/repos/repo']);
-  for (const input of ['', './relative', 'D:relative', 'https://example.test/repo', '/repos/ok\ninvalid']) assert.throws(() => parseRepositoryPaths(input), /绝对目录|至少/);
+test('只带入列表勾选项目，按所选顺序创建，不扩大到其他项目', () => {
+  const selected = resolveBatchTargets(['repo-b', 'repo-a', 'repo-b'], [...targets, target('unselected', '/repos/private')]);
+  assert.deepEqual(selected.map(item => item.id), ['repo-b', 'repo-a']);
+  const items = prepareBatchAudits(config, selected);
+  assert.deepEqual(items.map(item => item.input.targetId), ['repo-b', 'repo-a']);
+  assert.ok(items.every(item => item.input.productId === 'product-batch'));
+  assert.deepEqual(resolveBatchTargets([], targets), []);
 });
 
-test('登记复用已存在目录，个别目录失败不丢失其他成功项；重试先复用已登记项', async () => {
-  const calls = [];
-  const existing = [targets[0]];
-  const register = async input => {
-    calls.push(input.path);
-    if (input.path === '/missing') throw new ApiError('目录不存在', 422, 'register-error');
-    const created = target('repo-new', input.path); existing.push(created); return created;
-  };
-  const result = await registerBatchRepositories(['/repos/order-service/', '/missing', 'D:\\repos\\new'], existing, register);
-  assert.deepEqual(calls, ['/missing', 'D:\\repos\\new']);
-  assert.deepEqual(result.selectedIds, ['repo-a', 'repo-new']);
-  assert.deepEqual(result.failures, [{ path: '/missing', message: '目录不存在' }]);
-  const retry = await registerBatchRepositories(['d:/repos/new/'], existing, register);
-  assert.deepEqual(retry.selectedIds, ['repo-new']);
-  assert.equal(calls.length, 2);
+test('所选项目消失或不可运行时保留具体原因，不能静默丢弃后提交其他项目', () => {
+  const selected = resolveBatchTargets(['repo-a', 'moved', 'disabled'], [...targets, target('disabled', '/unavailable', { runnable: false, reason: '目录不可用' })]);
+  assert.equal(selected.length, 3);
+  assert.equal(selected[1].runnable, false);
+  assert.match(selected[1].reason, /移出当前产品|归档/);
+  assert.equal(selected[2].reason, '目录不可用');
+  assert.throws(() => prepareBatchAudits(config, selected), /移出当前产品|归档/);
+  assert.throws(() => prepareBatchAudits(config, [selected[0], selected[2]]), /目录不可用/);
 });
 
-test('不可运行源码不会进入批次；同一目录的多个源码对象只生成一个任务', () => {
-  const selections = [...targets, target('duplicate', 'd:/团队 repos/payment-service/'), target('disabled', '/unavailable', { runnable: false, reason: '不可用' })];
-  assert.deepEqual(uniqueRepositories(selections), targets);
-  assert.equal(prepareBatchAudits(config, selections).length, 2);
+test('不同项目即使指向同一个目录也各建一个任务，同一项目重复 ID 只提交一次', () => {
+  const selected = [targets[0], target('same-path-project', targets[0].path), targets[0]];
+  const items = prepareBatchAudits(config, selected);
+  assert.deepEqual(items.map(item => item.input.targetId), ['repo-a', 'same-path-project']);
+  assert.notEqual(items[0].input.auditId, items[1].input.auditId);
 });
 
 test('任务按目录名和本地日期命名，每项独立 ID，共享配置保持原值且互不污染', () => {

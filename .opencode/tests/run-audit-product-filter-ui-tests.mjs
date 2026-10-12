@@ -2,13 +2,13 @@ import test from 'node:test';
 import assert from 'node:assert/strict';
 import { readFile } from 'node:fs/promises';
 import vm from 'node:vm';
-import { auditListPath, auditScope, resolveAuditScope } from '../web/dynamic-validation-observatory/public/app.js';
+import { auditListPath, auditScope, resolveAuditScope, auditCanDelete, auditSelectionKey, deleteAuditRequest } from '../web/dynamic-validation-observatory/public/app.js';
 import { paginateAudits } from '../web/dynamic-validation-observatory/audit-list.mjs';
 
 const source = await readFile(new URL('../web/dynamic-validation-observatory/public/app.js', import.meta.url), 'utf8');
 // Execute the real controller functions with fixture I/O; no browser, port,
 // Agent, or production task is started by these regression checks.
-const functionNames = ['renderAudits', 'loadAuditsPage', 'findAudit', 'auditProductId', 'selectAudit', 'requestAuditAction', 'retryAudit', 'selectAuditProductFilter', 'loadProductTargets', 'openAuditDialog', 'auditDeleteButton', 'openDeleteAuditDialog', 'closeDeleteAuditDialog', 'submitDeleteAudit'];
+const functionNames = ['renderAudits', 'renderAuditSelection', 'selectAuditPage', 'openBatchDeleteAudits', 'renderBatchDeleteAudits', 'closeBatchDeleteAudits', 'submitBatchDeleteAudits', 'loadAuditsPage', 'findAudit', 'auditProductId', 'selectAudit', 'requestAuditAction', 'retryAudit', 'selectAuditProductFilter', 'loadProductTargets', 'openAuditDialog', 'auditDeleteButton', 'openDeleteAuditDialog', 'closeDeleteAuditDialog', 'submitDeleteAudit'];
 const functions = functionNames.map(name => {
   const match = source.match(new RegExp(`^(?:async )?function ${name}\\([^]*?^}`, 'm'));
   assert.ok(match, name); return match[0];
@@ -31,7 +31,8 @@ function fixture() {
   const nodes = new Map(), calls = [], errors = [], targetsLoaded = [];
   const $ = id => { if (!nodes.has(id)) nodes.set(id, new Element()); return nodes.get(id); };
   const state = { view: 'audits', selectedProductId: 'p1', auditProductFilter: 'p1', selectedTargetIds: new Set(['selected-target']), products: [{ id: 'p1', name: '产品一', status: 'active' }, { id: 'p2', name: '产品二', status: 'active' }], targets: [], workspace: { audits: [], queue: {} }, audits: [], auditTab: 'all', auditPage: 1, auditPageSize: 20, auditTotal: 0, auditTotalPages: 1, runtime: { runner: { enabled: true } }, auditDialogRequest: 0, modelSettings: { selected_model: 'default', options: [{ value: 'default', label: '默认' }] } };
-  const context = vm.createContext({ state, $, document: { querySelectorAll: () => [] }, URLSearchParams, AbortController, crypto, auditListPath, auditScope, resolveAuditScope,
+  Object.assign(state, { selectedAudits: new Map(), auditSelectionScope: null, batchDeleteItems: [], batchDeleteStarted: false, batchDeleteBusy: false, batchDeleteStop: false });
+  const context = vm.createContext({ state, $, document: { querySelectorAll: () => [] }, URLSearchParams, AbortController, crypto, structuredClone, auditListPath, auditScope, resolveAuditScope, auditCanDelete, auditSelectionKey, deleteAuditRequest,
     element: (...args) => new Element(...args), table: () => [new Element('table'), new Element('tbody')], cell() {}, short: String, auditStatus: () => new Element(), auditProgressText: () => '',
     renderActiveView() {}, renderAuditDetail() {}, connectEventStream() {}, closeAuditDrawer() { $('audit-drawer').open = false; },
     showError: error => errors.push(error), toast() {}, load: async () => {}, setView: view => { state.view = view; }, syncAuditContextControls() {},
@@ -212,4 +213,77 @@ test('删除版本冲突保留确认窗口和任务，历史制品走兼容接�
   f.context.respond = async () => ({ deleted: true, audit_id: historical.id });
   await f.context.submitDeleteAudit({ preventDefault() {} });
   assert.equal(f.calls[0].url, '/api/v1/audits/audit-history');
+});
+
+test('批量选择仅包含可删除任务，翻页保留且筛选变化清空，活动状态更新会取消选中', async () => {
+  const f = fixture(), first = audit('audit-first', 'p1', 'completed'), queued = audit('audit-queued', 'p1');
+  const second = audit('audit-second', 'p2', 'failed');
+  f.context.respond = async url => ({ items: new URL(url, 'http://fixture').searchParams.get('page') === '2' ? [second] : [first, queued, audit('audit-running', 'p1', 'running'), audit('audit-paused', 'p1', 'paused')], count: 5, page: Number(new URL(url, 'http://fixture').searchParams.get('page')), total_pages: 2 });
+  await f.context.loadAuditsPage(1); f.context.selectAuditPage(true);
+  assert.equal(f.state.selectedAudits.size, 2); assert.equal(f.$('audit-select-page').checked, true);
+  await f.context.loadAuditsPage(2); f.context.selectAuditPage(true);
+  assert.equal(f.state.selectedAudits.size, 3); assert.equal(f.$('audit-selection-count').textContent, '已选 3 个任务');
+  f.context.selectAuditPage(false); assert.equal(f.state.selectedAudits.size, 2);
+  queued.status = 'running'; await f.context.loadAuditsPage(1);
+  assert.equal(f.state.selectedAudits.size, 1); assert.ok(f.state.selectedAudits.has(auditSelectionKey(first)));
+  f.$('audit-query').value = 'new filter'; await f.context.loadAuditsPage(1);
+  assert.equal(f.state.selectedAudits.size, 0); assert.equal(f.$('batch-delete-audits').disabled, true);
+});
+
+test('批量确认展示冻结任务清单，取消不发送请求，跨产品与历史任务逐项走已有删除接口', async () => {
+  const f = fixture(), records = [audit('audit-one', 'p1', 'completed'), audit('audit-two', 'p2', 'failed'), audit('audit-history-batch', 'product-undefined', 'artifact_only')];
+  f.state.audits = records; f.state.workspace.audits = records; f.context.selectAuditPage(true);
+  f.context.openBatchDeleteAudits(); assert.equal(f.$('batch-delete-dialog').open, true); assert.equal(f.calls.length, 0);
+  assert.equal(f.$('batch-delete-list').children.length, 3);
+  f.context.closeBatchDeleteAudits(); assert.equal(f.calls.length, 0);
+  f.context.openBatchDeleteAudits();
+  records[0].version = 99; // The user's confirmation refers to the displayed version, not a later refresh.
+  f.context.respond = async (url, options) => ({ deleted: true, audit_id: JSON.parse(options.body).confirmation });
+  await f.context.submitBatchDeleteAudits({ preventDefault() {} });
+  assert.deepEqual(f.calls.map(call => call.url), ['/api/v2/products/p1/audits/audit-one', '/api/v2/products/p2/audits/audit-two', '/api/v1/audits/audit-history-batch']);
+  assert.ok(f.calls.every(call => call.options.method === 'DELETE' && call.options.headers['If-Match'] === '"4"'));
+  assert.equal(f.state.selectedAudits.size, 0); assert.equal(f.state.audits.length, 0);
+  assert.equal(f.state.workspace.audits.length, 0); assert.equal(f.$('batch-delete-dialog').open, true);
+  assert.equal(f.$('batch-delete-summary').textContent, '已删除 3/3 · 未成功 0 · 未处理 0');
+  await f.context.submitBatchDeleteAudits({ preventDefault() {} }); assert.equal(f.calls.length, 3);
+});
+
+test('批量部分失败继续处理；冲突任务重新选择，连接失败保留，列表刷新失败不覆盖删除结果', async () => {
+  const f = fixture(), records = [audit('audit-conflict', 'p1', 'completed'), audit('audit-okay', 'p2', 'completed'), audit('audit-offline', 'p2', 'failed')];
+  f.state.audits = records; f.context.selectAuditPage(true); f.context.openBatchDeleteAudits();
+  f.context.respond = async (url, options) => {
+    if (url.endsWith('audit-conflict')) throw Object.assign(new Error('审计版本已变化，请刷新后重试。'), { status: 412 });
+    if (url.endsWith('audit-offline')) throw new TypeError('connection reset');
+    return { deleted: true, audit_id: JSON.parse(options.body).confirmation };
+  };
+  f.context.load = async () => { throw new Error('列表暂不可用'); };
+  await f.context.submitBatchDeleteAudits({ preventDefault() {} });
+  assert.equal(f.calls.length, 3); assert.deepEqual(Array.from(f.state.batchDeleteItems, item => item.status), ['failed', 'deleted', 'failed']);
+  assert.match(f.state.batchDeleteItems[0].error, /版本已变化/); assert.match(f.state.batchDeleteItems[2].error, /结果未确认/);
+  assert.equal(f.state.selectedAudits.size, 1); assert.ok(f.state.selectedAudits.has(auditSelectionKey(records[2])));
+  assert.match(f.state.batchDeleteItems[0].error, /重新勾选/); assert.match(f.$('batch-delete-error').textContent, /删除结果已保留，列表刷新失败/);
+  f.context.closeBatchDeleteAudits(); f.context.openBatchDeleteAudits();
+  assert.equal(f.state.batchDeleteItems.length, 1); assert.equal(f.calls.length, 3);
+});
+
+test('删除处理中不能重复提交或关闭，停止操作只取消尚未发出的请求', async () => {
+  const f = fixture(); f.state.audits = [audit('audit-first', 'p1', 'completed'), audit('audit-second', 'p1', 'completed')];
+  f.context.selectAuditPage(true); f.context.openBatchDeleteAudits(); let complete;
+  f.context.respond = async () => new Promise(resolve => { complete = resolve; });
+  const pending = f.context.submitBatchDeleteAudits({ preventDefault() {} });
+  await new Promise(resolve => setImmediate(resolve));
+  assert.equal(f.state.batchDeleteBusy, true); f.context.closeBatchDeleteAudits(); assert.equal(f.$('batch-delete-dialog').open, true);
+  await f.context.submitBatchDeleteAudits({ preventDefault() {} }); assert.equal(f.calls.length, 1);
+  f.state.batchDeleteStop = true; complete({ deleted: true, audit_id: 'audit-first' }); await pending;
+  assert.equal(f.calls.length, 1); assert.deepEqual(Array.from(f.state.batchDeleteItems, item => item.status), ['deleted', 'pending']);
+  assert.equal(f.state.selectedAudits.size, 1); assert.equal(f.state.batchDeleteBusy, false);
+});
+
+test('删除应答缺少成功标识或任务编号不匹配时，不移除本地任务和选择', async () => {
+  const f = fixture(), value = audit('audit-unconfirmed', 'p1', 'completed');
+  f.state.audits = [value]; f.context.selectAuditPage(true); f.context.openBatchDeleteAudits();
+  f.context.respond = async () => ({ deleted: true, audit_id: 'another-audit' });
+  await f.context.submitBatchDeleteAudits({ preventDefault() {} });
+  assert.equal(f.state.audits.length, 1); assert.equal(f.state.selectedAudits.size, 1);
+  assert.match(f.state.batchDeleteItems[0].error, /结果未能确认/);
 });

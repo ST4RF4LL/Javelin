@@ -9,6 +9,7 @@ import { BAC_EVIDENCE_STRUCTURE_ERROR } from "../bac/contract.mjs";
 
 const nonempty = value => typeof value === "string" && value.trim();
 const reviewState = board => ({ scope_digest: board.scope_digest, api_sources_digest: digest(board.api_sources), publication: board.publication, tasks: board.tasks.map(task => ({ task_id: task.task_id, spec_digest: task.spec_digest, status: task.status, report: task.report, reason: task.reason })), ...(board.mining_strategy ? { mining_strategy: board.mining_strategy } : {}),
+  ...(board.file_sweep ? { file_sweep_digest: digest(board.file_sweep) } : {}),
   ...(board.report_corrections?.length ? { report_corrections: board.report_corrections } : {}),
   ...(taskBacEnabled(board) ? { bac_analysis: board.bac_analysis, bac_attempts: board.tasks.map(task => {
     const attempt = board.attempts.find(row => row.attempt_id === task.attempt_id);
@@ -80,7 +81,16 @@ export async function prepareReview(store, { runtimeRequired = false, bacMode = 
   const invalidBac = await invalidBacEvidence(bacSummary, store.reportsRoot, candidates, board, tasks, runtime);
   for (const task of tasks) if (invalidBac.tasks.has(task.task_id)) task.bac_gap = invalidBac.tasks.get(task.task_id);
   for (const candidate of candidates) if (invalidBac.blockedCandidates.has(candidate.candidate_id)) candidate.bac_gap = invalidBac.tasks.get(candidate.task_id);
+  let fileDiscovery = null;
+  if (board.file_sweep) {
+    const bytes = Buffer.from(`${JSON.stringify(board.file_sweep, null, 2)}\n`);
+    const path = `validation/task-board.${board.audit_id}.files.${hash(bytes)}.json`;
+    await mkdir(dirname(join(store.reportsRoot, path)), { recursive: true });
+    await writeFile(join(store.reportsRoot, path), bytes);
+    fileDiscovery = { ...binding(path, bytes), summary: store.summary().file_sweep };
+  }
   const input = { protocol: PROTOCOL, artifact_type: "task-board-review-input", audit_id: board.audit_id, scope_digest: board.scope_digest,
+    ...(fileDiscovery ? { file_discovery: fileDiscovery } : {}),
     ...(board.mining_strategy ? { mining_strategy: board.mining_strategy } : {}),
     ...(bacSummary ? { bac_summary: bacSummary } : {}),
     board_digest: digest(reviewState(board)), bac_mode: bacMode, tasks, candidates, runtime };
@@ -130,6 +140,13 @@ export async function validateReviewBundle(board, root, bundle) {
     check(nonempty(doc.agent_session_id) && !sessions.has(doc.agent_session_id), "复核角色必须使用独立的真实会话。"); sessions.add(doc.agent_session_id);
   }
   header(quality, "REPORT_REVIEW");
+  if (board.file_sweep) {
+    check(input.file_discovery && digest(await boundJson(root, input.file_discovery)) === digest(board.file_sweep), "文件浏览记录与复核输入不一致。");
+    const review = quality.file_discovery;
+    check(review && ["REVIEWED", "GAP"].includes(review.status) && nonempty(review.reason) && Array.isArray(review.evidence_refs) && review.evidence_refs.length > 0 && Array.isArray(review.gaps), "逐文件威胁发现记录需要独立质量复核及证据引用。");
+    if (input.file_discovery.summary.gap_files || !input.file_discovery.summary.browsed_files) check(review.status === "GAP", "文件浏览缺口或未浏览任何文件时，必须保留发现阶段缺口。");
+    if (review.status === "REVIEWED") check(!review.gaps.length, "存在发现阶段缺口，不能标为完整复核。");
+  }
   exactIds(quality.assessments, input.tasks.map(task => task.task_id), "task_id");
   for (const row of quality.assessments) {
     check(["REVIEWED", "NEEDS_FOLLOWUP", "GAP"].includes(row.status) && nonempty(row.reason) && Array.isArray(row.evidence_refs) && Array.isArray(row.gaps), "报告质量复核字段不完整。");
@@ -227,7 +244,9 @@ function finalModel(board, { input, quality, roles }) {
     else (review.verdict === "TRUE_POSITIVE" ? findings : excluded).push(row);
   }
   const residualGaps = [
-    ...(board.publication.empty_reason ? [board.publication.empty_reason] : []),
+    ...(board.file_sweep?.files ?? []).filter(file => file.status === "GAP").map(file => `文件浏览 ${file.path}：${file.reason}`),
+    ...(quality.file_discovery?.status === "GAP" ? [`逐文件威胁发现：${quality.file_discovery.reason}`, ...quality.file_discovery.gaps] : []),
+    ...(board.publication.empty_reason && !board.file_sweep ? [board.publication.empty_reason] : []),
     ...input.tasks.flatMap(task => [task.reason, task.parse_gap, task.bac_gap, ...task.reported_gaps.map(gap => typeof gap === "string" ? gap : JSON.stringify(gap))].filter(Boolean).map(reason => `${task.title}：${reason}`)),
     ...quality.assessments.filter(row => row.status !== "REVIEWED").map(row => `${row.task_id}：${row.reason}`),
     ...quality.assessments.flatMap(row => row.gaps.map(gap => `${row.task_id}：${gap}`)),
@@ -245,6 +264,7 @@ function finalModel(board, { input, quality, roles }) {
     ...(reportVersion >= 2 ? { report_version: reportVersion, delivery_outcome: deliveryOutcome(summary) } : {}),
     board_digest: input.board_digest, inputs: { intake: board.validation.input, ...board.validation.bundle }, summary, tasks: input.tasks,
     assessments: quality.assessments, findings, excluded_findings: excluded, runtime_findings: runtimeFindings,
+    ...(input.file_discovery ? { file_discovery: { ...input.file_discovery, review: quality.file_discovery } } : {}),
     ...(board.report_corrections?.length ? { report_corrections: board.report_corrections } : {}),
     runtime: input.runtime?.evidence ?? null, bac_analysis: quality.bac_analysis ? { ...quality.bac_analysis,
       ...(input.bac_summary ? { summary: input.bac_summary } : {}) } : null, residual_gaps: [...new Set(residualGaps)] };

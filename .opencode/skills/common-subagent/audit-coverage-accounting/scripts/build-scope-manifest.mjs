@@ -2,12 +2,14 @@
 
 import { createHash } from "node:crypto";
 import { createReadStream } from "node:fs";
-import { lstat, opendir, readlink, mkdir, writeFile } from "node:fs/promises";
-import { dirname, extname, relative, resolve, sep } from "node:path";
+import { lstat, opendir, readlink, realpath, mkdir, writeFile } from "node:fs/promises";
+import { dirname, extname, isAbsolute, relative, resolve, sep } from "node:path";
 import { spawnSync } from "node:child_process";
 
 const SCHEMA_VERSION = 1;
 const LENSES = ["sink-driven", "control-driven", "config-driven"];
+let fileSweepProfile = false;
+const AUDIT_OUTPUT_EXCLUSIONS = new Map();
 const INFRASTRUCTURE_EXCLUSIONS = new Map([
   [".git", "version-control-internals"],
   [".atlas", "local-code-facts-cache"],
@@ -183,11 +185,15 @@ async function walk(root) {
     for (const entry of entries) {
       const rel = normalizePath(relDir ? `${relDir}/${entry.name}` : entry.name);
       const abs = resolve(absDir, entry.name);
+      if (AUDIT_OUTPUT_EXCLUSIONS.has(rel)) {
+        exclusions.push({ path: rel, reason: AUDIT_OUTPUT_EXCLUSIONS.get(rel) });
+        continue;
+      }
       if (entry.name === ".git") {
         exclusions.push({ path: rel, reason: "version-control-internals" });
         continue;
       }
-      if (!relDir && entry.isDirectory() && INFRASTRUCTURE_EXCLUSIONS.has(entry.name)) {
+      if ((!relDir || fileSweepProfile) && entry.isDirectory() && INFRASTRUCTURE_EXCLUSIONS.has(entry.name)) {
         exclusions.push({ path: rel, reason: INFRASTRUCTURE_EXCLUSIONS.get(entry.name) });
         continue;
       }
@@ -285,8 +291,24 @@ async function walkGitScope(root, candidates) {
 
 async function main() {
   const args = parseArgs(process.argv.slice(2));
-  const root = resolve(args.root);
+  if (args.profile && args.profile !== "file-sweep") throw new Error("Unknown scope profile");
+  if (args.profile === "file-sweep") {
+    fileSweepProfile = true;
+    INFRASTRUCTURE_EXCLUSIONS.clear();
+    for (const [name, reason] of [[".git", "版本控制内部数据"], [".atlas", "代码索引缓存"], ["node_modules", "已安装第三方依赖"], [".venv", "Python 虚拟环境"], ["__pycache__", "Python 字节码缓存"]]) INFRASTRUCTURE_EXCLUSIONS.set(name, reason);
+    args.mode = "filesystem";
+  }
+  const root = fileSweepProfile ? await realpath(args.root) : resolve(args.root);
   const output = resolve(args.output);
+  if (fileSweepProfile) {
+    for (const key of ["audit-reports-root", "audit-tmp-root", "audit-workspace-root", "audit-state-root"]) {
+      if (!args[key]) continue;
+      const rel = relative(root, await realpath(args[key]).catch(() => resolve(args[key])));
+      if (!rel) throw new Error("审计运行数据目录不能与被测源码根目录重合。");
+      if (isAbsolute(rel) || rel === ".." || rel.startsWith(`..${sep}`)) continue;
+      AUDIT_OUTPUT_EXCLUSIONS.set(normalizePath(rel), "平台实际审计输出或运行状态目录");
+    }
+  }
   const tracked = gitTrackedFiles(root);
   const gitCandidates = args.mode === "filesystem" ? null : gitScopeFiles(root);
   if (args.mode === "git" && gitCandidates === null) throw new Error("--mode git requires a Git worktree");
@@ -327,6 +349,7 @@ async function main() {
     root,
     scope_digest: createHash("sha256").update(digestInput).digest("hex"),
     policy: {
+      ...(fileSweepProfile ? { profile: "file-sweep", description: "逐文件扫描包含 Git 忽略的本机文件，显式排除依赖安装目录、版本控制、索引缓存及平台实际运行数据目录；不按 reports/tmp/.opencode 目录名排除业务文件。", audit_output_paths: [...AUDIT_OUTPUT_EXCLUSIONS.keys()] } : {}),
       enumeration: useGitScope ? "git-index-plus-untracked-nonignored" : "recursive-filesystem-walk",
       requested_mode: args.mode,
       ignored_content: useGitScope ? "excluded-by-gitignore-and-recorded-as-scope-exclusions" : "included",

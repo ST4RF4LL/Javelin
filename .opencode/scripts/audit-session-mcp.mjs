@@ -15,7 +15,7 @@ const reply = async operation => {
 server.registerTool('audit_register', {
   description: '用户要求开始源码审计时，登记当前原生 Agent 会话并继续在该会话执行。后台提供任务板、制品和 Web 进度；此工具不启动另一个主 Agent。',
   inputSchema: { ...identity, directory: z.string().describe('当前 Agent 工作目录的绝对路径'), source_root: z.string(), name: z.string().optional(),
-    product_id: z.string().optional(), target_id: z.string().optional(), mining_strategy: z.enum(['focus_area', 'api']).optional(), api_inventory: z.string().optional(),
+    product_id: z.string().optional(), target_id: z.string().optional(), mining_strategy: z.enum(['focus_area', 'api', 'file_sweep']).optional(), api_inventory: z.string().optional(),
     memory_mode: z.enum(['full', 'facts_only', 'off', 'blind']).optional(), additional_instructions: z.string().optional(),
     test_environment_enabled: z.boolean().optional().describe('仅用户明确开启授权动态验证时为 true'), test_environment_context: z.string().optional() },
 }, input => reply(() => bridge.register(input)));

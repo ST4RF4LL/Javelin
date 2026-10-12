@@ -87,6 +87,17 @@ test('空环境继续静态流程；自由文本授权完整转交，不要求�
   assert.ok(!response.body.includes('PRIVATE_TEST_MARKER'));
 });
 
+test('逐文件策略从新版创建接口转交后台，保持静态默认与独立配置', async () => {
+  const response = await request('audits', post({ ...input, miningStrategy: 'file_sweep' }));
+  assert.equal(response.statusCode, 201);
+  assert.equal(calls.length, 1);
+  assert.equal(calls[0].body.mining_strategy, 'file_sweep');
+  assert.equal(calls[0].body.api_inventory, '');
+  assert.equal(calls[0].body.memory_mode, 'full');
+  assert.equal(calls[0].body.test_environment_enabled, false);
+  assert.equal(normalizeAudit({ ...audit, mining_strategy: 'file_sweep' }).strategy, '逐文件地毯式审计');
+});
+
 test('批量创建沿用产品级队列入口与配置契约，每个仓库有独立任务和幂等键', async () => {
   mockTransport(call => {
     if (call.method === 'POST' && call.url.pathname.endsWith('/audits')) return json({ ...audit, id: call.body.audit_id, name: call.body.name, repository_id: call.body.target_id, status: 'queued', version: 1 }, 202);

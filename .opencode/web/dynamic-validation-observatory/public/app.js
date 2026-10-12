@@ -58,6 +58,28 @@ export async function resolveAuditScope(auditId, { audit, api, signal, repositor
   return { ...scope, audit: value };
 }
 
+export function auditCanDelete(audit) {
+  return Boolean(audit?.repository_id && ["queued", "failed", "interrupted", "cancelled", "completed", "artifact_only"].includes(audit.status));
+}
+
+export function auditSelectionKey(audit) {
+  const scope = auditScope(audit);
+  return JSON.stringify([audit.id, scope.repositoryId, scope.productId]);
+}
+
+export async function deleteAuditRequest(audit, api) {
+  if (!auditCanDelete(audit)) throw new Error("请先取消任务并等待结束，再删除。");
+  const scope = await resolveAuditScope(audit.id, { audit, api, signal: AbortSignal.timeout(15000) });
+  const path = scope.managed ? `/api/v2/products/${encodeURIComponent(scope.productId)}/audits/${encodeURIComponent(audit.id)}` : `/api/v1/audits/${encodeURIComponent(audit.id)}`;
+  const result = await api(path, {
+    method: "DELETE", signal: AbortSignal.timeout(60000),
+    headers: { "Content-Type": "application/json", "If-Match": `"${audit.version}"` },
+    body: JSON.stringify({ confirmation: audit.id }),
+  });
+  if (result?.deleted !== true || result.audit_id !== audit.id) throw new Error("删除结果未能确认，请刷新任务列表核对。");
+  return result;
+}
+
 export function mountWorkbench({ document = globalThis.document, window = globalThis.window, initialView = "dashboard", initialFilters = {}, onNavigate = null, onFileCoverage = null, onBatchCreate = null, onMutation = null } = {}) {
 let disposed = false;
 let navigationSequence = 0;
@@ -104,6 +126,12 @@ const state = {
   sourceOptionsRequestSequence: 0,
   sourceFilters: { finding: { product_id: "", audit_id: "", report_id: "" }, validation: { product_id: "", audit_id: "", report_id: "" }, report: { product_id: "", audit_id: "", report_id: "" } },
   audits: [],
+  selectedAudits: new Map(),
+  auditSelectionScope: null,
+  batchDeleteItems: [],
+  batchDeleteBusy: false,
+  batchDeleteStarted: false,
+  batchDeleteStop: false,
   auditTab: "all",
   auditPage: 1,
   auditPageSize: 20,
@@ -218,6 +246,7 @@ function short(value, length = 12) {
 
 function todoStatusText(todo) {
   if (todo?.protocol === "task-board.v1") {
+    if (todo.file_sweep) return `文件已浏览 ${todo.file_sweep.browsed_files}/${todo.file_sweep.eligible_files} · 已发布 Area ${todo.total} · 已交报告 ${todo.reported}${todo.file_sweep.gap_files ? ` · 浏览缺口 ${todo.file_sweep.gap_files}` : ""}`;
     if (!todo.total) return todo.publication === "SEALED" ? "本轮无审计任务" : "规划中 · 尚未发布任务";
     return `已交报告 ${todo.reported}/${todo.total} · 执行中 ${todo.running} · 待执行 ${todo.pending}${todo.gap ? ` · 缺口 ${todo.gap}` : ""}${todo.failed ? ` · 失败 ${todo.failed}` : ""}`;
   }
@@ -324,24 +353,27 @@ function normalizeAuditView(audit, summary = {}) {
   // Older running servers may omit presentation fields on product routes.
   // This adapter keeps a page refresh usable without interrupting a live audit.
   if (board && !value.progress_text) {
+    const sweep = board.file_sweep;
     const sealed = board.publication === "SEALED", mined = board.mining_complete === true;
     const reviewed = board.validation?.status === "REVIEWED";
     const finalized = board.next_action === "DONE" || value.todo_completion?.complete === true || value.status === "completed";
     value.task_board = board; value.progress_source = "task-board";
     value.progress = board.total ? Math.max(0, Math.min(100, Math.round(board.reported * 10000 / board.total) / 100)) : 0;
-    value.stage = value.status === "queued" ? "等待调度" : !sealed ? "任务规划与发布" : !mined
+    value.stage = value.status === "queued" ? "等待调度" : !sealed ? sweep ? "逐文件浏览与任务发布" : "任务规划与发布" : !mined
       ? board.failed ? "任务执行 · 需处理失败项" : `任务执行 · 已交报告 ${board.reported}/${board.total}`
       : !reviewed ? "报告内容复核" : finalized ? "报告已封存" : "报告封存";
-    value.progress_text = value.status === "queued" ? "等待调度" : !sealed
+    value.progress_text = value.status === "queued" ? "等待调度" : sweep
+      ? `文件已浏览 ${sweep.browsed_files}/${sweep.eligible_files} · 浏览缺口 ${sweep.gap_files} · 已发布 Area ${board.total} · 已交报告 ${board.reported}${sealed && !board.total ? " · 本轮仅有威胁发现记录" : ""}`
+      : !sealed
       ? board.total ? `发布中 · 已发布 ${board.total} 项，已交报告 ${board.reported} 份` : "规划中 · 尚未发布任务"
       : !board.total ? "本轮无审计任务" : `报告交付 ${board.reported}/${board.total} · ${value.progress}%${board.gap ? ` · 缺口 ${board.gap}` : ""}`;
     let active = false;
     const stopped = ["queued", "paused", "interrupted", "cancelled", "failed"].includes(value.status);
-    value.stages = [["scope", "范围冻结", Boolean(value.paths || value.source_baseline || sealed)], ["planning", "任务规划与发布", sealed],
+    value.stages = [["scope", "范围冻结", Boolean(value.paths || value.source_baseline || sealed)], ["planning", sweep ? "逐文件浏览与任务发布" : "任务规划与发布", sealed],
       ["audit", "任务执行与报告收集", mined], ["validation", "报告内容复核", reviewed], ["report", "报告封存", finalized]]
       .map(([id, label, reached]) => { const state = reached ? "completed" : !active && !stopped ? "active" : "pending"; if (!reached) active = true; return { id, label, state }; });
   }
-  if (board?.mining_complete && Number(board.total) > 0 && Number(board.reported) === 0) {
+  if (board?.mining_complete && (Number(board.total) > 0 && Number(board.reported) === 0 || board.file_sweep && Number(board.total) === 0 && !board.file_sweep.browsed_files)) {
     // Also correct already sealed historical runs without rewriting evidence.
     value.execution_incomplete = board.next_action === "DONE" || value.todo_completion?.complete === true || value.status === "completed";
     if (value.execution_incomplete) value.stage = "执行未完成 · 缺口记录已封存";
@@ -455,10 +487,15 @@ function renderProjects() {
   state.selectedTargetIds = new Set([...state.selectedTargetIds].filter(id => selectableIds.has(id)));
   $("transfer-selected-targets").disabled = !state.selectedTargetIds.size;
   $("transfer-selected-targets").textContent = state.selectedTargetIds.size ? `修改归属（${state.selectedTargetIds.size}）` : "批量修改归属";
+  const batchCreate = $("batch-create-selected-targets");
+  batchCreate.hidden = typeof onBatchCreate !== "function";
+  batchCreate.disabled = !state.selectedTargetIds.size || currentProduct?.status !== "active" || !state.runtime?.runner?.enabled;
+  batchCreate.textContent = state.selectedTargetIds.size ? `批量创建任务（${state.selectedTargetIds.size}）` : "批量创建任务";
+  batchCreate.title = !state.selectedTargetIds.size ? "先勾选下方需要审计的项目" : "为所选项目填写一份共用的审计配置";
   const [value, body] = table(["选择", "测试对象 / 源码范围", "可用性", "版本与重点", "归属与状态", "操作"]);
   const selectAll = element("input");
   selectAll.type = "checkbox";
-  selectAll.setAttribute("aria-label", "全选当前列表中可修改归属的测试对象");
+  selectAll.setAttribute("aria-label", "全选当前列表中的可选项目");
   selectAll.disabled = !selectableTargets.length;
   selectAll.checked = selectableTargets.length > 0 && state.selectedTargetIds.size === selectableTargets.length;
   selectAll.indeterminate = state.selectedTargetIds.size > 0 && !selectAll.checked;
@@ -582,8 +619,12 @@ function renderAudits() {
       : !availableSlots
         ? "当前并发名额已满"
         : "跳过队列间隔，按创建时间启动当前可用名额内的任务";
-  const [value, body] = table(["审计任务", "仓库 / 提交", "当前阶段", "进度", "漏洞", "状态", "操作"]);
+  const [value, body] = table(["选择", "审计任务", "仓库 / 提交", "当前阶段", "进度", "漏洞", "状态", "操作"]);
   for (const audit of state.audits) {
+    const key = auditSelectionKey(audit);
+    if (state.selectedAudits.has(key)) {
+      if (auditCanDelete(audit)) state.selectedAudits.set(key, audit); else state.selectedAudits.delete(key);
+    }
     const row = element("tr", "clickable");
     row.tabIndex = 0;
     row.dataset.auditId = audit.id;
@@ -591,6 +632,18 @@ function renderAudits() {
     row.addEventListener("keydown", event => {
       if (event.target === row && ["Enter", " "].includes(event.key)) { event.preventDefault(); selectAudit(audit.id).catch(showError); }
     });
+    const selectionCell = element("td", "audit-selection-cell");
+    const select = element("input"); select.type = "checkbox"; select.dataset.auditSelection = key;
+    select.setAttribute("aria-label", `选择任务 ${audit.name}（${audit.id}）`);
+    select.checked = state.selectedAudits.has(key); select.disabled = state.batchDeleteBusy || !auditCanDelete(audit);
+    if (!auditCanDelete(audit)) select.title = "请先取消任务并等待结束，再删除";
+    selectionCell.addEventListener("click", event => event.stopPropagation());
+    select.addEventListener("change", () => {
+      if (select.disabled) return;
+      if (select.checked) state.selectedAudits.set(key, audit); else state.selectedAudits.delete(key);
+      renderAuditSelection();
+    });
+    selectionCell.append(select); row.append(selectionCell);
     const identity = element("td");
     identity.append(element("strong", "", audit.name), element("small", "mono", audit.id));
     row.append(identity);
@@ -620,9 +673,33 @@ function renderAudits() {
   }
   $("audit-table").replaceChildren(value);
   if (!state.audits.length) $("audit-table").append(element("div", "empty-state", state.auditLoading ? "正在加载任务…" : "没有符合条件的审计任务。"));
+  renderAuditSelection();
+}
+
+function renderAuditSelection() {
+  const eligible = state.audits.filter(auditCanDelete), selected = eligible.filter(audit => state.selectedAudits.has(auditSelectionKey(audit))).length;
+  const all = $("audit-select-page");
+  all.checked = eligible.length > 0 && selected === eligible.length;
+  all.indeterminate = selected > 0 && selected < eligible.length;
+  all.disabled = state.auditLoading || state.batchDeleteBusy || !eligible.length;
+  $("audit-selection-count").textContent = `已选 ${state.selectedAudits.size} 个任务`;
+  $("batch-delete-audits").disabled = state.batchDeleteBusy || !state.selectedAudits.size;
+  $("clear-audit-selection").disabled = state.batchDeleteBusy || !state.selectedAudits.size;
+  for (const input of document.querySelectorAll("[data-audit-selection]")) input.checked = state.selectedAudits.has(input.dataset.auditSelection);
+}
+
+function selectAuditPage(checked) {
+  if (state.auditLoading || state.batchDeleteBusy) return;
+  for (const audit of state.audits.filter(auditCanDelete)) {
+    if (checked) state.selectedAudits.set(auditSelectionKey(audit), audit); else state.selectedAudits.delete(auditSelectionKey(audit));
+  }
+  renderAuditSelection();
 }
 
 async function loadAuditsPage(page = 1) {
+  const selectionScope = JSON.stringify([state.auditProductFilter, state.auditTab, $("audit-query").value.trim()]);
+  if (state.auditSelectionScope !== selectionScope) state.selectedAudits.clear();
+  state.auditSelectionScope = selectionScope;
   state.auditController?.abort();
   const controller = new AbortController();
   state.auditController = controller;
@@ -846,6 +923,7 @@ function renderFileCoverageSummary(audit) {
       ? `${data.summary.associated_files} / ${data.summary.total_files}`
       : data ? "未采集" : view.error ? "暂不可用" : "读取中…";
     count.replaceChildren(document.createTextNode("覆盖文件 "), element("strong", "", value));
+    if (data?.file_sweep) { const files = data.file_sweep; count.replaceChildren(document.createTextNode(`文件已浏览 ${files.browsed_files}/${files.eligible_files} · 已发布 Focus Area ${files.published_areas} · 浏览缺口 ${files.gap_files}`)); count.title = "文件浏览属于威胁发现阶段；专业 Agent 领取 Focus Area 后进行深入审计。"; }
     if (view.error && data) count.append(document.createTextNode("（刷新失败）"));
     retry.hidden = !view.error; retry.title = view.error?.message ?? "";
     if (data && !data.available) count.title = data.reason || "本次任务未保存文件清单。";
@@ -874,11 +952,12 @@ function renderTaskBoard(audit) {
   const summary = audit.task_board;
   if (audit.execution_incomplete) panel.append(element("p", "notice error", "本轮未收到任何源码审计报告，无法据此判断目标是否存在漏洞。失败与缺口记录已封存，请修复执行问题后新建重试。"));
   const strategy = audit.mining_strategy ?? summary.mining_strategy;
-  const strategyLabel = strategy === "api" ? "逐接口 API 审查" : strategy === "focus_area" ? "高风险 Focus Area" : "原有并列任务范围";
+  const strategyLabel = strategy === "file_sweep" ? "逐文件地毯式审计" : strategy === "api" ? "逐接口 API 审查" : strategy === "focus_area" ? "高风险 Focus Area" : "原有并列任务范围";
   panel.append(element("p", "", `漏洞挖掘策略：${strategyLabel}`));
   const metrics = element("p", "", `共 ${summary.total} 项 · 已交报告 ${summary.reported} · 执行中 ${summary.running} · 待执行 ${summary.pending} · 缺口 ${summary.gap} · 失败 ${summary.failed}`);
   if (strategy !== "api") panel.append(element("p", "", `Focus Area 报告交付 ${summary.tracks.focus_area.reported}/${summary.tracks.focus_area.total}。`));
-  if (strategy !== "focus_area") panel.append(element("p", "", `API 任务报告交付 ${summary.tracks.api.reported}/${summary.tracks.api.total}；用户 API 清单 ${summary.api_inventory.reported}/${summary.api_inventory.submitted} 项已收齐报告。`));
+  if (!["focus_area", "file_sweep"].includes(strategy)) panel.append(element("p", "", `API 任务报告交付 ${summary.tracks.api.reported}/${summary.tracks.api.total}；用户 API 清单 ${summary.api_inventory.reported}/${summary.api_inventory.submitted} 项已收齐报告。`));
+  if (summary.file_sweep) { const files = summary.file_sweep; panel.append(element("p", "", `任务发布：文件已浏览 ${files.browsed_files}/${files.eligible_files} · 浏览中 ${files.reading_files} · 待浏览 ${files.pending_files} · 缺口 ${files.gap_files} · 已发布 Focus Area ${files.published_areas}`), element("p", "muted", "已浏览表示完成威胁发现初筛，深入分析以 Focus Area 领取与报告交付为准。")); }
   panel.append(metrics, element("p", "muted", `发布${summary.publication === "SEALED" ? "已结束" : "进行中"}；内容复核${summary.validation?.status === "REVIEWED" ? "已完成" : "未完成"}。报告交付进度与内容复核分别统计。`));
   const controls = element("div", "action-row"), kind = element("select"), status = element("select");
   kind.setAttribute("aria-label", "任务类型"); status.setAttribute("aria-label", "任务执行状态");
@@ -886,7 +965,7 @@ function renderTaskBoard(audit) {
   const labels = { PENDING: "待执行", RUNNING: "执行中", REPORTED: "已交报告", GAP: "存在缺口", FAILED: "执行失败" };
   for (const [value, label] of [["", "全部状态"], ...Object.entries(labels)]) { const option = element("option", "", label); option.value = value; status.append(option); }
   kind.value = view.kind; status.value = view.status;
-  if (strategy) { view.kind = strategy; kind.value = strategy; kind.hidden = true; }
+  if (strategy) { view.kind = strategy === "file_sweep" ? "focus_area" : strategy; kind.value = view.kind; kind.hidden = true; }
   const previous = element("button", "button secondary", "上一页"), next = element("button", "button secondary", "下一页"), page = element("span", "muted");
   controls.append(kind, status, previous, next, page); panel.append(controls);
   const list = element("div", "task-board-items"); panel.append(list);
@@ -1249,7 +1328,7 @@ async function dispatchQueueNow() {
 function auditDeleteButton(audit) {
   const button = element("button", "button danger", "删除任务");
   button.type = "button";
-  button.disabled = !["queued", "failed", "interrupted", "cancelled", "completed", "artifact_only"].includes(audit.status);
+  button.disabled = !auditCanDelete(audit);
   button.title = button.disabled ? "请先取消任务并等待结束，再删除" : "删除此任务及其报告、运行记录；保留源码目录";
   button.addEventListener("click", event => { event.stopPropagation(); openDeleteAuditDialog(audit); });
   return button;
@@ -1320,13 +1399,8 @@ async function submitDeleteAudit(event) {
   const button = $("submit-delete-audit");
   button.disabled = true;
   try {
-    const scope = await resolveAuditScope(audit.id, { audit, api });
-    const path = scope.managed ? `/api/v2/products/${encodeURIComponent(scope.productId)}/audits/${encodeURIComponent(audit.id)}` : `/api/v1/audits/${encodeURIComponent(audit.id)}`;
-    const result = await api(path, {
-      method: "DELETE",
-      headers: { "Content-Type": "application/json", "If-Match": `"${audit.version}"` },
-      body: JSON.stringify({ confirmation: audit.id }),
-    });
+    const result = await deleteAuditRequest(audit, api);
+    state.selectedAudits.delete(auditSelectionKey(audit));
     closeDeleteAuditDialog();
     if (state.selectedAuditId === audit.id) closeAuditDrawer();
     state.audits = state.audits.filter(item => item.id !== audit.id);
@@ -1340,6 +1414,86 @@ async function submitDeleteAudit(event) {
     error.textContent = requestError.message;
     error.hidden = false;
   } finally { button.disabled = false; }
+}
+
+function openBatchDeleteAudits() {
+  if (state.batchDeleteBusy || !state.selectedAudits.size) return;
+  state.batchDeleteItems = [...state.selectedAudits.values()].map(audit => ({ audit: structuredClone(audit), status: "pending", error: null }));
+  state.batchDeleteStarted = false; state.batchDeleteStop = false;
+  $("batch-delete-error").hidden = true;
+  renderBatchDeleteAudits();
+  $("batch-delete-dialog").showModal();
+}
+
+function renderBatchDeleteAudits() {
+  const items = state.batchDeleteItems, removed = items.filter(item => item.status === "deleted").length, failed = items.filter(item => item.status === "failed").length;
+  $("batch-delete-summary").textContent = state.batchDeleteStarted
+    ? `已删除 ${removed}/${items.length} · 未成功 ${failed} · 未处理 ${items.filter(item => item.status === "pending").length}${state.batchDeleteBusy ? " · 正在处理…" : ""}`
+    : `确认删除以下 ${items.length} 个审计任务？`;
+  const list = $("batch-delete-list"); list.replaceChildren();
+  for (const item of items) {
+    const row = element("li", `batch-delete-item ${item.status}`);
+    const identity = element("div");
+    identity.append(element("strong", "", item.audit.name || item.audit.id), element("small", "mono", item.audit.id));
+    identity.append(element("small", "", `${item.audit.provenance?.product_name || "未标注产品"} · ${item.audit.repository_name || item.audit.repository_id}`));
+    row.append(identity, element("span", "batch-delete-state", { pending: state.batchDeleteStarted ? "未处理" : "待确认", deleting: "正在删除", deleted: "已删除", failed: "未成功" }[item.status]));
+    if (item.error) row.append(element("p", "danger-text", item.error));
+    list.append(row);
+  }
+  const submit = $("submit-batch-delete"); submit.hidden = state.batchDeleteStarted;
+  submit.disabled = state.batchDeleteBusy || !items.length;
+  submit.textContent = `确认删除 ${items.length} 个任务`;
+  $("stop-batch-delete").hidden = !state.batchDeleteBusy;
+  $("stop-batch-delete").disabled = state.batchDeleteStop;
+  $("stop-batch-delete").textContent = state.batchDeleteStop ? "等待当前请求结束…" : "停止后续删除";
+  for (const button of document.querySelectorAll("[data-close-batch-delete]")) {
+    button.disabled = state.batchDeleteBusy;
+    if (button.dataset.batchDeleteFooter !== undefined) button.textContent = state.batchDeleteStarted ? "关闭" : "取消";
+  }
+  $("batch-delete-result-hint").hidden = !state.batchDeleteStarted || state.batchDeleteBusy;
+}
+
+function closeBatchDeleteAudits() {
+  if (state.batchDeleteBusy) return;
+  $("batch-delete-dialog").close();
+}
+
+async function submitBatchDeleteAudits(event) {
+  event.preventDefault();
+  if (state.batchDeleteBusy || state.batchDeleteStarted || !state.batchDeleteItems.length) return;
+  state.batchDeleteBusy = true; state.batchDeleteStarted = true;
+  renderAuditSelection(); renderBatchDeleteAudits();
+  try {
+    for (const item of state.batchDeleteItems) {
+      if (state.batchDeleteStop || disposed) break;
+      item.status = "deleting"; renderBatchDeleteAudits();
+      try {
+        await deleteAuditRequest(item.audit, api);
+        item.status = "deleted";
+        const key = auditSelectionKey(item.audit);
+        state.selectedAudits.delete(key);
+        state.audits = state.audits.filter(audit => auditSelectionKey(audit) !== key);
+        state.workspace.audits = state.workspace.audits.filter(audit => auditSelectionKey(audit) !== key);
+        if (state.selectedAuditId === item.audit.id) closeAuditDrawer();
+      } catch (error) {
+        item.status = "failed";
+        item.error = ["TimeoutError", "AbortError", "TypeError"].includes(error.name)
+          ? "请求结果未确认，请刷新任务列表核对。" : error.message;
+        if ([404, 409, 412].includes(error.status)) {
+          state.selectedAudits.delete(auditSelectionKey(item.audit));
+          item.error += " 请在任务所在页刷新并重新勾选。";
+        }
+      }
+      renderBatchDeleteAudits();
+    }
+  } finally {
+    state.batchDeleteBusy = false;
+    renderBatchDeleteAudits(); renderAuditSelection();
+  }
+  if (disposed) return;
+  state.auditController?.abort(); connectEventStream(); invalidateFindings();
+  try { await load(); }
+  catch (error) { $("batch-delete-error").textContent = `删除结果已保留，列表刷新失败：${error.message}`; $("batch-delete-error").hidden = false; }
 }
 
 function renderSourceFilters(kind) {
@@ -2604,6 +2758,7 @@ function syncAuditContextControls(form) {
   apiInventory.required = apiStrategy;
   $("mining-strategy-description").textContent = apiStrategy
     ? "按你提供的 API 清单逐项定位实现代码并审查，涵盖每个条目的适用安全问题。"
+    : form.elements.mining_strategy.value === "file_sweep" ? "威胁分析 Agent 逐个浏览冻结范围中的文件，边发现边发布 Focus Area，由专业 Agent 领取深入分析。浏览进度和任务交付分别统计。"
     : "由威胁建模提炼高风险主题，按 Focus Area 定向深入分析。";
   for (const [enabledName, textareaName] of [
     ["additional_instructions_enabled", "additional_instructions"],
@@ -3012,15 +3167,20 @@ document.querySelectorAll("[data-close-report]").forEach(button => button.addEve
 document.querySelectorAll("[data-close-finding]").forEach(button => button.addEventListener("click", () => $("finding-dialog").close()));
 document.querySelectorAll("[data-close-terminal]").forEach(button => button.addEventListener("click", closeTerminal));
 document.querySelectorAll("[data-close-delete-audit]").forEach(button => button.addEventListener("click", closeDeleteAuditDialog));
+document.querySelectorAll("[data-close-batch-delete]").forEach(button => button.addEventListener("click", closeBatchDeleteAudits));
+$("batch-delete-dialog").addEventListener("cancel", event => { if (state.batchDeleteBusy) event.preventDefault(); });
+$("audit-select-page").addEventListener("change", event => selectAuditPage(event.currentTarget.checked));
+$("clear-audit-selection").addEventListener("click", () => { if (!state.batchDeleteBusy) { state.selectedAudits.clear(); renderAuditSelection(); } });
+$("batch-delete-audits").addEventListener("click", openBatchDeleteAudits);
+$("batch-delete-form").addEventListener("submit", submitBatchDeleteAudits);
+$("stop-batch-delete").addEventListener("click", () => { state.batchDeleteStop = true; renderBatchDeleteAudits(); });
 document.querySelectorAll("[data-close-delete-project]").forEach(button => button.addEventListener("click", closeDeleteProjectDialog));
 document.querySelectorAll("[data-close-cancel-validation]").forEach(button => button.addEventListener("click", closeCancelValidationDialog));
 $("new-audit").addEventListener("click", () => openAuditDialog());
-if (typeof onBatchCreate === "function") {
-  const batchCreate = element("button", "button", "批量创建任务");
-  batchCreate.type = "button";
-  batchCreate.addEventListener("click", () => onBatchCreate());
-  $("new-audit").after(batchCreate);
-}
+$("batch-create-selected-targets").addEventListener("click", () => {
+  if (typeof onBatchCreate !== "function" || $("batch-create-selected-targets").disabled || !state.selectedTargetIds.size) return;
+  onBatchCreate({ productId: state.selectedProductId, targetIds: state.targets.filter(target => state.selectedTargetIds.has(target.id)).map(target => target.id) });
+});
 $("add-project").addEventListener("click", openProjectDialog);
 $("add-product").addEventListener("click", openProductDialog);
 $("product-archive").addEventListener("click", () => productAction().catch(showError));

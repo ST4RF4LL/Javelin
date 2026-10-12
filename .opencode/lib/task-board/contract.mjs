@@ -2,6 +2,7 @@ import { createHash, randomUUID } from "node:crypto";
 import { mkdir, lstat, readFile, realpath, rename, writeFile } from "node:fs/promises";
 import { dirname, isAbsolute, relative, resolve, sep } from "node:path";
 import { selection as agentMiningSelection } from "../agent-mining/profile.mjs";
+import { sweepSummary, taskKindForStrategy } from "./file-sweep.mjs";
 
 export const PROTOCOL = "task-board.v1";
 export const DOMAINS = Object.freeze({ web: "web-source-auditor", java: "java-source-auditor", python: "python-source-auditor", "c-cpp": "c-cpp-source-auditor", ai: "ai-security-auditor", platform: "platform-security-auditor" });
@@ -48,15 +49,15 @@ export function normalizeApiList(value = "") {
 export function selectMiningStrategy(value, apiList = "") {
   const sources = normalizeApiList(apiList);
   const strategy = value ?? (sources.length ? "api" : "focus_area");
-  check(["focus_area", "api"].includes(strategy), "漏洞挖掘策略必须为 focus_area 或 api。");
+  check(["focus_area", "api", "file_sweep"].includes(strategy), "漏洞挖掘策略必须为 focus_area、api 或 file_sweep。");
   check(strategy !== "api" || sources.length > 0, "逐接口 API 审查需要至少一项 API 清单。");
-  check(strategy !== "focus_area" || sources.length === 0, "高风险 Focus Area 策略不接收 API 清单；请切换为逐接口 API 审查。");
+  check(strategy === "api" || sources.length === 0, "Focus Area 与逐文件策略不接收 API 清单；请切换为逐接口 API 审查。");
   return strategy;
 }
 
 export function normalizeTask(input, board) {
   check(input && ["focus_area", "api"].includes(input.kind), "任务类型必须为 focus_area 或 api。");
-  check(!board.mining_strategy || input.kind === board.mining_strategy, "任务类型与本次选定的漏洞挖掘策略不一致。");
+  check(!board.mining_strategy || input.kind === taskKindForStrategy(board.mining_strategy), "任务类型与本次选定的漏洞挖掘策略不一致。");
   check(validId(input.task_id), "任务必须提供稳定的 task_id。");
   check(typeof input.title === "string" && input.title.trim() && input.title.length <= 240, "任务名称不能为空且最多 240 字符。");
   check(Object.hasOwn(DOMAINS, input.domain), "任务领域不受支持；请根据实际代码选择专业 Agent。");
@@ -64,6 +65,7 @@ export function normalizeTask(input, board) {
   check(typeof input.prompt === "string" && input.prompt.trim() && input.prompt.length <= 48_000, "任务描述不能为空且最多 48000 字符。");
   check(typeof input.source_ref === "string" && input.source_ref.trim() && input.source_ref.length <= 1000, "任务必须保留来源引用。");
   if (input.kind === "api") check(board.api_sources.some(row => row.source_id === input.source_ref), "API 任务必须引用已导入清单中的 source_id。");
+  if (board.mining_strategy === "file_sweep") check(board.file_sweep?.files.some(file => file.file_id === input.source_ref && file.status !== "EXCLUDED"), "逐文件产生的 Focus Area 必须引用冻结清单中的 file_id。");
   check(Array.isArray(input.code_refs ?? []) && (input.code_refs ?? []).length <= 100, "代码定位列表无效。");
   const codeRefs = (input.code_refs ?? []).map(ref => {
     check(ref && typeof ref.path === "string" && ref.path && !isAbsolute(ref.path) && !ref.path.split(/[\\/]/).includes(".."), "代码定位必须使用源码根内的相对路径。");
@@ -96,6 +98,10 @@ function normalizeBacTask(value) {
 }
 
 export function deliveryOutcome(summary) {
+  if (summary.file_sweep) {
+    if (!summary.total) return summary.file_sweep.browsed_files ? "DISCOVERY_ONLY" : "NO_REPORTS";
+    if (summary.reported && summary.file_sweep.gap_files) return "PARTIAL";
+  }
   if (!summary.total) return "NO_TASKS";
   if (!summary.reported) return "NO_REPORTS";
   return summary.reported === summary.total ? "DELIVERED" : "PARTIAL";
@@ -114,10 +120,12 @@ export function summarize(board) {
   }
   const count = status => counts[status] ?? 0;
   const total = board.tasks.length, reported = count("REPORTED"), gap = count("GAP");
-  const complete = board.publication.state === "SEALED" && reported + gap === total;
+  const sweep = sweepSummary(board);
+  const complete = board.publication.state === "SEALED" && reported + gap === total && (board.mining_strategy !== "file_sweep" || sweep?.complete === true);
   const apiReported = board.api_sources.filter(source => apiDeliveries.get(source.source_id) === true).length;
   return { protocol: PROTOCOL, revision: board.revision, audit_id: board.audit_id, total, reported, done: reported, gap,
     ...(board.mining_strategy ? { mining_strategy: board.mining_strategy } : {}),
+    ...(sweep ? { file_sweep: sweep } : {}),
     pending: count("PENDING"), running: count("RUNNING"), failed: count("FAILED"), complete, mining_complete: complete,
     publication: board.publication.state, progress: total ? Math.round((reported + gap) * 100 / total) : 0,
     delivery_percentage: total ? Number((reported * 100 / total).toFixed(2)) : null, tracks,

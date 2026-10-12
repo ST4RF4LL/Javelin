@@ -174,6 +174,22 @@ main { padding: 30px 34px 48px; max-width: 1600px; margin: 0 auto; }
 .button.danger:hover { color: white; background: var(--red); border-color: var(--red); }
 .delete-warning { margin: 0 0 18px; padding: 14px; color: #842d2a; background: var(--red-soft); border: 1px solid #efc5c2; border-radius: 8px; font-size: 11px; line-height: 1.65; }
 .delete-warning strong { overflow-wrap: anywhere; }
+.audit-batch-toolbar { display: flex; align-items: center; flex-wrap: wrap; gap: 12px; margin: 16px 0; font-size: 12px; }
+.audit-batch-toolbar label { display: inline-flex; align-items: center; gap: 6px; cursor: pointer; }
+.audit-batch-toolbar small { color: var(--muted); flex-basis: 100%; }
+.audit-batch-toolbar input, .audit-selection-cell input { width: 16px; height: 16px; accent-color: var(--green); cursor: pointer; }
+.audit-selection-cell input:disabled { cursor: not-allowed; }
+.audit-selection-cell { width: 40px; }
+#batch-delete-dialog { width: min(760px, calc(100vw - 32px)); }
+#batch-delete-list { list-style: none; margin: 12px 0; padding: 0; max-height: 45vh; overflow-y: auto; border: 1px solid var(--line); border-radius: 8px; }
+.batch-delete-item { display: grid; grid-template-columns: minmax(0, 1fr) auto; gap: 8px 16px; padding: 12px 16px; border-bottom: 1px solid var(--line); font-size: 12px; }
+.batch-delete-item:last-child { border-bottom: 0; }
+.batch-delete-item small { display: block; margin-top: 4px; color: var(--muted); overflow-wrap: anywhere; }
+.batch-delete-item strong { overflow-wrap: anywhere; }
+.batch-delete-item p { grid-column: 1 / -1; margin: 0; overflow-wrap: anywhere; }
+.batch-delete-state { white-space: nowrap; }
+.batch-delete-item.deleted .batch-delete-state { color: #287b5b; }
+.batch-delete-item.failed .batch-delete-state { color: var(--red); }
 .runner-log { margin-top: 20px; }
 .agent-event-stream { display: grid; gap: 8px; max-height: 520px; overflow: auto; padding: 12px; color: #d5e7dc; background: var(--night); border-radius: 8px; }
 .agent-event { overflow: hidden; border: 1px solid #30483b; border-left: 3px solid #61756a; border-radius: 7px; background: #15221b; opacity: .72; }

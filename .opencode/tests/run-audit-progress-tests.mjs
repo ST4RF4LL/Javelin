@@ -54,8 +54,11 @@ test("页面对旧服务的兼容展示与服务端计算一致", async () => {
   const app = await readFile(new URL("../web/dynamic-validation-observatory/public/app.js", import.meta.url), "utf8");
   const source = app.slice(app.indexOf("function normalizeAuditView("), app.indexOf("async function auditViews("));
   const normalize = runInNewContext(`${source}; normalizeAuditView`);
+  const fileSweep = { mining_strategy: 'file_sweep', total: 0, reported: 0, file_sweep: { eligible_files: 3, browsed_files: 2, gap_files: 0 } };
   for (const audit of [input(), input({ publication: "OPEN", total: 0, reported: 0 }), input({ publication: "OPEN" }),
     input({ reported: 3, gap: 1, mining_complete: true }), input({ failed: 1 }), input({}, "paused"), input({}, "queued"),
+    input({ ...fileSweep, publication: 'OPEN' }), input({ ...fileSweep, mining_complete: true }),
+    input({ ...fileSweep, mining_complete: true, next_action: 'DONE', file_sweep: { eligible_files: 3, browsed_files: 0, gap_files: 3 } }, 'failed'),
     input({ mining_complete: true, validation: { status: "REVIEWED" }, next_action: "DONE" })]) {
     const browser = normalize(audit), backend = applyAuditProgress(audit);
     for (const key of ["stage", "progress", "progress_text", "progress_source", "stages"]) assert.equal(JSON.stringify(browser[key]), JSON.stringify(backend[key]), key);

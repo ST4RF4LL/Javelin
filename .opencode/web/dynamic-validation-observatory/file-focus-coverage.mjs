@@ -1,4 +1,5 @@
 import { posix } from "node:path";
+import { sweepSummary } from "../../lib/task-board/file-sweep.mjs";
 
 const error = message => Object.assign(new Error(message), { statusCode: 409 });
 
@@ -18,7 +19,7 @@ function relativeReference(value, root) {
   return normalized === ".." || normalized.startsWith("../") || normalized === "." ? null : normalized;
 }
 
-export function fileFocusCoverage({ audit, manifest, board, offset = 0, limit = 100, q = "", association = "all" }) {
+export function fileFocusCoverage({ audit, manifest, board, offset = 0, limit = 100, q = "", association = "all", browse_status = "all" }) {
   if (manifest.audit_id !== audit.id || manifest.scope_digest !== audit.source_baseline.scope_digest || !Array.isArray(manifest.files)) {
     throw error("文件清单与本次审计的源码范围不一致，无法统计文件关联。");
   }
@@ -33,6 +34,7 @@ export function fileFocusCoverage({ audit, manifest, board, offset = 0, limit = 
       sha256: file.sha256 ?? null, content_kind: file.content_kind ?? null, focus_areas: [] });
   }
   const tasks = (board?.tasks ?? []).filter(task => task.kind === "focus_area");
+  const browsed = new Map((board?.file_sweep?.files ?? []).map(file => [file.path, file]));
   const unmatched = [];
   for (const task of tasks) {
     const linked = new Map();
@@ -52,17 +54,27 @@ export function fileFocusCoverage({ audit, manifest, board, offset = 0, limit = 
       if (!locations.some(item => item.line === location.line && item.symbol === location.symbol)) locations.push(location);
     }
   }
+  for (const file of files.values()) {
+    const browse = browsed.get(file.path);
+    if (!browse) continue;
+    file.browse = { status: browse.status, summary: browse.summary, reason: browse.reason, read_ranges: browse.read_ranges, line_count: browse.line_count, task_ids: browse.task_ids };
+    for (const id of browse.task_ids) {
+      const task = tasks.find(task => task.task_id === id);
+      if (task && !file.focus_areas.some(area => area.task_id === id)) file.focus_areas.push({ task_id: id, title: task.title, domain: task.domain, status: task.status, locations: [] });
+    }
+  }
   const rows = [...files.values()].sort((a, b) => a.path < b.path ? -1 : a.path > b.path ? 1 : 0);
   for (const row of rows) row.association = row.focus_areas.length ? "associated" : "unassociated";
   const associated = rows.filter(row => row.association === "associated").length;
   const needle = String(q).trim().toLocaleLowerCase();
-  const filtered = rows.filter(row => (association === "all" || row.association === association) && (!needle || row.path.toLocaleLowerCase().includes(needle)));
+  const filtered = rows.filter(row => (association === "all" || row.association === association) && (browse_status === "all" || row.browse?.status === browse_status) && (!needle || row.path.toLocaleLowerCase().includes(needle)));
   const size = Math.min(200, Math.max(1, Math.floor(Number(limit) || 100)));
   const requested = Math.max(0, Math.floor(Number(offset) || 0));
   const start = Math.min(requested, Math.max(0, Math.ceil(filtered.length / size) - 1) * size);
   return {
     protocol: "file-focus-coverage.v1", audit_id: audit.id, available: true,
     scope_digest: manifest.scope_digest, inventory_complete: manifest.complete === true,
+    ...(board?.file_sweep ? { file_sweep: sweepSummary(board), exclusions: board.file_sweep.exclusions } : {}),
     association_available: Boolean(board), publication: board?.publication?.state ?? null,
     summary: { total_files: rows.length, associated_files: associated, unassociated_files: rows.length - associated,
       association_percentage: rows.length ? Math.round(associated / rows.length * 10000) / 100 : 0,

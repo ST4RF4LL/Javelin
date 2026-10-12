@@ -67,18 +67,28 @@ export function renderStructuredBoardReport(model) {
   field("审计标识", model.audit_id);
   field("源码范围摘要", model.scope_digest);
   section(3, "1.2 漏洞挖掘策略");
-  lines.push(summary.mining_strategy === "api"
+  lines.push(summary.mining_strategy === "file_sweep"
+    ? "本次采用逐文件地毯式威胁发现策略：威胁分析 Agent 逐个浏览冻结范围内的文本文件，将可疑区域发布为 Focus Area，由专业 Agent 领取深入审计。文件已浏览不等于已完成深入审计或不存在漏洞。"
+    : summary.mining_strategy === "api"
     ? "本次采用逐接口 API 审查策略，逐项分析用户提供清单中的接口。交付比例不代表已发现所有漏洞，也不证明接口清单覆盖全部应用入口。"
     : summary.mining_strategy === "focus_area"
       ? "本次采用高风险 Focus Area 策略，对威胁建模识别的高风险主题定向深入分析。交付比例不代表已发现所有漏洞或已逐一审查全部接口。"
       : "Focus Area 为高风险定向审查；API 为用户提供清单中的逐接口审查。交付比例不代表已发现所有漏洞，也不证明接口清单覆盖全部应用入口。", "");
   section(3, "1.3 任务交付与结论范围");
   if (noReports) lines.push("**审计执行未完成：本轮未收到任何源码审计报告，全部任务均登记为执行缺口。以下内容仅记录失败原因与缺口，无法据此判断目标是否存在漏洞。修复执行问题后须重新创建审计。**", "");
-  else if (model.report_version >= 2 && model.delivery_outcome === "PARTIAL") lines.push("**本轮仅收到部分任务的审计报告。漏洞结论仅限已交付且完成复核的证据，未交付任务仍须补充审计。**", "");
+  else if (model.report_version >= 2 && model.delivery_outcome === "PARTIAL") lines.push(summary.file_sweep
+    ? "**本轮文件浏览或任务交付存在缺口。漏洞结论仅限已交付且完成复核的证据，未浏览文件和未交付任务仍须补充审计。**"
+    : "**本轮仅收到部分任务的审计报告。漏洞结论仅限已交付且完成复核的证据，未交付任务仍须补充审计。**", "");
   else if (model.report_version >= 2 && model.delivery_outcome === "NO_TASKS") lines.push("**本轮未发布审计任务，无法据此判断目标是否存在漏洞。**", "");
+  else if (model.delivery_outcome === "DISCOVERY_ONLY") lines.push("**本轮仅交付文件浏览与威胁发现记录，未产生进入深入审计的 Focus Area。请结合浏览数量、质量复核和缺口判断结论范围。**", "");
   lines.push(`任务 ${summary.total} 项，收到报告 ${summary.reported} 项，执行缺口 ${summary.gap} 项。`, "");
   if (summary.mining_strategy !== "api") lines.push(`- Focus Area：${summary.tracks.focus_area.reported}/${summary.tracks.focus_area.total}。`);
-  if (summary.mining_strategy !== "focus_area") lines.push(`- API 任务：${summary.tracks.api.reported}/${summary.tracks.api.total}。`, `- 用户提交 API ${summary.api_inventory.submitted} 项，相关任务全部交付 ${summary.api_inventory.reported} 项。`);
+  if (!["focus_area", "file_sweep"].includes(summary.mining_strategy)) lines.push(`- API 任务：${summary.tracks.api.reported}/${summary.tracks.api.total}。`, `- 用户提交 API ${summary.api_inventory.submitted} 项，相关任务全部交付 ${summary.api_inventory.reported} 项。`);
+  if (summary.file_sweep) {
+    const sweep = summary.file_sweep;
+    lines.push(`- 文件已浏览 ${sweep.browsed_files}/${sweep.eligible_files}；浏览缺口 ${sweep.gap_files}；非文本／链接排除 ${sweep.excluded_files}；范围排除记录 ${sweep.scope_exclusions} 项。`);
+    if (model.file_discovery) lines.push(`- 浏览记录：${model.file_discovery.path}；SHA-256：${model.file_discovery.sha256}。`, `- 发现阶段质量复核：${model.file_discovery.review.reason}`);
+  }
   lines.push("", `确认源码漏洞 ${model.findings.length} 条；排除及未确定候选 ${model.excluded_findings.length} 条；剩余缺口记录 ${model.residual_gaps.length} 条。`, "");
 
   if (model.report_corrections?.length) {

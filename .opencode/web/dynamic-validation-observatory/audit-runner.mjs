@@ -605,7 +605,9 @@ function selectTaskProtocol(input) {
 }
 
 function taskBoardPrompt(audit, paths, contextPaths, resume = false) {
-  const strategyPrompt = audit.mining_strategy === "api"
+  const strategyPrompt = audit.mining_strategy === "file_sweep"
+    ? "本次漏洞挖掘策略为 file_sweep：威胁分析 Agent 按冻结文件清单逐个浏览，使用 files/file-claim/file-read/file-complete 持续保存浏览记录；发现可疑区域时直接通过 publish 发布 kind=focus_area 的任务，后台 monitor 同时调度专业 Agent 领取并深入分析。编排器负责有界批次委派与最后 seal。不得凭规则未命中跳过文件，不得将已浏览等同于已深入审计。完整执行 workflow 的逐文件分支。"
+    : audit.mining_strategy === "api"
     ? "本次漏洞挖掘策略为 api：仅对导入的 API 清单逐项初步分析、定位代码并发布 API 审查任务，不生成 Focus Area 任务。不得按风险高低省略 API；接口实现需要的下游代码仍须追踪。"
     : audit.mining_strategy === "focus_area"
       ? "本次漏洞挖掘策略为 focus_area：仅提炼并发布高风险 Focus Area 任务，不生成逐接口 API 审查任务。"
@@ -1169,6 +1171,9 @@ export class AuditRunner extends EventEmitter {
         "--audit-id", audit.id,
         "--output", temporaryPath,
         "--mode", audit.source_kind === "directory" ? "filesystem" : "auto",
+        ...(audit.mining_strategy === "file_sweep" ? ["--profile", "file-sweep",
+          "--audit-reports-root", this.artifactsRoot, "--audit-tmp-root", this.temporaryRoot,
+          "--audit-workspace-root", this.executionRoot, "--audit-state-root", this.stateRoot] : []),
       ], { windowsHide: true, encoding: "utf8", timeout: 10 * 60_000, maxBuffer: 1024 * 1024 });
       const manifest = JSON.parse(await readFile(temporaryPath, "utf8"));
       if (!/^[a-f0-9]{64}$/i.test(manifest?.scope_digest ?? "")) throw new Error("任务启动时生成的源码范围清单摘要无效。");
@@ -1977,6 +1982,7 @@ export class AuditRunner extends EventEmitter {
         throw Object.assign(new Error("任务面板的 API 清单与创建时原文不一致，拒绝继续执行。"), { statusCode: 409, code: "audit-api-inventory-drift" });
       }
       const service = new TaskBoardService({ path: audit.task_board_path, reportsRoot: paths.reports_root,
+        fileManifestPath: audit.source_baseline.path,
         privateRoot: dirname(environment.AUDIT_TASK_BOARD_CONNECTION_PATH), workspaceRoot: paths.workspace_root, sourceRoot: paths.source_root,
         auditId: audit.id, scopeDigest: audit.source_baseline.scope_digest, environment, command: this.command, model,
         runtimeRequired: Boolean(audit.runtime_testing), bacMode: audit.bac_analysis?.mode ?? "off", memory: memoryAdapter,

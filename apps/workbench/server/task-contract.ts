@@ -23,7 +23,7 @@ export function createTaskInput(input: Record<string, unknown>) {
   const targetId = identifier(input.targetId, '源码对象');
   const auditId = identifier(input.auditId, '任务编号');
   if (auditId.length < 3 || auditId.length > 128) throw new BadRequestException('任务编号需为 3–128 个字符。');
-  const mining = choice(input.miningStrategy, ['focus_area', 'api'], 'focus_area');
+  const mining = choice(input.miningStrategy, ['focus_area', 'api', 'file_sweep'], 'focus_area');
   const apiInventory = mining === 'api' ? textField(input.apiInventory, 'API 清单', 120000, true) : '';
   const additionalEnabled = input.additionalInstructionsEnabled === true;
   const additional = additionalEnabled ? textField(input.additionalInstructions, '补充说明', 12000, true) : '';

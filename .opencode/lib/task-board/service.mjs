@@ -34,16 +34,21 @@ export async function workerConfiguration(environment, task) {
 
 export class TaskBoardService {
   constructor({ path, reportsRoot, privateRoot, workspaceRoot, sourceRoot, auditId, scopeDigest, environment = process.env, command = "opencode", model = null,
-    runtimeRequired = false, bacMode = "off", concurrency = 4, leaseMs = 30 * 60_000, onChange = async () => {}, onLog = async () => {}, worker = null, spawnProcess = spawn, memory = null, agentSlots = globalAgentSlots }) {
+    runtimeRequired = false, bacMode = "off", concurrency = 4, leaseMs = 30 * 60_000, onChange = async () => {}, onLog = async () => {}, worker = null, spawnProcess = spawn, memory = null, agentSlots = globalAgentSlots, fileManifestPath = null }) {
     Object.assign(this, { path, reportsRoot, privateRoot, workspaceRoot, sourceRoot, auditId, scopeDigest, environment, command, model, runtimeRequired, bacMode, leaseMs, onLog, worker, spawnProcess });
     this.concurrency = Math.min(6, Math.max(1, concurrency)); this.token = randomUUID(); this.active = new Map(); this.paused = false; this.closed = false; this.lastDispatch = new Map();
     this.memory = memory; this.memoryTokens = new Map(); this.agentSlots = agentSlots;
+    this.fileManifestPath = fileManifestPath;
     this.store = new TaskBoardStore({ path, reportsRoot, auditId, scopeDigest, onChange });
   }
   async start() {
     try {
       await this.store.open(); this.unsubscribeSlots = this.agentSlots.subscribe(() => this.pump()); await mkdir(this.privateRoot, { recursive: true });
       const board = this.store.snapshot();
+      if (board.mining_strategy === "file_sweep") {
+        check(this.fileManifestPath, "逐文件模式缺少冻结文件清单。");
+        await this.store.initializeFiles(JSON.parse(await readFile(this.fileManifestPath, "utf8")));
+      }
       if (board.bac_analysis) check(board.bac_analysis.mode === this.bacMode, "任务面板与运行配置的专项选择不同。");
       else if (!board.tasks.length && !board.final_report) await this.store.mutate(next => { next.bac_analysis = { ...bacSelection(this.bacMode), task_plan_contract: TASK_PLAN }; });
       this.server = http.createServer((request, response) => this.handle(request, response)); this.server.requestTimeout = 60_000;
@@ -76,6 +81,11 @@ export class TaskBoardService {
         const offset = Math.max(0, Number(body.offset) || 0), limit = Math.min(100, Math.max(1, Number(body.limit) || 25));
         const rows = body.source === "api" ? board.api_sources : board.tasks.filter(task => !body.status || task.status === body.status);
         result = { total: rows.length, items: rows.slice(offset, offset + limit), next_offset: offset + limit < rows.length ? offset + limit : null };
+      } else if (request.url === "/files") result = this.store.files(body);
+      else if (["/file-claim", "/file-read", "/file-complete"].includes(request.url)) {
+        check(!this.paused && !this.closed, "任务已暂停或停止，文件浏览暂不可写入。");
+        result = request.url === "/file-claim" ? await this.store.claimFile(body)
+          : request.url === "/file-read" ? await this.store.readFile(this.sourceRoot, body) : await this.store.completeFile(body, this.sourceRoot);
       } else if (request.url === "/publish") result = await this.store.publish(body);
       else if (request.url === "/seal") result = await this.store.seal(body);
       else if (request.url === "/skip") result = await this.store.skip(body);
@@ -278,6 +288,7 @@ export class TaskBoardService {
   }
   async pause() {
     this.paused = true;
+    if (this.store.board?.file_sweep) await this.store.resetFileClaims();
     // Revocation belongs to an attempt and cannot be undone by a quick resume.
     for (const active of this.active.values()) active.deliveryRevoked = true;
     await this.pumping;

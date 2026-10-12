@@ -18,7 +18,7 @@ export function normalizeAudit(a: Row): Audit {
     canRetry: ['queued', 'failed', 'interrupted', 'cancelled', 'completed', 'artifact_only'].includes(a.status) && !!a.repository_id,
     executionIncomplete: a.execution_incomplete === true,
     status: a.status, progress: Number(a.progress) || 0, stage: a.stage || '等待调度', findings: Number(a.finding_count) || 0,
-    updatedAt: a.updated_at || a.created_at || '', version: a.version || 0, strategy: a.mining_strategy === 'api' ? '逐接口 API 审查' : '高风险 Focus Area',
+    updatedAt: a.updated_at || a.created_at || '', version: a.version || 0, strategy: a.mining_strategy === 'file_sweep' ? '逐文件地毯式审计' : a.mining_strategy === 'api' ? '逐接口 API 审查' : '高风险 Focus Area',
     model: a.model || '默认模型', tasks: { total: a.todo?.total || 0, done: a.todo?.done || 0, gap: a.todo?.gap || 0 },
     stages: (a.stages || []).map((s: Row) => ({ id: s.id, label: s.label || s.name || s.id, status: ['done', 'complete', 'completed', 'COMPLETE', 'DONE'].includes(s.state || s.status) ? 'done' : ['active', 'running', 'RUNNING'].includes(s.state || s.status) ? 'active' : 'pending' })),
     logs: [], source: 'live' };

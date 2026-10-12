@@ -4,6 +4,7 @@ import { dirname, join, relative } from "node:path";
 import { PROTOCOL, TERMINAL, atomicJson, check, controlledBytes, digest, hash, normalizeApiList, normalizeTask, selectMiningStrategy, summarize, timestamp } from "./contract.mjs";
 import { TASK_PLAN, bacSelection } from "../bac/contract.mjs";
 import { checkReportIntegrity } from "./report-integrity.mjs";
+import { createFileSweep, claimFile, completeFile, filePage, readFilePage, recordFileRead, assertSweepSealable, taskKindForStrategy } from "./file-sweep.mjs";
 
 // Only snapshots prepared by this store can enter the shared commit path.
 // Keep validated bytes private so callers cannot replace them after validation.
@@ -13,8 +14,8 @@ export async function readBoard(path) {
   const board = JSON.parse(await readFile(path, "utf8"));
   check(board.protocol === PROTOCOL && Array.isArray(board.tasks) && Array.isArray(board.api_sources), "任务面板格式无效。");
   if (board.mining_strategy != null) {
-    check(["focus_area", "api"].includes(board.mining_strategy), "任务面板的漏洞挖掘策略无效。");
-    check(board.tasks.every(task => task.kind === board.mining_strategy), "任务面板包含不属于所选策略的任务。");
+    check(["focus_area", "api", "file_sweep"].includes(board.mining_strategy), "任务面板的漏洞挖掘策略无效。");
+    check(board.tasks.every(task => task.kind === taskKindForStrategy(board.mining_strategy)), "任务面板包含不属于所选策略的任务。");
     check(board.mining_strategy === "api" ? board.api_sources.length > 0 : board.api_sources.length === 0, "任务面板的 API 清单与挖掘策略不匹配。");
   }
   return board;
@@ -64,6 +65,7 @@ export class TaskBoardStore {
       check(this.board.audit_id === this.auditId && (!this.board.scope_digest || this.board.scope_digest === this.scopeDigest), "任务面板与冻结源码范围不一致。");
       await this.mutate(board => {
         board.scope_digest = this.scopeDigest;
+        for (const file of board.file_sweep?.files ?? []) if (file.status === "READING") { file.status = "PENDING"; file.attempt_id = null; }
         for (const task of board.tasks) if (task.status === "RUNNING") {
           const old = board.attempts.find(row => row.attempt_id === task.attempt_id);
           if (old) { old.status = "INTERRUPTED"; old.reason = "调度服务中断，旧执行尝试已失效。"; }
@@ -88,6 +90,29 @@ export class TaskBoardStore {
   }
   snapshot() { return structuredClone(this.board); }
   summary() { return summarize(this.board); }
+  async initializeFiles(manifest) {
+    return this.mutate(board => {
+      check(board.mining_strategy === "file_sweep", "当前策略不需要文件浏览清单。");
+      const sweep = createFileSweep(manifest, board);
+      if (board.file_sweep) check(board.file_sweep.manifest_digest === sweep.manifest_digest, "冻结文件清单已变化，不能覆盖浏览进度。");
+      else board.file_sweep = sweep;
+    });
+  }
+  files(input) { return filePage(this.board, input); }
+  claimFile(input) { return this.mutate(board => claimFile(board, input)); }
+  async completeFile(input, sourceRoot) {
+    if (input.outcome === "BROWSED" && this.board.file_sweep?.files.find(file => file.file_id === input.file_id)?.status === "READING") {
+      check(sourceRoot, "提交浏览结果需要校验冻结源码。");
+      await readFilePage(this.snapshot(), sourceRoot, { ...input, start_line: 1, limit: 1 });
+    }
+    return this.mutate(board => completeFile(board, input));
+  }
+  async readFile(sourceRoot, input) {
+    const page = await readFilePage(this.snapshot(), sourceRoot, input);
+    await this.mutate(board => recordFileRead(board, page));
+    return page;
+  }
+  resetFileClaims() { return this.mutate(board => { for (const file of board.file_sweep?.files ?? []) if (file.status === "READING") { file.status = "PENDING"; file.attempt_id = null; } }); }
   async publish({ tasks = [] }) {
     check(Array.isArray(tasks) && tasks.length > 0 && tasks.length <= 100, "每次发布 1 至 100 个任务。");
     return this.mutate(board => {
@@ -97,6 +122,7 @@ export class TaskBoardStore {
         const existing = board.tasks.find(task => task.task_id === spec.task_id);
         if (existing) { check(existing.spec_digest === specDigest, "已有任务内容不同；请使用新的任务 ID 发布补充任务。"); published.push(existing.task_id); continue; }
         check(board.publication.state === "OPEN", "本轮任务发布已封存。");
+        if (board.mining_strategy === "file_sweep") check(board.file_sweep.files.find(file => file.file_id === spec.source_ref)?.status === "READING", "新增 Focus Area 须来自当前正在浏览的文件。");
         if (spec.parent_task_id) check(board.tasks.some(task => task.task_id === spec.parent_task_id), "关联的原任务不存在。");
         check(board.tasks.length < 10_000, "本轮任务数量超过上限。");
         board.tasks.push({ ...spec, spec_digest: specDigest, status: "PENDING", attempt_id: null, attempt_count: 0, report: null, reason: null, created_at: timestamp() });
@@ -108,6 +134,7 @@ export class TaskBoardStore {
   async seal({ empty_reason: emptyReason = null } = {}) {
     return this.mutate(board => {
       if (board.publication.state === "SEALED") return { sealed: true };
+      assertSweepSealable(board);
       const missing = board.api_sources.filter(source => !board.tasks.some(task => task.kind === "api" && task.source_ref === source.source_id));
       check(!missing.length, `还有 ${missing.length} 项 API 未发布任务：${missing.slice(0, 8).map(row => row.source_id).join("、")}。`);
       check(board.tasks.length || typeof emptyReason === "string" && emptyReason.trim(), "空面板必须说明未产生审计任务的原因。");

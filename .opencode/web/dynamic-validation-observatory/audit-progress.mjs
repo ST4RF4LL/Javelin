@@ -8,10 +8,11 @@ export function applyAuditProgress(audit) {
   const reviewed = board.validation?.status === "REVIEWED";
   const finalized = board.next_action === "DONE" || audit.todo_completion?.complete === true || audit.status === "completed";
   const total = Number(board.total) || 0, reported = Number(board.reported) || 0;
-  const noReports = mined && total > 0 && reported === 0;
+  const sweep = board.file_sweep;
+  const noReports = mined && (total > 0 && reported === 0 || Boolean(sweep) && total === 0 && !sweep.browsed_files);
   const definitions = [
     ["scope", "范围冻结", Boolean(audit.paths || audit.source_baseline || sealed)],
-    ["planning", "任务规划与发布", sealed],
+    ["planning", sweep ? "逐文件浏览与任务发布" : "任务规划与发布", sealed],
     ["audit", noReports ? "任务执行（未收到报告）" : "任务执行与报告收集", mined],
     ["validation", "报告内容复核", reviewed],
     ["report", "报告封存", finalized],
@@ -24,10 +25,12 @@ export function applyAuditProgress(audit) {
     return { id, label, state };
   });
   const progress = total ? Math.max(0, Math.min(100, Math.round(reported * 10000 / total) / 100)) : 0;
-  const stage = noReports && finalized ? "执行未完成 · 缺口记录已封存" : audit.status === "queued" ? "等待调度" : !sealed ? "任务规划与发布"
+  const stage = noReports && finalized ? "执行未完成 · 缺口记录已封存" : audit.status === "queued" ? "等待调度" : !sealed ? sweep ? "逐文件浏览与任务发布" : "任务规划与发布"
     : !mined ? board.failed ? "任务执行 · 需处理失败项" : `任务执行 · 已交报告 ${reported}/${total}`
       : !reviewed ? "报告内容复核" : finalized ? "报告已封存" : "报告封存";
-  const progressText = audit.status === "queued" ? "等待调度" : !sealed
+  const progressText = audit.status === "queued" ? "等待调度" : sweep
+    ? `文件已浏览 ${sweep.browsed_files}/${sweep.eligible_files} · 浏览缺口 ${sweep.gap_files} · 已发布 Area ${total} · 已交报告 ${reported}${sealed && !total ? " · 本轮仅有威胁发现记录" : ""}`
+    : !sealed
     ? total ? `发布中 · 已发布 ${total} 项，已交报告 ${reported} 份` : "规划中 · 尚未发布任务"
     : !total ? "本轮无审计任务" : `报告交付 ${reported}/${total} · ${progress}%${board.gap ? ` · 缺口 ${board.gap}` : ""}`;
   return { ...audit, task_board: board, execution_incomplete: noReports && finalized, stage, stages, progress, progress_text: progressText, progress_source: "task-board" };

@@ -158,25 +158,30 @@ test('默认审计 API 使用独立端口；旧连接仍活动时拒绝创建第
   assert.deepEqual(calls, ['http://127.0.0.1:4173/api/v1/runtime/health']);
 });
 
-test('原生当前会话通过任务交付、独立质量复核和报告封存完成，保留真实会话且无主进程启动', async t => {
+for (const strategy of ['focus_area', 'file_sweep']) test(`原生当前会话 ${strategy} 通过任务交付、独立质量复核和报告封存完成，保留真实会话且无主进程启动`, async t => {
   const f = await fixture(t);
   const hub = new NativeSessionController({ runner: f.runner, token: 'a'.repeat(64),
     createAudit: (input, session) => f.runner.createAuditFromTarget({ ...f.input, ...input }, input.idempotency_key, { nativeSession: session }) });
   t.after(() => hub.close());
-  const native = await hub.register(f.registration), id = native.audit.id;
+  const native = await hub.register({ ...f.registration, mining_strategy: strategy }), id = native.audit.id;
   const service = f.runner.taskBoardServices.get(id), store = service.store;
+  assert.equal(store.snapshot().mining_strategy, strategy);
   service.worker = async ({ job, input }) => {
     await atomicJson(input.report_path, { summary: '受控夹具：已检查入口代码，无漏洞候选。', findings: [], gaps: [] });
     await atomicJson(input.receipt_path, { protocol: 'task-board.v1', audit_id: id, task_id: job.task.task_id, attempt_id: input.attempt_id, outcome: 'REPORTED', report_path: 'report.json' });
   };
+  const file = strategy === 'file_sweep' ? await store.claimFile({}) : null;
+  if (file) await store.readFile(f.source, file);
   await store.publish({ tasks: [{ task_id: 'fixture-source', kind: 'focus_area', title: '检查受控文件', domain: 'web',
-    source_ref: 'threat:fixture', prompt: '检查 main.js', code_refs: [{ path: 'main.js', line: 1 }] }] });
+    source_ref: file?.file_id ?? 'threat:fixture', prompt: '检查 main.js', code_refs: [{ path: 'main.js', line: 1 }] }] });
+  if (file) await store.completeFile({ file_id: file.file_id, attempt_id: file.attempt_id, outcome: 'BROWSED', summary: '已浏览模块入口并发布相关区域核查任务。', task_ids: ['fixture-source'] }, f.source);
   await store.seal(); service.pump();
   for (let i = 0; i < 100 && !store.summary().mining_complete; i++) await new Promise(resolve => setTimeout(resolve, 10));
   assert.equal(store.summary().reported, 1);
   const input = await prepareReview(store, { runtimeRequired: true }), relative = 'validation/native-fixture-quality.json';
   await atomicJson(join(service.reportsRoot, relative), { protocol: 'task-board.v1', audit_id: id, input_sha256: input.sha256,
     role: 'REPORT_REVIEW', agent_session_id: 'fixture-independent-review',
+    ...(file ? { file_discovery: { status: 'REVIEWED', reason: '已核对浏览记录与初筛依据。', evidence_refs: ['main.js:1'], gaps: [] } } : {}),
     assessments: [{ task_id: 'fixture-source', status: 'REVIEWED', reason: '受控夹具核验了入口与对应报告。', evidence_refs: ['main.js:1'], gaps: [] }] });
   await acceptReview(store, { quality: { path: relative, sha256: hash(await readFile(join(service.reportsRoot, relative))) } });
   await finalizeBoard(store);
