@@ -2,6 +2,8 @@
 
 仅当 AUDIT_TASK_PROTOCOL=task-board.v1 时适用。历史任务执行原契约。本协议替代旧 Focus Area 全范围分区、coverage-plan/audit-todo 工作包、三视角分文件交付及旧最终报告门禁。源码只读、私有环境保护、动态授权与主机运行边界继续适用。
 
+规划或初筛时，按待分派领域查看 `.opencode/agents/<agent>.md` 的“启动漏洞挖掘范围”，不只寻找注入和越权。将共享资源上的检查后修改、重复消费、审批/令牌使用、取消与完成、文件替换等并发疑点纳入现有 Focus Area/API/逐文件流程。任务 prompt 写明资源、不变量、操作 A/B、已知控制和未知前提，code_refs 指向实际源码；以“共享资源 + 不变量 + 操作组合”收敛范围并查重，不为全部接口生成两两组合。worker 按需加载公共 `race-condition-analysis` 深入分析，初筛无需加载整套技能或证明漏洞。没有并发线索不创建空专项，没有动态授权不执行验证。
+
 ## Orchestrator
 
 对 Agent 工具执行与框架权限边界（API/function/skill/MCP），使用 `domain:"ai"`，并在发布任务中声明 `agent_mining:{"profile":"agent-tool-boundaries.v1","families":["TOOL_RCE","TOOL_AUTHZ","FRAMEWORK_ACCESS"],"track":"coverage"}`。families 可按任务缩小。以可达入口或共同策略边界划分有界任务，不为每个关键词另开任务，也不重复要求三个长篇报告。monitor 会提供只读源码定位计划、知识快照和分析模板；worker 使用 agent-tool-boundary-mining 并由 CLI 生成候选报告。该配置只做静态挖掘，不构建攻击 prompt、不提交动态工作包，不改变审计原有运行授权。其他 AI 主题仍使用原 AI 审计流程。数据库授权专项与工具权限分开建模。

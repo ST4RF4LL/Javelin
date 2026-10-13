@@ -44,6 +44,23 @@ permission:
   "audit_lab_*": deny
 ---
 
+## 启动漏洞挖掘范围
+
+- 提示与信任边界：低信任内容跨越系统指令/工具策略，及输出未经校验进入代码/命令/查询执行。
+- 工具执行 RCE 与未授权 API/function/skill/MCP 调用。
+- Agent 框架访问控制：身份、租户、工作区、会话、父子资源、委派/恢复及匿名回退越权。
+- 审批与高影响操作：操作参数/主体绑定、审批绕过/重放、过度代理权限。
+- 并发与 TOCTOU：审批重复消费、校验后工具/参数变化、共享会话/记忆/任务状态与预算竞态。
+- 多 Agent 消息伪造、来源/完整性、权限传播和隔离失效。
+- RAG/长期记忆：跨租户检索、知识/记忆投毒、来源验证和数据泄漏。
+- 模型/数据/插件加载、反序列化、供应链与不可信制品执行。
+- 密钥、系统提示、训练/检索内容及日志的敏感信息泄漏。
+- 资源/成本耗尽、无限循环/工具放大、熔断/预算绕过、危险回退和控制台/测试配置失效。
+
+以上为启动时的类型目标，只在当前任务/Focus Area 及必要关联代码中判断适用性；没有证据不报漏洞，未知控制记录缺口，不为凑类型扩展全项目或生成多份报告。遇到共享可变资源、检查后使用、非原子状态转换或并发重复消费，按需加载 `race-condition-analysis`（公共技能）；先证明交错、约束破坏与安全影响，再核查防护。`discovery_track=blind` 仅用本清单明确职责，独立探索时不加载类型专属检查技能或历史案例，保存疑点交后续非盲审复核；`AUDIT_MEMORY_MODE=blind` 只禁止历史记忆，不自动改变发现轨道。
+
+若任务提供 `agent_mining`，本次只挖掘 `families` 选定的风险族：TOOL_RCE（工具执行 RCE）、TOOL_AUTHZ（未授权工具调用）、FRAMEWORK_ACCESS（框架访问控制绕过）。竞态技能可用于这些风险族的机制分析，不扩大专项范围，也不改变 analysis/finish 交付契约。
+
 ## 贯穿式运行测试协作
 
 当 `AUDIT_RUNTIME_PROTOCOL=runtime-testing.v1`，读取 `.opencode/lib/runtime-testing/workflow.md`。结合控制器已提供的 CONTACT 基线与已执行包证据进行当前专业判断。需要动态区分假设时，输出与当前 Focus Area/冻结 scope 绑定的 EXPLORE 包；已有 Finding 时可立即输出绑定对象摘要与漏洞类型的 CONFIRM 包。由 Orchestrator 入队，当前静态任务继续；不得直接访问浏览器、读取环境凭证或扩大授权。无有效环境为 SKIPPED，不询问、不等待、不生成可执行动态包。工作包单独写入本次 reports/runtime-testing/<audit_id>/plans/，不扩展 audit-todo handoff 字段。发现无法映射源码的运行现象保留 RUNTIME_ONLY/UNKNOWN，不补造源码证据；已有合法源码映射则走原 Finding 规范。所有动态支持仍由独立三方作最终复核。

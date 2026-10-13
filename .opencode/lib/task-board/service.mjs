@@ -14,19 +14,21 @@ import { prepareTaskBacPlan, taskBacEnabled } from "./bac.mjs";
 import { prepareMining } from "../agent-mining/service.mjs";
 import { nextReviewBatch, submitReviewBatch } from "./review-batches.mjs";
 import { FileFactsCache, nextFileBatch, completeFileBatch, relatedTasks } from "./file-batches.mjs";
+import { vulnerabilityScope } from "./vulnerability-scope.mjs";
 
 const guardian = fileURLToPath(new URL("./worker-host.mjs", import.meta.url));
 const instructionPath = fileURLToPath(new URL("./worker.md", import.meta.url));
 
-export async function workerConfiguration(environment, task) {
+export async function workerConfiguration(environment, task, startupScope = null) {
   const inherited = JSON.parse(environment.OPENCODE_CONFIG_CONTENT ?? "{}");
   const instructions = await readFile(instructionPath, "utf8");
+  const scope = startupScope ?? await vulnerabilityScope(task, { memoryMode: environment.AUDIT_MEMORY_MODE });
   const specialist = await readFile(new URL(`../../agents/${task.agent_name}.md`, import.meta.url), "utf8");
   const sections = specialist.split(/(?=^## )/m).filter(section => /^## (?:Audit Dimensions|High-value Web checks|Scope\b|Ownership boundary|Evidence Rules|Severity Decision|Judgment Rules Summary)/.test(section));
   const mcpMap = JSON.parse(await readFile(new URL("../../agent-manifest/mcp-map.json", import.meta.url), "utf8"));
   const agent = `task-board-${task.domain}-worker`;
   const config = { ...inherited, plugin: [], agent: { ...(inherited.agent ?? {}), [agent]: {
-    mode: "primary", description: `${task.domain} 领域任务执行者`, prompt: `${instructions}\n\n以下为原专业 Agent 的领域参考，只应用于当前任务范围：\n${sections.join("\n")}`,
+    mode: "primary", description: `${task.domain} 领域任务执行者`, prompt: `${scope.instructions}\n\n${instructions}\n\n以下为原专业 Agent 的领域参考，只应用于当前任务范围：\n${sections.join("\n")}`,
     permission: { "*": "deny", read: "allow", glob: "allow", grep: "allow", list: "allow", edit: "allow", bash: "allow", skill: "allow", lsp: "allow", external_directory: "allow",
       ...Object.fromEntries((mcpMap.agents[task.agent_name] ?? []).map(name => [name, "allow"])), task: "deny", question: "deny", webfetch: "deny", websearch: "deny" },
   } }, mcp: { ...(inherited.mcp ?? {}) } };
@@ -194,6 +196,7 @@ export class TaskBoardService {
       }
     }
     const input = { protocol: PROTOCOL, audit_id: this.auditId, task: job.task, attempt_id: job.attempt.attempt_id,
+      vulnerability_mining_scope: await vulnerabilityScope(job.task, { memoryMode: memoryContext?.binding?.mode === "blind" ? "blind" : this.environment.AUDIT_MEMORY_MODE }),
       source_root: this.sourceRoot, scope_digest: this.scopeDigest, output_root: workRoot, report_path: join(workRoot, "report.json"), receipt_path: join(workRoot, "receipt.json"),
       report_check_cli: join(this.workspaceRoot, ".opencode", "scripts", "task-report-check.mjs"),
       memory_context: memoryContext, memory_cli: this.memory ? join(this.workspaceRoot, ".opencode", "scripts", "audit-memory.mjs") : null,
@@ -221,7 +224,7 @@ export class TaskBoardService {
     }, this.leaseMs); timer.unref?.();
     const canReceive = () => !active.deliveryRevoked && !controller.signal.aborted && !this.paused && !this.closed;
     try {
-      const pending = this.worker ? this.worker({ job, input, inputPath, workRoot, signal: controller.signal }) : this.runWorker({ job, inputPath, signal: controller.signal });
+      const pending = this.worker ? this.worker({ job, input, inputPath, workRoot, signal: controller.signal }) : this.runWorker({ job, inputPath, signal: controller.signal, startupScope: input.vulnerability_mining_scope });
       captureReceipt();
       const result = await pending;
       if (!canReceive()) throw new Error(timedOut ? "任务执行超时。" : "任务调度已暂停或停止。");
@@ -256,8 +259,8 @@ export class TaskBoardService {
       }
     }
   }
-  async runWorker({ job, inputPath, signal }) {
-    const { config, agent } = await workerConfiguration(this.environment, job.task);
+  async runWorker({ job, inputPath, signal, startupScope = null }) {
+    const { config, agent } = await workerConfiguration(this.environment, job.task, startupScope);
     // Static workers never allocate a browser or inherit the monitor's authority.
     const environment = { ...this.environment, OPENCODE_CONFIG_CONTENT: JSON.stringify(config), AUDIT_TASK_PROTOCOL: PROTOCOL,
       AUDIT_TASK_BOARD_CONNECTION_PATH: "", AUDIT_TODO_PATH: "", AUDIT_TODO_CLI: "", AUDIT_RUNTIME_CONNECTION_PATH: "", AUDIT_RUNTIME_CLI: "",
@@ -267,7 +270,7 @@ export class TaskBoardService {
       AUDIT_MEMORY_CLI: this.memory ? join(this.workspaceRoot, ".opencode", "scripts", "audit-memory.mjs") : "",
       AUDIT_TEST_ENVIRONMENT_CONTEXT_PATH: "", AUDIT_TEST_ENVIRONMENT_CONTEXT_SHA256: "", AUDIT_QUICK_DYNAMIC_ENABLED: "false" };
     // --file is variadic: keep the positional message before all options.
-    const args = ["run", "完整读取附件中的唯一任务，依据领域技能执行源码审计。写报告和回执后立即结束。",
+    const args = ["run", "完整读取附件中的唯一任务及 vulnerability_mining_scope，先明确本次应挖掘的漏洞类型，再按适用技能执行源码审计。写报告和回执后立即结束。",
       "--format", "json", "--agent", agent, "--dir", this.workspaceRoot,
       ...(this.model ? ["--model", this.model] : []), "--title", `${job.task.title}`,
       "--file", inputPath];

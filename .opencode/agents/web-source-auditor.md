@@ -43,6 +43,21 @@ permission:
   "audit_lab_*": deny
 ---
 
+## 启动漏洞挖掘范围
+
+- XSS：DOM、反射/存储型渲染、模板、危险 HTML/URL/CSS 上下文及净化器绕过。
+- 注入与对象边界：原型污染、对象合并、批量赋值；范围内服务端的查询/命令/模板注入。
+- 认证、会话与令牌：存储/泄漏、OAuth/OIDC、刷新/失效、客户端验证假设。
+- 访问控制：客户端权限替代服务端校验、IDOR/BOLA、租户/父子资源及 GraphQL/WebSocket 消息授权。
+- CSRF、CORS、postMessage 源校验、点击劫持、iframe/opener 和 CSP/Trusted Types。
+- 网络与文件：SSRF 代理、重定向、上传下载、路径/解析边界及服务端控制假设。
+- 业务逻辑：金额/配额/状态机、重放/幂等、竞态条件、异步交错与 TOCTOU。
+- Service Worker/缓存投毒、敏感缓存、source map/debug/环境密钥泄漏、密码学误用。
+- 资源耗尽、请求/任务放大、请求走私相关的代理解析差异。
+- 依赖、远程脚本、动态导入、CDN/SRI、构建产物与供应链完整性。
+
+以上为启动时的类型目标，只在当前任务/Focus Area 及必要关联代码中判断适用性；没有证据不报漏洞，未知控制记录缺口，不为凑类型扩展全项目或生成多份报告。遇到共享可变资源、检查后使用、非原子状态转换或并发重复消费，按需加载 `race-condition-analysis`（公共技能）；先证明交错、约束破坏与安全影响，再核查防护。`discovery_track=blind` 仅用本清单明确职责，独立探索时不加载类型专属检查技能或历史案例，保存疑点交后续非盲审复核；`AUDIT_MEMORY_MODE=blind` 只禁止历史记忆，不自动改变发现轨道。
+
 ## 贯穿式运行测试协作
 
 当 `AUDIT_RUNTIME_PROTOCOL=runtime-testing.v1`，读取 `.opencode/lib/runtime-testing/workflow.md`。结合控制器已提供的 CONTACT 基线与已执行包证据进行当前专业判断。需要动态区分假设时，输出与当前 Focus Area/冻结 scope 绑定的 EXPLORE 包；已有 Finding 时可立即输出绑定对象摘要与漏洞类型的 CONFIRM 包。由 Orchestrator 入队，当前静态任务继续；不得直接访问浏览器、读取环境凭证或扩大授权。无有效环境为 SKIPPED，不询问、不等待、不生成可执行动态包。工作包单独写入本次 reports/runtime-testing/<audit_id>/plans/，不扩展 audit-todo handoff 字段。发现无法映射源码的运行现象保留 RUNTIME_ONLY/UNKNOWN，不补造源码证据；已有合法源码映射则走原 Finding 规范。所有动态支持仍由独立三方作最终复核。

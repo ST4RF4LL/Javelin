@@ -45,6 +45,21 @@ permission:
   "audit_lab_*": deny
 ---
 
+## 启动漏洞挖掘范围
+
+- 注入：SQL/ORM/NoSQL、命令、eval/exec、模板、XSS、日志及 XML 解析边界。
+- 认证与会话：Django/Flask/FastAPI 认证链、JWT、OAuth、密码重置、CSRF 与令牌失效。
+- 访问控制：IDOR/BOLA、角色、租户、所有权、父子资源及对象生命周期。
+- 反序列化与动态加载：pickle、YAML、自定义 loader、模型/插件加载与解析器边界。
+- 文件与路径：遍历、归档解压、上传、任意读写和临时文件。
+- SSRF、重定向、出站请求与 TLS 校验。
+- 密码学、随机数、密钥/隐私泄漏、debug 和配置优先级。
+- 业务逻辑：批量赋值、金额/库存/配额、重放/幂等、竞态条件与 TOCTOU。
+- 资源耗尽：正则、解析、分页/分配、循环、异步任务与并发放大。
+- 依赖、包安装、构建与供应链风险。
+
+以上为启动时的类型目标，只在当前任务/Focus Area 及必要关联代码中判断适用性；没有证据不报漏洞，未知控制记录缺口，不为凑类型扩展全项目或生成多份报告。遇到共享可变资源、检查后使用、非原子状态转换或并发重复消费，按需加载 `race-condition-analysis`（公共技能）；先证明交错、约束破坏与安全影响，再核查防护。`discovery_track=blind` 仅用本清单明确职责，独立探索时不加载类型专属检查技能或历史案例，保存疑点交后续非盲审复核；`AUDIT_MEMORY_MODE=blind` 只禁止历史记忆，不自动改变发现轨道。
+
 ## 贯穿式运行测试协作
 
 当 `AUDIT_RUNTIME_PROTOCOL=runtime-testing.v1`，读取 `.opencode/lib/runtime-testing/workflow.md`。结合控制器已提供的 CONTACT 基线与已执行包证据进行当前专业判断。需要动态区分假设时，输出与当前 Focus Area/冻结 scope 绑定的 EXPLORE 包；已有 Finding 时可立即输出绑定对象摘要与漏洞类型的 CONFIRM 包。由 Orchestrator 入队，当前静态任务继续；不得直接访问浏览器、读取环境凭证或扩大授权。无有效环境为 SKIPPED，不询问、不等待、不生成可执行动态包。工作包单独写入本次 reports/runtime-testing/<audit_id>/plans/，不扩展 audit-todo handoff 字段。发现无法映射源码的运行现象保留 RUNTIME_ONLY/UNKNOWN，不补造源码证据；已有合法源码映射则走原 Finding 规范。所有动态支持仍由独立三方作最终复核。
@@ -147,7 +162,7 @@ The reconciler emits one coverage cell for every D1-D10 dimension under the assi
 ### D9: Business Logic
 - **IDOR**: Every `get(id=id)` — user ownership check; CRUD endpoint permission consistency
 - **Mass Assignment**: DRF Serializer `fields = '__all__'` with sensitive model fields (`is_admin`, `role`, `is_staff`); Django `ModelForm` missing `fields` whitelist
-- **Race conditions**: Balance/stock deduction without `select_for_update()` / database lock; coupon concurrency
+- **Race conditions**: Load `race-condition-analysis` for balance/stock/coupon or other shared-state paths. Verify the invariant, feasible interleaving, actual transaction/lock semantics, conditional writes and uniqueness; neither the GIL nor the presence/absence of `select_for_update()` determines safety alone.
 - **State machine**: Order/approval workflows — step skipping possible? Pre-state validation?
 - **Rate limiting**: SMS/email sending without rate limit; login without brute-force protection
 - **Data export**: Export scope limited to current user? Batch operations without permission checks

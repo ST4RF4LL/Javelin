@@ -45,6 +45,21 @@ permission:
   "audit_lab_*": deny
 ---
 
+## 启动漏洞挖掘范围
+
+- 注入：SQL/JPQL/MyBatis、NoSQL、LDAP/XPath、命令、SpEL/模板、XSS、日志注入及 XXE。
+- 认证与会话：登录/重置/注销、JWT、OAuth/OIDC、CSRF、会话固定与令牌失效。
+- 访问控制：IDOR/BOLA、角色/租户/所有权、父子资源绑定、对象完整生命周期和批量操作越权。
+- 不安全反序列化、动态类型与反射/类加载边界。
+- 文件与路径：遍历、Zip Slip、上传、任意读写与临时文件权限。
+- 网络边界：SSRF（含结构化/持久化地址的二阶路径）、重定向、代理与 TLS 校验。
+- 密码学、随机数、密钥管理、敏感信息泄漏、调试及安全配置失效。
+- 业务逻辑：批量赋值、金额/配额/状态机、重放/幂等、竞态条件与 TOCTOU。
+- 资源耗尽：数值边界、分配/分页/循环/并发放大与昂贵操作。
+- 依赖、构建与插件供应链：结合实际可达代码和部署配置判断。
+
+以上为启动时的类型目标，只在当前任务/Focus Area 及必要关联代码中判断适用性；没有证据不报漏洞，未知控制记录缺口，不为凑类型扩展全项目或生成多份报告。遇到共享可变资源、检查后使用、非原子状态转换或并发重复消费，按需加载 `race-condition-analysis`（公共技能）；先证明交错、约束破坏与安全影响，再核查防护。`discovery_track=blind` 仅用本清单明确职责，独立探索时不加载类型专属检查技能或历史案例，保存疑点交后续非盲审复核；`AUDIT_MEMORY_MODE=blind` 只禁止历史记忆，不自动改变发现轨道。
+
 ## 贯穿式运行测试协作
 
 当 `AUDIT_RUNTIME_PROTOCOL=runtime-testing.v1`，读取 `.opencode/lib/runtime-testing/workflow.md`。结合控制器已提供的 CONTACT 基线与已执行包证据进行当前专业判断。需要动态区分假设时，输出与当前 Focus Area/冻结 scope 绑定的 EXPLORE 包；已有 Finding 时可立即输出绑定对象摘要与漏洞类型的 CONFIRM 包。由 Orchestrator 入队，当前静态任务继续；不得直接访问浏览器、读取环境凭证或扩大授权。无有效环境为 SKIPPED，不询问、不等待、不生成可执行动态包。工作包单独写入本次 reports/runtime-testing/<audit_id>/plans/，不扩展 audit-todo handoff 字段。发现无法映射源码的运行现象保留 RUNTIME_ONLY/UNKNOWN，不补造源码证据；已有合法源码映射则走原 Finding 规范。所有动态支持仍由独立三方作最终复核。
@@ -187,7 +202,7 @@ Deep packs include `models/`, `rules/` (grep/Semgrep-compatible YAML/Joern), `an
 - **Resource exhaustion**: Load `java-resource-exhaustion`. Trace external numeric size/limit/count/pageSize/capacity/repeat/depth/workers/parallelism values into allocations, pagination, loops, fan-out, recursion, executors, queues, or expensive reads. Require enforced min/max and overflow-safe arithmetic at the expensive sink; missing `@Min`/`@Max` alone is only a candidate signal.
 - **Mass Assignment**: Load `java-mass-assignment`. `@ModelAttribute`/`@RequestBody` binding to entity with `role`/`isAdmin`/`status` fields without DTO isolation
 - **CSRF**: Load `java-csrf` when cookie-session state-changing endpoints lack tokens/SameSite/custom headers
-- **Race conditions**: Balance deduction without `@Lock`/`@Version`/`synchronized`; coupon/stock in concurrent requests
+- **Race conditions**: Load `race-condition-analysis` when shared state or check-then-act paths appear. Trace balance/stock/coupon invariants, feasible interleavings, effective atomic updates, transactions, uniqueness and lock/version scope. Missing annotations or locks alone are not a finding.
 - **State machine**: Order/workflow status transitions — verify pre-state before each transition; no step skipping
 - **Export/batch**: Export scope limited to current user/tenant? Parameter tampering to export all data?
 

@@ -3,5 +3,5 @@
   "type": "shared-skill-collection",
   "owner_agent": "shared",
   "description": "Shared skills used by multiple audit agents.",
-  "skills": ["audit-coverage-accounting", "audit-artifact-management", "secure-code-review-common", "focus-area-vulnerability-discovery", "finding-evidence-contract", "finding-adjudication", "detect-bac-risks"]
+  "skills": ["audit-coverage-accounting", "audit-artifact-management", "secure-code-review-common", "focus-area-vulnerability-discovery", "finding-evidence-contract", "finding-adjudication", "detect-bac-risks", "race-condition-analysis"]
 }
