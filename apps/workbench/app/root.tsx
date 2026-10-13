@@ -5,7 +5,7 @@ import { Toaster } from 'sonner';
 import { WorkspaceProvider } from './lib/workspace';
 import './styles.css';
 export function Layout({ children }: { children: ReactNode }) {
-  return <html lang="zh-CN"><head><meta charSet="utf-8" /><meta name="viewport" content="width=device-width, initial-scale=1" /><meta name="theme-color" content="#f8f9fc" /><link rel="icon" href="/favicon.svg" type="image/svg+xml" /><title>Javeliln · 安全审计工作台</title><Meta /><Links /></head><body>{children}<ScrollRestoration /><Scripts /></body></html>;
+  return <html lang="zh-CN"><head><meta charSet="utf-8" /><meta name="viewport" content="width=device-width, initial-scale=1" /><meta name="theme-color" content="#f8f9fc" /><link rel="icon" href="/favicon.svg" type="image/svg+xml" /><title>Javelin · 安全审计工作台</title><Meta /><Links /></head><body>{children}<ScrollRestoration /><Scripts /></body></html>;
 }
 export default function App() {
   const [client] = useState(() => new QueryClient({ defaultOptions: { queries: { refetchOnWindowFocus: false, retry: 1 } } }));
