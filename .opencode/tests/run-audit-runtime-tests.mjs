@@ -211,13 +211,13 @@ test('通用 Agent 桥接使用同一登记、受控 CLI 和完成门禁，未�
 });
 
 test('OpenCode 插件使用 ToolContext 的当前 ID，并向子会话注入同一任务环境', async t => {
-  let registered, heartbeat, replies = [], aborts = [], prompts = [];
+  let registered, heartbeat, replies = [], aborts = [], prompts = [], forwardedErrors = [];
   const hooks = await plugin({ directory: '/tmp', client: { session: {
     abort: async args => { aborts.push(args.path.id); }, promptAsync: async args => { prompts.push(args.path.id); },
   } } }, { api: { async call(operation, input) {
     if (operation === 'register') { registered = input; return { audit: { id: 'audit-plugin', status: 'running' }, client_id: 'client-fixture', workspace_root: '/tmp/audit-fixture',
       prompt: '按冻结范围审计', environment: { AUDIT_TASK_PROTOCOL: 'task-board.v1' }, heartbeat_ms: 10 }; }
-    heartbeat = input; return replies.shift() ?? { status: 'running' };
+    heartbeat = input; forwardedErrors.push(...(input.events ?? []).filter(event => JSON.parse(event.message).type === 'error')); return replies.shift() ?? { status: 'running' };
   } } });
   const response = JSON.parse(await hooks.tool.audit_register.execute({ source_root: '/tmp' }, { sessionID: 'ses_actual_context', agent: 'security-audit-orchestrator' }));
   assert.equal(response.session_id, 'ses_actual_context'); assert.equal(registered.session.session_id, response.session_id);
@@ -232,5 +232,135 @@ test('OpenCode 插件使用 ToolContext 的当前 ID，并向子会话注入同�
   replies.push({ status: 'recovering', command: { id: 'resume-id', action: 'resume', prompt: '继续当前审计' } });
   await deadline(() => prompts.length === 1); assert.equal(prompts[0], response.session_id);
   assert.equal(heartbeat.audit_id, 'audit-plugin');
+  replies.push({ status: 'recovering', command: { id: 'timeout-id', action: 'recover', prompt: '从超时处继续' } });
+  await hooks.event({ event: { type: 'session.error', properties: { sessionID: response.session_id,
+    error: { name: 'UnknownError', data: { message: 'The operation timed out.' } } } } });
+  await deadline(() => prompts.length === 2 && forwardedErrors.length === 1);
+  assert.equal(aborts[1], response.session_id); assert.equal(prompts[1], response.session_id);
   replies.push({ status: 'completed', terminal: true });
+});
+
+const timeoutError = { type: 'error', sessionID: 'ses_timeout_main', error: { name: 'UnknownError', data: { message: 'The operation timed out.' } } };
+const until = async predicate => { for (let n = 0; n < 500 && !predicate(); n++) await new Promise(resolve => setTimeout(resolve, 5)); assert.ok(predicate()); };
+
+test('设置 API 修改后，正在运行的主任务与专业任务服务使用新策略', async t => {
+  const f = await fixture(t, { environment: {} });
+  const created = await f.runner.createAuditFromTarget(f.input, 'settings-live-task');
+  f.runner.queueScheduler = null; await f.runner.dispatchQueuedAudit(created.id);
+  const workers = f.runner.taskBoardServices.get(created.id);
+  const service = await startAuditService({ port: 0, serviceRoot: join(f.root, 'settings-connection'), stateRoot: f.stateRoot,
+    backendOptions: { runner: f.runner, platformConfigPath: f.configPath, modelConfigPaths: [f.configPath], runtimeRoot: join(f.root, 'reports') } });
+  t.after(() => service.close());
+  const endpoint = `${service.origin}/api/v1/settings/timeout-recovery`;
+  assert.deepEqual((await (await fetch(endpoint)).json()).timeout_recovery, { max_recoveries: 20, retry_delay_seconds: 10, updated_at: null });
+  const response = await fetch(endpoint, { method: 'PUT', headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({ max_recoveries: 7, retry_delay_seconds: 42 }) });
+  assert.equal(response.status, 200); assert.equal((await response.json()).timeout_recovery.retry_delay_seconds, 42);
+  assert.deepEqual(workers.getTimeoutRecoveryPolicy(), { limit: 7, delay_ms: 42000 });
+  assert.equal((await fetch(endpoint, { method: 'PUT', headers: { 'Content-Type': 'application/json' }, body: '{}' })).status, 422);
+  assert.deepEqual(f.runner.timeoutRecoveryPolicy, { limit: 7, delay_ms: 42000 });
+  f.launches[0].child.stdout.write(`${JSON.stringify(timeoutError)}\n`);
+  await until(() => f.runner.timeoutRecoveryTimers.has(created.id));
+  const audit = f.runner.audits.get(created.id);
+  const remaining = Date.parse(audit.timeout_recovery.next_retry_at) - Date.now();
+  assert.ok(remaining > 40000 && remaining <= 42000); assert.equal(audit.timeout_recovery.limit, 7);
+  await f.runner.action(audit.id, 'pause', audit.version, 'stop-settings-fixture');
+});
+
+test('Web JSON 超时沿用审计和 session，去重、拒绝旧进程事件，耗尽后保持未完成', async t => {
+  const f = await fixture(t, { environment: { AUDIT_TIMEOUT_RETRY_DELAY_MS: '0', AUDIT_TIMEOUT_MAX_RECOVERIES: '2' } });
+  const created = await f.runner.createAuditFromTarget(f.input, 'timeout-web');
+  f.runner.queueScheduler = null; await f.runner.dispatchQueuedAudit(created.id);
+  const audit = f.runner.audits.get(created.id), root = audit.paths.workspace_root;
+  await writeFile(join(root, 'checkpoint-note.txt'), '已保存的证据');
+  f.launches[0].child.stdout.write(`${JSON.stringify({ type: 'text', part: { text: JSON.stringify(timeoutError) } })}\n`);
+  assert.equal(audit.timeout_recovery, undefined);
+  f.launches[0].child.stdout.write(`${JSON.stringify(timeoutError)}\n${JSON.stringify(timeoutError)}\n`);
+  await until(() => f.launches.length === 2 && audit.timeout_recovery?.state === 'restarted');
+  assert.equal(audit.status, 'running'); assert.equal(audit.recovery_count, 1);
+  assert.equal(f.launches[1].args[f.launches[1].args.indexOf('--session') + 1], timeoutError.sessionID);
+  assert.equal(audit.paths.workspace_root, root); assert.equal(await readFile(join(root, 'checkpoint-note.txt'), 'utf8'), '已保存的证据');
+  f.launches[0].child.stdout.write(`${JSON.stringify(timeoutError)}\n`);
+  assert.equal(audit.timeout_recovery.attempts, 1);
+  f.launches[1].child.stdout.write(`${JSON.stringify(timeoutError)}\n`);
+  await until(() => f.launches.length === 3 && audit.timeout_recovery?.state === 'restarted');
+  f.launches[2].child.stdout.write(`${JSON.stringify(timeoutError)}\n`);
+  await until(() => audit.status === 'interrupted' && audit.timeout_recovery?.state === 'exhausted' && !f.runner.completions.has(audit.id));
+  assert.equal(f.launches.length, 3); assert.match(audit.error, /用完 2 次/);
+  assert.equal(f.runner.timeoutRecoveryTimers.size, 0);
+  await until(() => !f.runner.completions.has(audit.id));
+  await f.runner.action(audit.id, 'recover', audit.version, 'manual-recover-after-exhaustion');
+  assert.equal(f.launches.length, 4);
+  f.launches[3].child.stdout.write(`${JSON.stringify(timeoutError)}\n`);
+  await until(() => f.launches.length === 5 && audit.timeout_recovery?.state === 'restarted');
+  assert.equal(audit.timeout_recovery.attempts, 1);
+  assert.equal(audit.status, 'running');
+});
+
+test('旧进程日志延迟落盘不能再次触发新会话恢复', async t => {
+  const f = await fixture(t, { environment: { AUDIT_TIMEOUT_RETRY_DELAY_MS: '0' } });
+  const created = await f.runner.createAuditFromTarget(f.input, 'late-timeout-log');
+  f.runner.queueScheduler = null; await f.runner.dispatchQueuedAudit(created.id);
+  const audit = f.runner.audits.get(created.id), original = f.runner.record;
+  const pendingLogs = [];
+  f.runner.record = async function(row, type, payload, options) {
+    if (type === 'agent.output') await new Promise(resolve => pendingLogs.push(resolve));
+    return original.call(this, row, type, payload, options);
+  };
+  f.launches[0].child.stdout.write(`${JSON.stringify(timeoutError)}\n`);
+  await until(() => f.launches.length === 2 && audit.timeout_recovery?.state === 'restarted' && pendingLogs.length > 0);
+  f.runner.record = original;
+  for (const resolve of pendingLogs) resolve();
+  await new Promise(resolve => setTimeout(resolve, 30));
+  assert.equal(f.launches.length, 2); assert.equal(audit.timeout_recovery.attempts, 1);
+  assert.equal(audit.status, 'running');
+});
+
+for (const action of ['pause', 'cancel']) test(`退避期间用户 ${action} 优先，旧恢复回调不得重启`, async t => {
+  const f = await fixture(t, { environment: { AUDIT_TIMEOUT_RETRY_DELAY_MS: '30000' } });
+  const created = await f.runner.createAuditFromTarget(f.input, `stop-timeout-${action}`);
+  f.runner.queueScheduler = null; await f.runner.dispatchQueuedAudit(created.id);
+  const audit = f.runner.audits.get(created.id);
+  f.launches[0].child.stdout.write(`${JSON.stringify(timeoutError)}\n`);
+  await until(() => audit.status === 'interrupted' && f.runner.timeoutRecoveryTimers.has(audit.id));
+  assert.ok(Date.parse(audit.timeout_recovery.next_retry_at) > Date.now());
+  await f.runner.action(audit.id, action, audit.version, `manual-${action}`);
+  assert.equal(audit.timeout_recovery.state, 'stopped');
+  assert.equal(await f.runner.runOperationTimeoutRecovery(audit.id, 1), false);
+  assert.equal(f.launches.length, 1);
+  assert.equal(audit.status, action === 'pause' ? 'interrupted' : 'cancelled');
+});
+
+test('Web 服务重启重建保存的超时等待，关闭期间不启动模型', async t => {
+  const f = await fixture(t, { environment: { AUDIT_TIMEOUT_RETRY_DELAY_MS: '30000' } });
+  const created = await f.runner.createAuditFromTarget(f.input, 'persist-timeout');
+  f.runner.queueScheduler = null; await f.runner.dispatchQueuedAudit(created.id);
+  f.launches[0].child.stdout.write(`${JSON.stringify(timeoutError)}\n`);
+  await until(() => f.runner.timeoutRecoveryTimers.has(created.id));
+  await f.runner.shutdown(); assert.equal(f.launches.length, 1);
+  const second = new AuditRunner({ stateRoot: f.stateRoot, platformRoot: f.root, configPath: f.configPath, enabled: true,
+    environment: { AUDIT_TIMEOUT_RETRY_DELAY_MS: '30000' }, terminalMonitor: f.runner.terminalMonitor, spawnProcess: f.runner.spawnProcess });
+  try {
+    await second.ready;
+    assert.equal(second.getAudit(created.id).timeout_recovery.state, 'waiting-to-recover');
+    assert.equal(second.timeoutRecoveryTimers.has(created.id), true); assert.equal(f.launches.length, 1);
+  } finally { await second.shutdown(); }
+});
+
+test('原生 OpenCode 超时在当前 session 请求 recover，子会话错误不会重启主会话', async t => {
+  const f = await fixture(t, { environment: { AUDIT_TIMEOUT_RETRY_DELAY_MS: '0' } });
+  const hub = new NativeSessionController({ runner: f.runner, token: 'a'.repeat(64),
+    createAudit: (input, session) => f.runner.createAuditFromTarget({ ...f.input, ...input }, input.idempotency_key, { nativeSession: session }) });
+  t.after(() => hub.close());
+  const binding = await hub.register(f.registration), audit = f.runner.audits.get(binding.audit.id);
+  const heartbeat = { audit_id: audit.id, client_id: binding.client_id };
+  await hub.heartbeat({ ...heartbeat, events: [{ message: JSON.stringify(timeoutError) }] });
+  assert.equal(audit.timeout_recovery, undefined);
+  await hub.heartbeat({ ...heartbeat, events: [{ message: JSON.stringify({ ...timeoutError, sessionID: audit.execution.session_id }) }] });
+  await until(() => audit.timeout_recovery?.state === 'restarted');
+  const command = (await hub.heartbeat(heartbeat)).command;
+  assert.equal(command.action, 'recover'); assert.match(command.prompt, /复用已交付制品/);
+  await hub.heartbeat({ ...heartbeat, ack: { id: command.id } });
+  assert.equal(audit.status, 'running'); assert.equal(audit.execution.session_id, f.registration.session.session_id);
+  assert.equal(f.launches.length, 0);
 });

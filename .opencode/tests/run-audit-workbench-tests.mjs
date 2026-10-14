@@ -726,6 +726,7 @@ if (mode === "run") {
   const timeoutMonitor = new FakeTerminalMonitor();
   let timeoutSpawnCount = 0;
   const timeoutRunner = new AuditRunner({
+    environment: { ...process.env, AUDIT_TIMEOUT_RETRY_DELAY_MS: "0" },
     stateRoot: join(temp, "timeout-recovery-state"),
     platformRoot,
     repositories: [{ id: "fixture", name: "测试仓库", path: repositoryRoot }],
@@ -826,7 +827,7 @@ if (mode === "run") {
     repositories: [{ id: "fixture", name: "测试仓库", path: repositoryRoot }],
     configPath: join(repositoryRoot, ".opencode", "opencode.json"),
     enabled: true,
-    environment: { PATH: process.env.PATH ?? "" },
+    environment: { PATH: process.env.PATH ?? "", AUDIT_TIMEOUT_RETRY_DELAY_MS: "0" },
     terminalMonitor: stuckTimeoutMonitor,
     operationTimeoutTerminationGraceMs: 100,
     spawnProcess() { stuckTimeoutSpawnCount += 1; return stuckTimeoutSpawnCount === 1 ? stuckTimeoutChild : forcedRecoveryChild; },
@@ -1986,7 +1987,7 @@ if (mode === "run") {
     const indexResponse = await fetch(`${base}/`);
     assert.equal(indexResponse.status, 200);
     const indexHtml = await indexResponse.text();
-    assert.match(indexHtml, /DeepHole·JAVA/);
+    assert.match(indexHtml, /Javelin·JAVA/);
     assert.match(indexHtml, /id="report-dialog"/);
     assert.match(indexHtml, /class="report-preview markdown-body"/);
     assert.match(indexHtml, /id="finding-dialog"/);

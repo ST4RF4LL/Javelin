@@ -5,6 +5,8 @@ import { verifyBoardCompletion } from "../../lib/task-board/review.mjs";
 import { EventLogReader } from "./event-log-reader.mjs";
 import { executionBinding, isNativeAudit } from "../../lib/audit-runtime/contract.mjs";
 import { acquireStateLease } from "../../lib/audit-runtime/state-lease.mjs";
+import { operationTimeout, timeoutRetryDelay } from "../../lib/audit-runtime/operation-timeout.mjs";
+import { TimeoutRecoverySettingsStore } from "../../lib/audit-runtime/timeout-recovery-settings.mjs";
 import { fileFocusCoverage } from "./file-focus-coverage.mjs";
 import { controlledBytes } from "../../lib/task-board/contract.mjs";
 import { selection as runtimeSelection, authorize as authorizeRuntime } from "../../lib/runtime-testing/contract.mjs";
@@ -47,9 +49,7 @@ const MAX_DELIVERY_CANDIDATES = 8;
 const MAX_ADDITIONAL_INSTRUCTIONS = 12_000;
 const MAX_TEST_ENVIRONMENT_CONTEXT = 24_000;
 const COMPLETION_WATCHDOG_INTERVAL_MS = 15_000;
-const OPERATION_TIMEOUT_PATTERN = /\bthe operation timed out\b/i;
 const OPERATION_TIMEOUT_RECOVERY_REASON = "operation-timed-out";
-const MAX_OPERATION_TIMEOUT_RECOVERIES = 3;
 const OPERATION_TIMEOUT_TERMINATION_GRACE_MS = 10_000;
 const CONTEXT_WINDOW_PATTERN = /this model(?:'s|’s) maximum (?:input|context) length is\b/i;
 const CONTEXT_WINDOW_RECOVERY_REASON = "context-window-exceeded";
@@ -656,6 +656,7 @@ export class AuditRunner extends EventEmitter {
     this.enabled = enabled;
     this.command = command;
     this.environment = environment;
+    this.timeoutRecoverySettings = new TimeoutRecoverySettingsStore({ path: join(this.stateRoot, "timeout-recovery-settings.json"), environment });
     this.spawnProcess = spawnProcess;
     this.compactSessionRunner = compactSessionRunner ?? ((command, args, options) => execFileAsync(command, args, options));
     this.stageDeliveryVerifier = stageDeliveryVerifier;
@@ -692,6 +693,8 @@ export class AuditRunner extends EventEmitter {
     this.ready = this.initialize().catch(error => { this.releaseStateLease?.(); throw error; });
   }
 
+  get timeoutRecoveryPolicy() { return this.timeoutRecoverySettings.policy; }
+
   enqueue(id, operation) {
     const prior = this.writeQueues.get(id) ?? Promise.resolve();
     const next = prior.catch(() => {}).then(operation);
@@ -701,6 +704,7 @@ export class AuditRunner extends EventEmitter {
   }
 
   async initialize() {
+    await this.timeoutRecoverySettings.ready;
     await mkdir(this.stateRoot, { recursive: true });
     if (this.enabled) this.releaseStateLease = acquireStateLease(this.stateRoot);
     if (this.configPath) {
@@ -767,6 +771,15 @@ export class AuditRunner extends EventEmitter {
       await this.reconcileTerminalCompletions("startup-watchdog");
     }
     this.startCompletionWatchdog();
+    if (this.enabled) for (const audit of this.audits.values()) {
+      if (!isNativeAudit(audit) && audit.status === "interrupted" && !audit.timeout_recovery?.exhausted
+        && ["observed", "interrupting", "waiting-for-runner-exit", "waiting-for-runner-close", "waiting-to-recover"].includes(audit.timeout_recovery?.state)) {
+        audit.timeout_recovery.state = "waiting-to-recover";
+        audit.timeout_recovery.attempts ||= 1;
+        this.timeoutRecoveryPending.add(audit.id);
+        this.scheduleOperationTimeoutRecovery(audit, audit.timeout_recovery.attempts);
+      }
+    }
   }
 
   reportsRootForAudit(audit) {
@@ -1985,6 +1998,7 @@ export class AuditRunner extends EventEmitter {
         fileManifestPath: audit.source_baseline.path,
         privateRoot: dirname(environment.AUDIT_TASK_BOARD_CONNECTION_PATH), workspaceRoot: paths.workspace_root, sourceRoot: paths.source_root,
         auditId: audit.id, scopeDigest: audit.source_baseline.scope_digest, environment, command: this.command, model,
+        getTimeoutRecoveryPolicy: () => this.timeoutRecoveryPolicy,
         runtimeRequired: Boolean(audit.runtime_testing), bacMode: audit.bac_analysis?.mode ?? "off", memory: memoryAdapter,
         onChange: async summary => { audit.todo_summary = summary; await this.record(audit, "audit.task-board.updated", summary); },
         onPauseRequested: async reason => {
@@ -2097,18 +2111,19 @@ export class AuditRunner extends EventEmitter {
         const lines = buffer.split("\n");
         buffer = lines.pop() ?? "";
         for (const line of lines) {
+          if (this.processes.get(audit.id) !== child) continue;
           this.captureProviderSession(audit, line).catch(() => {});
           this.observeOperationTimeout(audit, source, line);
           this.observeContextWindowOverflow(audit, source, line);
-          this.recordLog(audit, source, line).catch(() => {});
+          this.recordLog(audit, source, line, { observe: false }).catch(() => {});
         }
       });
       stream?.on("end", () => {
-        if (!buffer) return;
+        if (!buffer || this.processes.get(audit.id) !== child) return;
         this.captureProviderSession(audit, buffer).catch(() => {});
         this.observeOperationTimeout(audit, source, buffer);
         this.observeContextWindowOverflow(audit, source, buffer);
-        this.recordLog(audit, source, buffer).catch(() => {});
+        this.recordLog(audit, source, buffer, { observe: false }).catch(() => {});
       });
     };
     capture(child.stdout, "stdout");
@@ -2196,12 +2211,17 @@ export class AuditRunner extends EventEmitter {
         }
         else if (code === 0) audit.status = "completed";
         else audit.status = "interrupted";
+        // Some OpenCode versions emit an error envelope and still exit 0.
+        if (timedOut && audit.status !== "cancelled") {
+          audit.status = "interrupted";
+          audit.interruption_reason = OPERATION_TIMEOUT_RECOVERY_REASON;
+        }
         if (signal && !audit.error) audit.error = `进程由信号 ${signal} 结束。`;
         if (audit.status === "interrupted") {
           audit.interrupted_at = audit.finished_at;
           audit.interruption_reason ||= signal ? "runner-signalled" : "runner-exited";
           audit.error ||= `Runner 异常退出（exit code ${code ?? "null"}），可从当前检查点恢复。`;
-          if (timedOut) audit.timeout_recovery = { ...(audit.timeout_recovery ?? {}), state: "waiting-to-recover", interrupted_at: audit.interrupted_at };
+          if (timedOut) audit.timeout_recovery = { ...(audit.timeout_recovery ?? {}), state: audit.timeout_recovery?.exhausted ? "exhausted" : "waiting-to-recover", interrupted_at: audit.interrupted_at };
           if (contextExceeded) audit.context_window_recovery = { ...(audit.context_window_recovery ?? {}), state: "waiting-to-compact", interrupted_at: audit.interrupted_at };
         }
         await this.finalizeTerminal(audit).catch(error => {
@@ -2235,13 +2255,13 @@ export class AuditRunner extends EventEmitter {
     await this.record(audit, "audit.session.bound", { provider_session_id: sessionId });
   }
 
-  async recordLog(audit, source, line) {
+  async recordLog(audit, source, line, { observe = true } = {}) {
     const message = redact(line, await this.redactionsForAudit(audit));
     if (!message) return;
     const entry = { occurred_at: new Date().toISOString(), source, message };
     await appendFile(join(this.stateRoot, audit.id, "runner.log.jsonl"), `${JSON.stringify(entry)}\n`, { encoding: "utf8", mode: 0o600 });
     await this.record(audit, "agent.output", entry, { bumpVersion: false });
-    if (!isNativeAudit(audit)) {
+    if (observe && !isNativeAudit(audit)) {
       this.observeOperationTimeout(audit, source, message, entry);
       this.observeContextWindowOverflow(audit, source, message, entry);
     }
@@ -2326,9 +2346,9 @@ export class AuditRunner extends EventEmitter {
   }
 
   markOperationTimeoutObserved(audit, source, line) {
-    if (!audit || !OPERATION_TIMEOUT_PATTERN.test(String(line ?? ""))) return null;
+    if (!this.enabled || this.shuttingDown || !audit || audit.status !== "running" || !operationTimeout(line)) return null;
     const prior = audit.timeout_recovery ?? {};
-    if (["interrupting", "waiting-for-runner-exit", "waiting-to-recover", "recovering"].includes(prior.state)) return null;
+    if (["interrupting", "waiting-for-runner-exit", "waiting-for-runner-close", "waiting-to-recover", "recovering"].includes(prior.state)) return null;
     const entry = {
       occurred_at: new Date().toISOString(),
       source,
@@ -2352,26 +2372,27 @@ export class AuditRunner extends EventEmitter {
   }
 
   async handleOperationTimeout(audit, entry) {
-    if (!this.enabled || !audit) return false;
+    if (!this.enabled || this.shuttingDown || !audit || !["running", "interrupted"].includes(audit.status)) return false;
     if (this.timeoutRecoveryPending.has(audit.id)) return false;
     const prior = audit.timeout_recovery ?? {};
     const attempts = Number(prior.attempts ?? 0);
-    if (attempts >= MAX_OPERATION_TIMEOUT_RECOVERIES) {
-      audit.timeout_recovery = {
-        ...prior,
-        state: "exhausted",
-        last_detected_at: entry.occurred_at,
-        last_message: "The operation timed out",
-      };
-      await this.record(audit, "audit.timeout.recovery.exhausted", { attempts, limit: MAX_OPERATION_TIMEOUT_RECOVERIES });
-      return false;
-    }
-
-    const attempt = attempts + 1;
+    const exhausted = attempts >= this.timeoutRecoveryPolicy.limit;
+    const attempt = exhausted ? attempts : attempts + 1;
+    audit.timeout_recovery = { ...prior, exhausted, limit: this.timeoutRecoveryPolicy.limit, recovery_id: randomUUID() };
     this.timeoutRecoveryPending.add(audit.id);
+    if (exhausted) await this.record(audit, "audit.timeout.recovery.exhausted", { attempts, limit: this.timeoutRecoveryPolicy.limit });
+    if (isNativeAudit(audit)) {
+      await this.stopTaskBoard(audit); await this.stopRuntimeTesting(audit);
+      if (audit.status !== "running" || this.shuttingDown) { this.timeoutRecoveryPending.delete(audit.id); return false; }
+      audit.status = "interrupted"; audit.interruption_reason = OPERATION_TIMEOUT_RECOVERY_REASON;
+      audit.timeout_recovery = { ...audit.timeout_recovery, attempts: attempt, state: exhausted ? "exhausted" : "waiting-to-recover", last_detected_at: entry.occurred_at };
+      await this.record(audit, "audit.timeout.detected", { attempt, source: entry.source });
+      this.scheduleOperationTimeoutRecovery(audit, attempt);
+      return true;
+    }
     if (audit.status === "interrupted" && !this.processes.has(audit.id)) {
       audit.timeout_recovery = {
-        ...prior,
+        ...audit.timeout_recovery,
         attempts: attempt,
         state: "waiting-to-recover",
         last_detected_at: entry.occurred_at,
@@ -2388,7 +2409,7 @@ export class AuditRunner extends EventEmitter {
       return false;
     }
     audit.timeout_recovery = {
-      ...prior,
+      ...audit.timeout_recovery,
       attempts: attempt,
       state: "interrupting",
       last_detected_at: entry.occurred_at,
@@ -2455,6 +2476,8 @@ export class AuditRunner extends EventEmitter {
       return false;
     }
     try { child.kill?.("SIGKILL"); } catch {}
+    await this.stopTaskBoard(audit); await this.stopRuntimeTesting(audit);
+    if (this.processes.get(auditId) !== child || audit.interruption_reason !== OPERATION_TIMEOUT_RECOVERY_REASON) return false;
     this.processes.delete(auditId);
     audit.pid = null;
     audit.status = "interrupted";
@@ -2463,7 +2486,7 @@ export class AuditRunner extends EventEmitter {
     audit.error = "检测到 The operation timed out；Runner 中继在宽限期内未退出，已强制收敛并将从当前检查点恢复。";
     audit.timeout_recovery = {
       ...audit.timeout_recovery,
-      state: "waiting-to-recover",
+      state: audit.timeout_recovery.exhausted ? "exhausted" : "waiting-to-recover",
       forced_at: audit.finished_at,
       last_error: null,
     };
@@ -2480,18 +2503,29 @@ export class AuditRunner extends EventEmitter {
   }
 
   scheduleOperationTimeoutRecovery(audit, attempt) {
-    if (!this.timeoutRecoveryPending.has(audit.id) || this.timeoutRecoveryTimers.has(audit.id)) return;
+    if (this.shuttingDown || !this.timeoutRecoveryPending.has(audit.id) || this.timeoutRecoveryTimers.has(audit.id)) return;
+    if (audit.timeout_recovery?.exhausted) {
+      audit.timeout_recovery = { ...audit.timeout_recovery, state: "exhausted", next_retry_at: null };
+      audit.error = `模型请求超时，已用完 ${this.timeoutRecoveryPolicy.limit} 次自动恢复；进度已保存，可在 API 恢复后手动断点恢复。`;
+      this.timeoutRecoveryPending.delete(audit.id);
+      void this.record(audit, "audit.timeout.recovery.exhausted", { attempts: attempt, message: audit.error }).catch(() => {});
+      return;
+    }
+    const delay = audit.timeout_recovery?.next_retry_at ? Math.max(0, Date.parse(audit.timeout_recovery.next_retry_at) - Date.now()) : timeoutRetryDelay(attempt, this.timeoutRecoveryPolicy);
+    audit.timeout_recovery = { ...audit.timeout_recovery, next_retry_at: new Date(Date.now() + delay).toISOString() };
+    audit.error = `模型请求超时，等待 ${Math.ceil(delay / 1000)} 秒后自动恢复（${attempt}/${this.timeoutRecoveryPolicy.limit}）；已完成进度保留。`;
+    void this.record(audit, "audit.timeout.recovery.scheduled", { attempt, next_retry_at: audit.timeout_recovery.next_retry_at, message: audit.error }).catch(() => {});
     const timer = setTimeout(() => {
       this.timeoutRecoveryTimers.delete(audit.id);
       this.runOperationTimeoutRecovery(audit.id, attempt).catch(() => {});
-    }, 0);
+    }, delay);
     timer.unref?.();
     this.timeoutRecoveryTimers.set(audit.id, timer);
   }
 
   async runOperationTimeoutRecovery(auditId, attempt) {
     let audit = this.audits.get(auditId);
-    if (!audit || audit.status !== "interrupted" || audit.timeout_recovery?.attempts !== attempt) {
+    if (this.shuttingDown || !this.timeoutRecoveryPending.has(auditId) || !audit || audit.status !== "interrupted" || audit.timeout_recovery?.attempts !== attempt) {
       this.timeoutRecoveryPending.delete(auditId);
       return false;
     }
@@ -2504,25 +2538,29 @@ export class AuditRunner extends EventEmitter {
       await closing.catch(() => {});
       await new Promise(resolve => setImmediate(resolve));
       audit = this.audits.get(auditId);
-      if (!audit || audit.status !== "interrupted" || audit.timeout_recovery?.attempts !== attempt) {
+      if (this.shuttingDown || !this.timeoutRecoveryPending.has(auditId) || !audit || audit.status !== "interrupted" || audit.timeout_recovery?.attempts !== attempt) {
         this.timeoutRecoveryPending.delete(auditId);
         return false;
       }
     }
-    audit.timeout_recovery = { ...audit.timeout_recovery, state: "recovering", last_recovery_requested_at: new Date().toISOString() };
+    const recoveryId = audit.timeout_recovery.recovery_id;
+    audit.timeout_recovery = { ...audit.timeout_recovery, state: "recovering", next_retry_at: null, last_recovery_requested_at: new Date().toISOString() };
     await this.record(audit, "audit.timeout.recovery.requested", { attempt });
     try {
-      await this.action(audit.id, "recover", audit.version, `watchdog-timeout-recover:${audit.id}:${attempt}`);
+      if (this.shuttingDown || !this.timeoutRecoveryPending.has(auditId)) return false;
+      await this.action(audit.id, "recover", audit.version, `watchdog-timeout-recover:${audit.id}:${audit.timeout_recovery.recovery_id ?? attempt}`);
+      this.timeoutRecoveryPending.delete(auditId);
       audit.timeout_recovery = { ...audit.timeout_recovery, state: "restarted", last_recovered_at: new Date().toISOString(), last_error: null };
       await this.record(audit, "audit.timeout.recovery.started", { attempt, recovery_count: audit.recovery_count });
       return true;
     } catch (error) {
       const message = redact(error.message);
       audit.timeout_recovery = { ...audit.timeout_recovery, state: "failed", last_error: message, last_failed_at: new Date().toISOString() };
+      audit.error = `模型超时后的自动恢复未能启动：${message}。已有进度保留，可手动断点恢复。`;
       await this.record(audit, "audit.timeout.recovery.failed", { attempt, message });
       return false;
     } finally {
-      this.timeoutRecoveryPending.delete(auditId);
+      if (audit.timeout_recovery?.recovery_id === recoveryId) this.timeoutRecoveryPending.delete(auditId);
     }
   }
 
@@ -2729,6 +2767,21 @@ export class AuditRunner extends EventEmitter {
     const actionDigest = createHash("sha256").update(idempotencyKey).digest("hex");
     if ((audit.action_idempotency_digests ?? []).includes(actionDigest)) return publicAudit(audit);
     if (Number(expectedVersion) !== audit.version) throw Object.assign(new Error("审计版本已变化，请刷新后重试。"), { statusCode: 412, code: "version-mismatch" });
+    if (["pause", "cancel", "recover", "resume"].includes(action) && !idempotencyKey.startsWith("watchdog-timeout-recover:")) {
+      const waiting = audit.status === "interrupted" && this.timeoutRecoveryPending.has(id);
+      clearTimeout(this.timeoutRecoveryTimers.get(id)); this.timeoutRecoveryTimers.delete(id);
+      this.timeoutRecoveryPending.delete(id); this.clearOperationTimeoutTerminationGuard(id);
+      if (audit.timeout_recovery) audit.timeout_recovery = { ...audit.timeout_recovery, state: "stopped", next_retry_at: null,
+        ...(["recover", "resume"].includes(action) ? { attempts: 0, exhausted: false } : {}) };
+      if (waiting && ["pause", "cancel"].includes(action)) {
+        audit.status = action === "cancel" ? "cancelled" : "interrupted";
+        audit.interruption_reason = "timeout-recovery-stopped-by-user";
+        audit.error = "自动恢复已停止，进度已保存。";
+        audit.action_idempotency_digests = [...(audit.action_idempotency_digests ?? []), actionDigest].slice(-100);
+        await this.record(audit, `audit.${audit.status}`, { action, reason: audit.interruption_reason });
+        return publicAudit(audit);
+      }
+    }
     if (isNativeAudit(audit)) {
       if (!this.nativeSessionController) throw Object.assign(new Error('当前会话尚未重新连接审计服务。'), { statusCode: 409, code: 'agent-session-offline' });
       return this.nativeSessionController.action(audit, action, actionDigest, expectedVersion);
@@ -2871,6 +2924,7 @@ export class AuditRunner extends EventEmitter {
 
   async shutdown() {
     await this.ready;
+    this.shuttingDown = true;
     await this.nativeSessionController?.close();
     for (const id of this.taskBoardServices.keys()) await this.stopTaskBoard(this.audits.get(id));
     for (const id of this.runtimeTestingServices.keys()) await this.stopRuntimeTesting(this.audits.get(id));

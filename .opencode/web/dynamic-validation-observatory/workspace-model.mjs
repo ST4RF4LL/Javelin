@@ -535,6 +535,7 @@ export function auditsFromArtifacts(artifacts, validationRuns = [], runnerAudits
       provider_session_id: runner?.provider_session_id ?? runner?.terminal?.provider_session_id ?? null,
       execution: runner?.execution ?? null,
       recovery_count: Number(runner?.recovery_count ?? 0),
+      timeout_recovery: runner?.timeout_recovery ?? null,
       last_recovered_at: runner?.last_recovered_at ?? null,
       interrupted_at: runner?.interrupted_at ?? null,
       interruption_reason: runner?.interruption_reason ?? null,

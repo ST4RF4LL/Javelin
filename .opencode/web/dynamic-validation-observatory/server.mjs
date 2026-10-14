@@ -1085,6 +1085,15 @@ export function createAuditWorkbenchServer({
         json(response, 200, { queue: await queueScheduler.snapshot() });
         return;
       }
+      if (request.method === "GET" && url.pathname === "/api/v1/settings/timeout-recovery") {
+        json(response, 200, { timeout_recovery: await runner.timeoutRecoverySettings.get() });
+        return;
+      }
+      if (request.method === "PUT" && url.pathname === "/api/v1/settings/timeout-recovery") {
+        assertSafeMutation(request);
+        json(response, 200, { timeout_recovery: await runner.timeoutRecoverySettings.update(await requestJson(request)) });
+        return;
+      }
       if (request.method === "GET" && url.pathname === "/api/v1/settings/model") {
         json(response, 200, { model: await modelSettingsSnapshot() });
         return;

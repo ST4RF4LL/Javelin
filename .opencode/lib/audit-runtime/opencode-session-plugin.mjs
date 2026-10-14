@@ -31,6 +31,7 @@ export default async function nativeAuditSessionPlugin({ client, directory }, op
         try {
           if (['pause', 'cancel'].includes(command.action)) await apiCall('abort', { path: { id: sessionID }, query: { directory } });
           else {
+            if (command.action === 'recover') await apiCall('abort', { path: { id: sessionID }, query: { directory } });
             binding.status = 'running';
             await apiCall('promptAsync', { path: { id: sessionID }, query: { directory }, body: { agent: binding.agent,
               parts: [{ type: 'text', text: command.prompt }] } });
@@ -103,6 +104,10 @@ export default async function nativeAuditSessionPlugin({ client, directory }, op
       const props = event.properties ?? {}, part = props.part ?? {}, sessionID = props.sessionID ?? part.sessionID ?? props.info?.sessionID ?? props.info?.id;
       if (event.type === 'session.created' && props.info?.parentID) parents.set(props.info.id, props.info.parentID);
       const binding = bindingFor(sessionID); if (!binding || binding.ended) return;
+      if (event.type === 'session.error') {
+        binding.events.push({ message: JSON.stringify({ type: 'error', sessionID, error: props.error }) });
+        if (sessions.has(sessionID)) await tick(sessionID, binding);
+      }
       if (event.type === 'session.idle' && sessions.has(sessionID)) { binding.idle = true; await tick(sessionID, binding); }
       if (event.type === 'message.part.updated' && ['text', 'tool', 'step-start', 'step-finish'].includes(part.type)) {
         if (part.type === 'text' && !part.time?.end) return;

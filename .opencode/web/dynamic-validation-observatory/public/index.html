@@ -132,7 +132,7 @@
           </section>
 
           <section id="view-settings" class="view">
-            <div class="page-heading"><div><p class="eyebrow">WORKBENCH SETTINGS</p><h2>设置</h2><p>设置新建任务的默认 OpenCode 模型，并配置定时排队策略。</p></div></div>
+            <div class="page-heading"><div><p class="eyebrow">WORKBENCH SETTINGS</p><h2>设置</h2><p>配置默认模型、模型超时自动恢复与定时排队策略。</p></div></div>
             <article class="panel settings-panel">
               <div class="section-title"><div><p class="eyebrow">OPENCODE MODEL</p><h2>使用模型</h2></div><span id="model-settings-status" class="status">读取中</span></div>
               <form id="model-settings-form" class="settings-form">
@@ -142,6 +142,18 @@
                 <div class="dialog-actions"><button id="save-model-settings" class="button secondary" type="submit">保存模型设置</button></div>
               </form>
               <dl id="model-settings-facts" class="detail-facts"></dl>
+            </article>
+            <article class="panel settings-panel">
+              <div class="section-title"><div><p class="eyebrow">TIMEOUT RECOVERY</p><h2>模型超时自动恢复</h2></div><span id="timeout-recovery-status" class="status">读取中</span></div>
+              <form id="timeout-recovery-form" class="settings-form">
+                <div class="form-row">
+                  <label>最多自动恢复 <span class="field-unit">次</span><input name="max_recoveries" type="number" min="0" max="100" step="1" inputmode="numeric" required disabled></label>
+                  <label>每次等待 <span class="field-unit">秒</span><input name="retry_delay_seconds" type="number" min="0" max="300" step="0.001" inputmode="decimal" required disabled></label>
+                </div>
+                <p class="settings-note">默认最多恢复 20 次，每次固定等待 10 秒；恢复次数设为 0 可关闭。针对 OpenCode 的模型请求超时，沿用原会话和已完成进度。保存后用于主任务和专业 worker 的后续超时重试，无需重启；已安排的等待保持原计划，已停止的任务不会自动启动。</p>
+                <div id="timeout-recovery-error" class="notice error" hidden></div>
+                <div class="dialog-actions"><button id="reload-timeout-recovery" class="button secondary" type="button">重新读取</button><button id="save-timeout-recovery" class="button primary" type="submit" disabled>保存恢复设置</button></div>
+              </form>
             </article>
             <article class="panel settings-panel">
               <div class="section-title"><div><p class="eyebrow">AUDIT QUEUE</p><h2>任务序列排队</h2></div><span id="queue-status" class="status">读取中</span></div>

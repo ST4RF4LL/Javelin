@@ -108,6 +108,10 @@ const state = {
   runtime: null,
   environment: { capabilities: [], components: [], platform: {}, configuration: {} },
   modelSettings: { selected_model: "default", options: [{ value: "default", label: "默认" }], sources: [], selection_available: true },
+  timeoutRecoverySettings: null,
+  timeoutRecoveryError: null,
+  timeoutRecoverySaving: false,
+  timeoutRecoverySequence: 0,
   selectedAuditId: null,
   selectedAudit: null,
   auditMonitor: null,
@@ -833,6 +837,19 @@ function renderAuditDetail() {
     diagnosticPanel.append(list);
   }
   const actions = element("div", "action-row");
+  if (audit.timeout_recovery) {
+    const recovery = audit.timeout_recovery;
+    const names = { observed: "检测到超时", interrupting: "正在保存进度", "waiting-for-runner-exit": "等待原进程结束",
+      "waiting-for-runner-close": "等待原进程结束", "waiting-to-recover": "等待自动恢复", recovering: "正在恢复",
+      restarted: "已提交恢复", exhausted: "自动恢复次数已用完", stopped: "自动恢复已停止", failed: "自动恢复失败" };
+    actions.append(element("span", "muted", `模型超时：${names[recovery.state] ?? recovery.state} · ${recovery.attempts ?? 0}/${recovery.limit ?? 20} 次${recovery.next_retry_at ? ` · 下次 ${formatDate(recovery.next_retry_at)}` : ""}`));
+    if (audit.status === "interrupted" && recovery.state === "waiting-to-recover") {
+      const stopRecovery = element("button", "button secondary", "停止自动恢复");
+      stopRecovery.disabled = !sessionControllable;
+      stopRecovery.addEventListener("click", () => requestAuditAction(audit, "pause"));
+      actions.append(stopRecovery);
+    }
+  }
   if (audit.terminal) {
     const monitorLabel = audit.terminal.live || externalSession ? "Agent 任务事件" : audit.terminal.status === "archived" ? "查看事件快照" : "事件监控状态";
     const monitor = element("button", "button secondary", monitorLabel);
@@ -2424,6 +2441,18 @@ async function loadEnvironmentLeases() {
 }
 
 function renderSettings() {
+  const recovery = state.timeoutRecoverySettings;
+  const recoveryForm = $("timeout-recovery-form");
+  for (const name of ["max_recoveries", "retry_delay_seconds"]) {
+    const input = recoveryForm.elements[name];
+    input.disabled = !recovery || state.timeoutRecoverySaving;
+    if (recovery && !recoveryForm.dataset.dirty) input.value = String(recovery[name]);
+  }
+  $("save-timeout-recovery").disabled = !recovery || state.timeoutRecoverySaving;
+  $("reload-timeout-recovery").disabled = state.timeoutRecoverySaving;
+  $("timeout-recovery-status").textContent = state.timeoutRecoverySaving ? "保存中" : state.timeoutRecoveryError ? "读取或保存失败" : !recovery ? "读取中" : recovery.max_recoveries ? "已启用" : "已关闭";
+  $("timeout-recovery-error").hidden = !state.timeoutRecoveryError;
+  $("timeout-recovery-error").textContent = state.timeoutRecoveryError ?? "";
   const model = state.modelSettings ?? { selected_model: "default", options: [{ value: "default", label: "默认" }], sources: [] };
   const modelForm = $("model-settings-form");
   const modelSelect = modelForm.elements.model;
@@ -2655,6 +2684,7 @@ function showValidationActivityWhenReady(promise, current) {
 }
 
 async function loadViewResources(view) {
+  if (view === "settings") { await loadTimeoutRecoverySettings(); return; }
   if (view === "validation") {
     const sequence = ++state.validationRequestSequence;
     const sourceSequence = ++state.sourceOptionsRequestSequence;
@@ -3070,6 +3100,37 @@ async function submitQueueSettings(event) {
   } finally { button.disabled = false; }
 }
 
+async function loadTimeoutRecoverySettings() {
+  const sequence = ++state.timeoutRecoverySequence;
+  try {
+    const response = await api("/api/v1/settings/timeout-recovery", { signal: AbortSignal.timeout(20000) });
+    if (sequence !== state.timeoutRecoverySequence) return;
+    state.timeoutRecoverySettings = response.timeout_recovery;
+    state.timeoutRecoveryError = null;
+  } catch (error) {
+    if (sequence !== state.timeoutRecoverySequence) return;
+    state.timeoutRecoveryError = `恢复设置读取失败：${error.message}`;
+  }
+  if (!disposed && state.view === "settings") renderSettings();
+}
+
+async function submitTimeoutRecoverySettings(event) {
+  event.preventDefault();
+  const form = event.currentTarget;
+  const input = { max_recoveries: Number(form.elements.max_recoveries.value), retry_delay_seconds: Number(form.elements.retry_delay_seconds.value) };
+  ++state.timeoutRecoverySequence;
+  state.timeoutRecoverySaving = true;
+  state.timeoutRecoveryError = null;
+  renderSettings();
+  try {
+    const response = await api("/api/v1/settings/timeout-recovery", { method: "PUT", headers: { "Content-Type": "application/json" }, body: JSON.stringify(input) });
+    state.timeoutRecoverySettings = response.timeout_recovery;
+    delete form.dataset.dirty;
+    toast("自动恢复设置已保存，后续超时重试使用新配置");
+  } catch (error) { state.timeoutRecoveryError = error.message; }
+  finally { state.timeoutRecoverySaving = false; if (!disposed) renderSettings(); }
+}
+
 async function submitModelSettings(event) {
   event.preventDefault();
   const form = event.currentTarget;
@@ -3224,6 +3285,9 @@ $("finding-query").addEventListener("input", () => {
 $("audit-form").addEventListener("submit", submitAudit);
 $("model-settings-form").addEventListener("submit", submitModelSettings);
 $("queue-settings-form").addEventListener("submit", submitQueueSettings);
+$("timeout-recovery-form").addEventListener("input", event => { event.currentTarget.dataset.dirty = "true"; });
+$("timeout-recovery-form").addEventListener("submit", submitTimeoutRecoverySettings);
+$("reload-timeout-recovery").addEventListener("click", () => loadTimeoutRecoverySettings());
 $("toggle-queue").addEventListener("click", () => toggleQueue().catch(showError));
 for (const checkbox of $("audit-form").querySelectorAll(".enable-switch input[type=checkbox]")) {
   checkbox.addEventListener("change", () => syncAuditContextControls($("audit-form")));

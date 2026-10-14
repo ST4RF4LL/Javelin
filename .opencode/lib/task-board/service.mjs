@@ -15,6 +15,7 @@ import { prepareMining } from "../agent-mining/service.mjs";
 import { nextReviewBatch, submitReviewBatch } from "./review-batches.mjs";
 import { FileFactsCache, nextFileBatch, completeFileBatch, relatedTasks } from "./file-batches.mjs";
 import { vulnerabilityScope } from "./vulnerability-scope.mjs";
+import { operationTimeout, timeoutRecoveryPolicy, timeoutRetryDelay, waitForTimeoutRetry } from "../audit-runtime/operation-timeout.mjs";
 
 const guardian = fileURLToPath(new URL("./worker-host.mjs", import.meta.url));
 const instructionPath = fileURLToPath(new URL("./worker.md", import.meta.url));
@@ -38,12 +39,13 @@ export async function workerConfiguration(environment, task, startupScope = null
 
 export class TaskBoardService {
   constructor({ path, reportsRoot, privateRoot, workspaceRoot, sourceRoot, auditId, scopeDigest, environment = process.env, command = "opencode", model = null,
-    runtimeRequired = false, bacMode = "off", concurrency = 4, leaseMs = 30 * 60_000, onChange = async () => {}, onLog = async () => {}, onPauseRequested = async () => {}, worker = null, spawnProcess = spawn, memory = null, agentSlots = globalAgentSlots, fileManifestPath = null }) {
+    runtimeRequired = false, bacMode = "off", concurrency = 4, leaseMs = 30 * 60_000, onChange = async () => {}, onLog = async () => {}, onPauseRequested = async () => {}, worker = null, spawnProcess = spawn, memory = null, agentSlots = globalAgentSlots, fileManifestPath = null, getTimeoutRecoveryPolicy = null }) {
     Object.assign(this, { path, reportsRoot, privateRoot, workspaceRoot, sourceRoot, auditId, scopeDigest, environment, command, model, runtimeRequired, bacMode, leaseMs, onLog, worker, spawnProcess });
     this.concurrency = Math.min(6, Math.max(1, concurrency)); this.token = randomUUID(); this.active = new Map(); this.paused = false; this.closed = false; this.lastDispatch = new Map();
     this.memory = memory; this.memoryTokens = new Map(); this.agentSlots = agentSlots;
     this.fileManifestPath = fileManifestPath;
     this.onPauseRequested = onPauseRequested;
+    this.getTimeoutRecoveryPolicy = getTimeoutRecoveryPolicy ?? (() => timeoutRecoveryPolicy(this.environment));
     this.store = new TaskBoardStore({ path, reportsRoot, auditId, scopeDigest, onChange });
   }
   async start() {
@@ -248,7 +250,7 @@ export class TaskBoardService {
       }
       const interrupted = active.deliveryRevoked || this.paused || this.closed || controller.signal.aborted && !timedOut;
       if (!received) await this.store.fail(job.task.task_id, job.attempt.attempt_id,
-        timedOut && !interrupted ? "任务执行超时。" : error.message, { interrupted });
+        timedOut && !interrupted ? "任务执行超时。" : error.message, { interrupted, terminal: !interrupted && error.recovery_exhausted === true });
     } finally {
       clearTimeout(timer); stopCapture(); controller.signal.removeEventListener("abort", stopCapture);
       if (memoryToken) this.memoryTokens.delete(memoryToken);
@@ -260,6 +262,49 @@ export class TaskBoardService {
     }
   }
   async runWorker({ job, inputPath, signal, startupScope = null }) {
+    let policy = this.getTimeoutRecoveryPolicy();
+    let attempts = job.task.timeout_recovery?.attempts ?? 0, sessionId = null;
+    const save = async state => {
+      await this.store.mutate(board => {
+        const task = board.tasks.find(row => row.task_id === job.task.task_id);
+        if (task?.attempt_id !== job.attempt.attempt_id || task.status !== "RUNNING") return;
+        task.timeout_recovery = { ...state, attempts, limit: policy.limit, session_id: sessionId };
+        task.reason = state.message ?? null;
+      });
+    };
+    for (;;) {
+      try {
+        const result = await this.runWorkerOnce({ job, inputPath, signal, startupScope, sessionId });
+        if (attempts) await save({ state: "recovered", next_retry_at: null });
+        return result;
+      } catch (error) {
+        if (error.code !== "opencode-operation-timeout" || signal.aborted) throw error;
+        policy = this.getTimeoutRecoveryPolicy();
+        sessionId = error.session_id ?? sessionId;
+        // A completed delivery takes precedence over a later provider error.
+        try {
+          const receipt = JSON.parse((await controlledBytes(dirname(inputPath), "receipt.json", 64 * 1024)).toString("utf8"));
+          await this.store.prepareReceipt({ taskId: job.task.task_id, attemptId: job.attempt.attempt_id, receipt, inputRoot: dirname(inputPath), requireCompleteJson: true });
+          return { session_id: sessionId };
+        } catch {}
+        if (attempts >= policy.limit) {
+          error.recovery_exhausted = true;
+          error.message = `模型请求超时，已用完 ${policy.limit} 次自动恢复；当前任务证据保留，执行未完成。`;
+          await save({ state: "exhausted", next_retry_at: null, message: error.message });
+          throw error;
+        }
+        attempts++;
+        const delay = timeoutRetryDelay(attempts, policy);
+        const message = `模型请求超时，${Math.ceil(delay / 1000)} 秒后恢复当前专业任务（${attempts}/${policy.limit}）。`;
+        await save({ state: "waiting-to-recover", next_retry_at: new Date(Date.now() + delay).toISOString(), message });
+        await this.log("stderr", `[${job.task.domain}/${job.task.task_id}] ${message}`);
+        await waitForTimeoutRetry(delay, signal);
+        if (this.paused || this.closed) throw new Error("任务已暂停或停止。");
+        await save({ state: "recovering", next_retry_at: null });
+      }
+    }
+  }
+  async runWorkerOnce({ job, inputPath, signal, startupScope = null, sessionId: previousSessionId = null }) {
     const { config, agent } = await workerConfiguration(this.environment, job.task, startupScope);
     // Static workers never allocate a browser or inherit the monitor's authority.
     const environment = { ...this.environment, OPENCODE_CONFIG_CONTENT: JSON.stringify(config), AUDIT_TASK_PROTOCOL: PROTOCOL,
@@ -272,41 +317,46 @@ export class TaskBoardService {
     // --file is variadic: keep the positional message before all options.
     const args = ["run", "完整读取附件中的唯一任务及 vulnerability_mining_scope，先明确本次应挖掘的漏洞类型，再按适用技能执行源码审计。写报告和回执后立即结束。",
       "--format", "json", "--agent", agent, "--dir", this.workspaceRoot,
+      ...(previousSessionId ? ["--session", previousSessionId] : []),
       ...(this.model ? ["--model", this.model] : []), "--title", `${job.task.title}`,
       "--file", inputPath];
     return new Promise((resolve, reject) => {
       if (signal.aborted) return reject(new Error("任务已停止。"));
       const child = this.spawnProcess(process.execPath, [guardian, this.command, ...args], { cwd: this.workspaceRoot, env: environment, shell: false, windowsHide: true, stdio: ["ignore", "pipe", "pipe", "ipc"] });
-      let sessionId = null, stopping = null, sessionWrite = Promise.resolve(), sessionWriteError = null;
+      let sessionId = previousSessionId, stopping = null, sessionWrite = Promise.resolve(), sessionWriteError = null, providerTimeout = false;
       const stop = () => {
         if (stopping) return;
         if (child.connected) child.send({ type: "stop" }, () => {});
         child.kill("SIGTERM"); stopping = setTimeout(() => child.kill("SIGKILL"), 7000); stopping.unref?.();
       };
       signal.addEventListener("abort", stop, { once: true });
+      const consume = (source, line) => {
+        try {
+          const event = JSON.parse(line), id = event.sessionID ?? event.session_id ?? event.session?.id;
+          if (!sessionId && typeof id === "string" && id) {
+            sessionId = id;
+            for (const principal of this.memoryTokens.values()) if (principal.attemptId === job.attempt.attempt_id) principal.sessionId = id;
+            sessionWrite = atomicJson(join(dirname(inputPath), "session.json"), { protocol: PROTOCOL, audit_id: this.auditId,
+              task_id: job.task.task_id, attempt_id: job.attempt.attempt_id, agent_session_id: id }).catch(error => { sessionWriteError = error; });
+          }
+        } catch {}
+        if (operationTimeout(line)) { providerTimeout = true; stop(); }
+        this.log(source, `[${job.task.domain}/${job.task.task_id}] ${line}`);
+      };
       for (const [stream, source] of [[child.stdout, "stdout"], [child.stderr, "stderr"]]) {
         let buffer = ""; stream?.setEncoding?.("utf8");
         stream?.on("data", chunk => {
           buffer += chunk; if (buffer.length > 256 * 1024) buffer = buffer.slice(-256 * 1024);
           const lines = buffer.split("\n"); buffer = lines.pop();
-          for (const line of lines) {
-            try {
-              const event = JSON.parse(line), id = event.sessionID ?? event.session_id ?? event.session?.id;
-              if (!sessionId && typeof id === "string" && id) {
-                sessionId = id;
-                for (const principal of this.memoryTokens.values()) if (principal.attemptId === job.attempt.attempt_id) principal.sessionId = id;
-                sessionWrite = atomicJson(join(dirname(inputPath), "session.json"), { protocol: PROTOCOL, audit_id: this.auditId,
-                  task_id: job.task.task_id, attempt_id: job.attempt.attempt_id, agent_session_id: id }).catch(error => { sessionWriteError = error; });
-              }
-            } catch {}
-            this.log(source, `[${job.task.domain}/${job.task.task_id}] ${line}`);
-          }
+          for (const line of lines) consume(source, line);
         });
+        stream?.on("end", () => { if (buffer) consume(source, buffer); buffer = ""; });
       }
       child.once("error", error => { signal.removeEventListener("abort", stop); clearTimeout(stopping); reject(Object.assign(error, { session_id: sessionId })); });
       child.once("close", async code => {
         signal.removeEventListener("abort", stop); clearTimeout(stopping); await sessionWrite;
-        if (sessionWriteError || code !== 0) reject(Object.assign(sessionWriteError ?? new Error(`专业 Agent 退出码：${code}。`), { session_id: sessionId }));
+        if (providerTimeout) reject(Object.assign(new Error("The operation timed out."), { code: "opencode-operation-timeout", session_id: sessionId }));
+        else if (sessionWriteError || code !== 0) reject(Object.assign(sessionWriteError ?? new Error(`专业 Agent 退出码：${code}。`), { session_id: sessionId }));
         else resolve({ session_id: sessionId });
       });
     });

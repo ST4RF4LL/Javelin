@@ -2,6 +2,7 @@ import { randomUUID, timingSafeEqual, createHash } from 'node:crypto';
 import { realpath, stat } from 'node:fs/promises';
 import { isAbsolute } from 'node:path';
 import { AGENT_SESSION_PROTOCOL, engineId, isNativeAudit } from './contract.mjs';
+import { operationTimeout } from './operation-timeout.mjs';
 
 const fail = (message, code = 'agent-session-invalid', statusCode = 409) => Object.assign(new Error(message), { code, statusCode });
 const done = status => ['completed', 'failed', 'cancelled'].includes(status);
@@ -105,7 +106,14 @@ export class NativeSessionController {
         }
       }
       for (const event of (Array.isArray(input.events) ? input.events : []).slice(0, 25)) {
-        if (event && typeof event.message === 'string') await this.runner.recordLog(audit, 'stdout', event.message.slice(0, 16 * 1024));
+        if (event && typeof event.message === 'string') {
+          await this.runner.recordLog(audit, 'stdout', event.message.slice(0, 16 * 1024));
+          const timeout = operationTimeout(event.message);
+          if (timeout?.session_id === audit.execution.session_id && audit.execution.engine === 'opencode') {
+            const entry = this.runner.markOperationTimeoutObserved(audit, 'native-session', event.message);
+            if (entry) await this.runner.handleOperationTimeout(audit, entry);
+          }
+        }
       }
       // The agent never declares completion. The platform verifies the same
       // board/report contracts as it does for a service-owned execution.

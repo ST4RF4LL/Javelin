@@ -212,12 +212,12 @@ export class TaskBoardStore {
       return { received: true, report: task.report };
     });
   }
-  async fail(taskId, attemptId, reason, { interrupted = false } = {}) {
+  async fail(taskId, attemptId, reason, { interrupted = false, terminal = false } = {}) {
     return this.mutate(board => {
       const task = board.tasks.find(row => row.task_id === taskId);
       if (!task || task.attempt_id !== attemptId || task.status !== "RUNNING") return;
       if (!interrupted) task.failure_count = (task.failure_count ?? 0) + 1;
-      task.status = interrupted || task.failure_count < 3 ? "PENDING" : "FAILED"; task.reason = String(reason).slice(0, 2000);
+      task.status = interrupted || !terminal && task.failure_count < 3 ? "PENDING" : "FAILED"; task.reason = String(reason).slice(0, 2000);
       Object.assign(board.attempts.find(row => row.attempt_id === attemptId), { status: interrupted ? "INTERRUPTED" : "FAILED", reason: task.reason, completed_at: timestamp() });
     });
   }
@@ -226,7 +226,7 @@ export class TaskBoardStore {
     return this.mutate(board => {
       const task = board.tasks.find(row => row.task_id === taskId);
       const failures = task?.failure_count ?? board.attempts.filter(attempt => attempt.task_id === taskId && attempt.status === "FAILED").length;
-      check(task?.status === "FAILED" && failures >= 3, "只有实际执行失败达到三次的任务才能 skip；待处理任务须保留，预算不足请 defer 暂停。");
+      check(task?.status === "FAILED" && (failures >= 3 || task.timeout_recovery?.state === "exhausted"), "只有实际执行失败达到三次或模型超时恢复耗尽的任务才能 skip；待处理任务须保留，预算不足请 defer 暂停。");
       task.status = "GAP"; task.reason = reason.trim(); task.completed_at = timestamp();
     });
   }

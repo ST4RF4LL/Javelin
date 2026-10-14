@@ -42,7 +42,7 @@
     "test:report-details": "node --test tests/run-report-details-tests.mjs",
     "test:bac": "node --test tests/run-bac-analysis-tests.mjs tests/run-task-board-bac-tests.mjs",
     "bac": "node scripts/bac-analysis.mjs",
-    "test:task-board": "node --test tests/run-task-board-tests.mjs tests/run-file-sweep-tests.mjs tests/run-audit-efficiency-tests.mjs tests/run-vulnerability-scope-tests.mjs",
+    "test:task-board": "node --test tests/run-task-board-tests.mjs tests/run-file-sweep-tests.mjs tests/run-audit-efficiency-tests.mjs tests/run-vulnerability-scope-tests.mjs tests/run-operation-timeout-tests.mjs",
     "test:agent-mining": "node --test tests/run-agent-mining-tests.mjs",
     "agent-mining": "node scripts/agent-mining.mjs",
     "test:product-memory": "node --test tests/run-product-memory-tests.mjs tests/run-product-audit-tests.mjs tests/run-product-memory-integration-tests.mjs tests/run-product-memory-ui-tests.mjs",
