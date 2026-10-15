@@ -100,6 +100,15 @@ export function renderStructuredBoardReport(model) {
     }
     lines.push("原始交付已保留；本报告的质量复核与候选验证绑定更正后的输入。", "");
   }
+  if (model.incremental_rounds?.length) {
+    section(3, "增量审计记录");
+    for (const round of model.incremental_rounds) {
+      lines.push(`- 第 ${round.number} 轮：${round.started_at}；增补任务 ${round.task_ids.length} 项、文件浏览 ${round.file_ids.length} 项。`);
+      if (round.previous.report) lines.push(`  原报告：${round.previous.report.path}；SHA-256：${round.previous.report.sha256}。`);
+      lines.push(`  原任务面板：${round.previous.board.path}。`);
+    }
+    lines.push("本报告合并保留的成功交付与增补结果，并重新进行内容复核；历史版本保持不变。", "");
+  }
   section(2, "2. 已确认源码漏洞");
   model.findings.forEach((row, index) => {
     section(3, `2.${index + 1} ${row.title ?? row.finding_id}`);

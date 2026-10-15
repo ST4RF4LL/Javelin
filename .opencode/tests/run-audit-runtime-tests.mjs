@@ -15,6 +15,7 @@ import plugin from '../lib/audit-runtime/opencode-session-plugin.mjs';
 import { atomicJson, hash } from '../lib/task-board/contract.mjs';
 import { prepareReview, acceptReview, finalizeBoard } from '../lib/task-board/review.mjs';
 import { AgentSessionBridge } from '../lib/audit-runtime/session-bridge.mjs';
+import { TaskBoardStore, readBoard } from '../lib/task-board/store.mjs';
 
 async function fixture(t, options = {}) {
   const root = await realpath(await mkdtemp(join(tmpdir(), 'audit-runtime-')));
@@ -37,6 +38,80 @@ async function fixture(t, options = {}) {
     session: { engine: 'opencode', session_id: 'ses_existing_fixture', directory: source, control: true } };
   return { root, stateRoot, source, configPath, runner, launches, input, registration };
 }
+
+async function unfinishedBoard(f, audit) {
+  await f.runner.stopTaskBoard(audit);
+  audit.paths = await f.runner.prepareExecutionWorkspace(audit, f.runner.repositoryForAudit(audit));
+  const store = await new TaskBoardStore({ path: audit.task_board_path, reportsRoot: audit.paths.reports_root, auditId: audit.id, scopeDigest: audit.source_baseline.scope_digest }).open();
+  await store.publish({ tasks: [{ task_id: 'unfinished', kind: 'focus_area', title: '补查授权路径', domain: 'web', source_ref: 'threat:fixture', prompt: '分析 main.js', code_refs: [{ path: 'main.js', line: 1 }] }] });
+  const job = await store.claim('web', 5000);
+  await store.receive({ taskId: job.task.task_id, attemptId: job.attempt.attempt_id, inputRoot: f.root,
+    receipt: { protocol: 'task-board.v1', audit_id: audit.id, task_id: job.task.task_id, attempt_id: job.attempt.attempt_id, outcome: 'GAP', reason: '模型额度耗尽' } });
+  await store.seal(); await store.close(); audit.status = 'completed'; audit.provider_session_id = 'ses_previous';
+  return readBoard(audit.task_board_path);
+}
+
+test('Web 增量入口重开已完成缺口任务、同请求只入队一次、运行时拒绝重复，启动沿用 session', async t => {
+  const f = await fixture(t), created = await f.runner.createAuditFromTarget(f.input, 'incremental-web');
+  const audit = f.runner.audits.get(created.id); await unfinishedBoard(f, audit);
+  audit.todo_completion = { complete: true, delivery_outcome: 'NO_REPORTS' };
+  const before = await f.runner.taskBoardPage(audit.id, { status: 'REPORTED' });
+  assert.equal(before.items.length, 0); assert.equal(before.incremental.task_count, 1, '计划不受当前分页筛选影响');
+  assert.equal(before.incremental.available, true);
+  const version = audit.version;
+  await f.runner.action(audit.id, 'incremental', version, 'same-incremental-request');
+  assert.equal(audit.status, 'queued'); assert.equal(audit.todo_completion, null);
+  assert.equal(audit.incremental_audit.number, 1); assert.equal(audit.queue.provider_session_id, 'ses_previous');
+  await f.runner.action(audit.id, 'incremental', version, 'same-incremental-request');
+  assert.equal((await readBoard(audit.task_board_path)).incremental_rounds.length, 1);
+  await assert.rejects(f.runner.action(audit.id, 'incremental', audit.version, 'second-request'), { code: 'audit-not-recoverable' });
+  await f.runner.dispatchQueuedAudit(audit.id);
+  const launch = f.launches.find(row => row.args.includes('--session'));
+  assert.ok(launch); assert.equal(launch.args[launch.args.indexOf('--session') + 1], 'ses_previous');
+  assert.match(launch.args.join(' '), /增量审计/); assert.match(launch.args.join(' '), /禁止重新联系测试目标/);
+  assert.equal((await f.runner.taskBoardPage(audit.id)).incremental.available, false);
+});
+
+test('增量入口在源码漂移时不改动任务面板', async t => {
+  const f = await fixture(t), created = await f.runner.createAuditFromTarget(f.input, 'incremental-drift');
+  const audit = f.runner.audits.get(created.id); await unfinishedBoard(f, audit);
+  const original = await readFile(audit.task_board_path, 'utf8');
+  await writeFile(join(f.source, 'main.js'), 'changed source\n');
+  await assert.rejects(f.runner.action(audit.id, 'incremental', audit.version, 'source-drift'));
+  assert.equal(await readFile(audit.task_board_path, 'utf8'), original); assert.equal(audit.status, 'completed');
+  assert.equal(f.launches.length, 0);
+});
+
+test('完成性 watchdog 与增量重开互斥，旧校验不能关闭新一轮任务', async t => {
+  const f = await fixture(t), created = await f.runner.createAuditFromTarget(f.input, 'incremental-watchdog');
+  const audit = f.runner.audits.get(created.id); await unfinishedBoard(f, audit); audit.status = 'interrupted';
+  let release, entered = false;
+  f.runner.todoCompletionVerifier = async () => { entered = true; return new Promise(resolve => { release = resolve; }); };
+  const checking = f.runner.reconcileManagedCompletion(audit);
+  while (!entered) await new Promise(resolve => setImmediate(resolve));
+  await assert.rejects(f.runner.action(audit.id, 'incremental', audit.version, 'watchdog-race'), { code: 'audit-operation-in-progress' });
+  release({ complete: false, errors: ['旧轮次缺口'] }); await checking;
+  await f.runner.action(audit.id, 'incremental', audit.version, 'watchdog-race');
+  assert.equal(audit.status, 'queued'); assert.equal(audit.todo_completion, null);
+  assert.equal((await readBoard(audit.task_board_path)).tasks[0].status, 'PENDING');
+});
+
+test('原生增量审计向原会话发送指令，完成确认前不宣布成功，不新建主进程', async t => {
+  const f = await fixture(t);
+  const hub = new NativeSessionController({ runner: f.runner, token: 'a'.repeat(64),
+    createAudit: (input, session) => f.runner.createAuditFromTarget({ ...f.input, ...input }, input.idempotency_key, { nativeSession: session }) });
+  t.after(() => hub.close());
+  const native = await hub.register(f.registration), audit = f.runner.audits.get(native.audit.id);
+  await unfinishedBoard(f, audit);
+  await f.runner.action(audit.id, 'incremental', audit.version, 'native-incremental');
+  const hb = { audit_id: audit.id, client_id: native.client_id };
+  const pending = await hub.heartbeat(hb);
+  assert.equal(pending.status, 'recovering'); assert.equal(pending.command.action, 'incremental');
+  assert.match(pending.command.prompt, /第 1 轮增量审计/); assert.ok(pending.command.environment.AUDIT_TASK_BOARD_CONNECTION_PATH);
+  await hub.heartbeat({ ...hb, ack: { id: pending.command.id } });
+  assert.equal(audit.status, 'running'); assert.equal(audit.execution.session_id, f.registration.session.session_id);
+  assert.equal(f.launches.filter(row => row.args.includes('--agent') && row.args.includes('security-audit-orchestrator')).length, 0);
+});
 
 test('双入口：Web 创建主进程，原生登记沿用真实 session；登记重试不重复创建，动态未授权为 SKIPPED', async t => {
   const f = await fixture(t);
@@ -237,6 +312,15 @@ test('OpenCode 插件使用 ToolContext 的当前 ID，并向子会话注入同�
     error: { name: 'UnknownError', data: { message: 'The operation timed out.' } } } } });
   await deadline(() => prompts.length === 2 && forwardedErrors.length === 1);
   assert.equal(aborts[1], response.session_id); assert.equal(prompts[1], response.session_id);
+  replies.push({ status: 'completed', terminal: true });
+  await new Promise(resolve => setTimeout(resolve, 30));
+  const idleEnv = { env: {} }; await hooks['shell.env']({ sessionID: response.session_id }, idleEnv);
+  assert.deepEqual(idleEnv.env, {}, '完成后保持被动连接，不注入审计环境');
+  replies.push({ status: 'recovering', command: { id: 'incremental-id', action: 'incremental', prompt: '增补缺口', environment: { AUDIT_TASK_PROTOCOL: 'task-board.v1', AUDIT_INCREMENTAL_FIXTURE: 'new' } } });
+  await deadline(() => prompts.length === 3);
+  const incrementalEnv = { env: {} }; await hooks['shell.env']({ sessionID: response.session_id }, incrementalEnv);
+  assert.equal(incrementalEnv.env.AUDIT_INCREMENTAL_FIXTURE, 'new');
+  assert.equal(aborts[2], response.session_id); assert.equal(prompts[2], response.session_id);
   replies.push({ status: 'completed', terminal: true });
 });
 

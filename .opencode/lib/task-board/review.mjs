@@ -10,6 +10,7 @@ import { assembleBatchBundle, prepareReviewBatches, validateBatchBundle } from "
 
 const nonempty = value => typeof value === "string" && value.trim();
 const reviewState = board => ({ scope_digest: board.scope_digest, api_sources_digest: digest(board.api_sources), publication: board.publication, tasks: board.tasks.map(task => ({ task_id: task.task_id, spec_digest: task.spec_digest, status: task.status, report: task.report, reason: task.reason })), ...(board.mining_strategy ? { mining_strategy: board.mining_strategy } : {}),
+  ...(board.incremental_rounds?.length ? { incremental_rounds: board.incremental_rounds } : {}),
   ...(board.file_sweep ? { file_sweep_digest: digest(board.file_sweep) } : {}),
   ...(board.report_corrections?.length ? { report_corrections: board.report_corrections } : {}),
   ...(taskBacEnabled(board) ? { bac_analysis: board.bac_analysis, bac_attempts: board.tasks.map(task => {
@@ -65,7 +66,8 @@ export async function prepareReview(store, { runtimeRequired = false, bacMode = 
       }
     }
     tasks.push({ task_id: task.task_id, kind: task.kind, title: task.title, domain: task.domain, prompt: task.prompt, code_refs: task.code_refs,
-      status: task.status, report: task.report, reason: task.reason, parse_gap: parseGap, reported_gaps: Array.isArray(report?.gaps) ? report.gaps : [] });
+      status: task.status, report: task.report, reason: task.reason, parse_gap: parseGap, reported_gaps: Array.isArray(report?.gaps) ? report.gaps : [],
+      ...(task.incremental ? { incremental: task.incremental, incremental_changes: report?.incremental_changes ?? [] } : {}) });
   }
   let runtime = null;
   if (runtimeRequired) {
@@ -274,6 +276,7 @@ function finalModel(board, { input, quality, roles }) {
     assessments: quality.assessments, findings, excluded_findings: excluded, runtime_findings: runtimeFindings,
     ...(input.file_discovery ? { file_discovery: { ...input.file_discovery, review: quality.file_discovery } } : {}),
     ...(board.report_corrections?.length ? { report_corrections: board.report_corrections } : {}),
+    ...(board.incremental_rounds?.length ? { incremental_rounds: board.incremental_rounds } : {}),
     runtime: input.runtime?.evidence ?? null, bac_analysis: quality.bac_analysis ? { ...quality.bac_analysis,
       ...(input.bac_summary ? { summary: input.bac_summary } : {}) } : null, residual_gaps: [...new Set(residualGaps)] };
 }

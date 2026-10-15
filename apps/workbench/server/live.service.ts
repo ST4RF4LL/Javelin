@@ -153,7 +153,7 @@ export class LiveService {
   }
   async action(id: string, input: Row, key: string) {
     identifier(id, '任务编号'); const requestKey = idempotencyKey(key);
-    if (!['pause', 'resume', 'recover', 'cancel', 'dispatch'].includes(input.action) || !Number.isSafeInteger(input.version) || input.version < 1) throw new BadRequestException('任务操作或版本无效。');
+    if (!['pause', 'resume', 'recover', 'incremental', 'cancel', 'dispatch'].includes(input.action) || !Number.isSafeInteger(input.version) || input.version < 1) throw new BadRequestException('任务操作或版本无效。');
     const current = await this.read(`/api/v1/audits/${encodeURIComponent(id)}?live=1`);
     const productId = (current.audit || current).provenance?.audit_product_id || (current.audit || current).provenance?.product_id || (current.audit || current).product_id;
     if (productId) identifier(productId, '任务所属产品');

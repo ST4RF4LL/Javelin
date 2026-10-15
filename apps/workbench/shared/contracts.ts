@@ -21,7 +21,7 @@ export interface Snapshot {
   summary: { audits: number; running: number; findings: number; reports: number; validations?: number; targets?: number; severity?: Record<string, number> };
 }
 export interface AuditPage { items: Audit[]; count: number; page: number; pageSize: number; totalPages: number }
-export type AuditAction = 'pause' | 'resume' | 'recover' | 'cancel' | 'dispatch';
+export type AuditAction = 'pause' | 'resume' | 'recover' | 'incremental' | 'cancel' | 'dispatch';
 export interface TaskProduct { id: string; name: string; status: string }
 export interface TaskTarget { id: string; name: string; path: string; runnable: boolean; reason: string }
 export interface BatchAuditSelection { productId: string; targetIds: string[] }

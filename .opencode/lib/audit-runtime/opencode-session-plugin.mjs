@@ -17,21 +17,25 @@ export default async function nativeAuditSessionPlugin({ client, directory }, op
     if (result?.error) throw new Error('原生会话控制失败。'); return result;
   };
   async function tick(sessionID, binding) {
-    if (binding.busy || binding.ended) return;
+    if (binding.busy) return;
     binding.busy = true;
     try {
       const events = binding.events.slice(0, 25);
       const result = await api.call('heartbeat', { audit_id: binding.audit.id, client_id: binding.client_id, events,
         idle: binding.idle, ...(binding.ack ? { ack: binding.ack } : {}) });
       binding.events.splice(0, events.length); binding.ack = null; binding.idle = false; binding.status = result.status;
-      if (result.terminal) { binding.ended = true; clearInterval(binding.timer); return; }
+      // Keep a passive control connection after completion for explicit incremental audits.
+      // An ended binding does not inject audit context into ordinary user work.
+      if (result.terminal) { binding.ended = true; return; }
       const command = result.command;
       if (command && command.id !== binding.commandId) {
         binding.commandId = command.id;
+        if (command.environment) binding.environment = command.environment;
+        if (command.prompt) { binding.prompt = command.prompt; binding.ended = false; }
         try {
           if (['pause', 'cancel'].includes(command.action)) await apiCall('abort', { path: { id: sessionID }, query: { directory } });
           else {
-            if (command.action === 'recover') await apiCall('abort', { path: { id: sessionID }, query: { directory } });
+            if (['recover', 'incremental'].includes(command.action)) await apiCall('abort', { path: { id: sessionID }, query: { directory } });
             binding.status = 'running';
             await apiCall('promptAsync', { path: { id: sessionID }, query: { directory }, body: { agent: binding.agent,
               parts: [{ type: 'text', text: command.prompt }] } });
@@ -46,8 +50,7 @@ export default async function nativeAuditSessionPlugin({ client, directory }, op
         binding.reconnecting = true;
         try {
           const updated = await api.call('register', binding.registration);
-          if (updated.terminal) { binding.ended = true; clearInterval(binding.timer); }
-          else { Object.assign(binding, updated); binding.status = updated.audit.status; binding.error = null; }
+          Object.assign(binding, updated); binding.ended = updated.terminal === true; binding.status = updated.audit.status; binding.error = null;
         } catch {} finally { binding.reconnecting = false; }
       }
     }
@@ -103,6 +106,9 @@ export default async function nativeAuditSessionPlugin({ client, directory }, op
     event: async ({ event }) => {
       const props = event.properties ?? {}, part = props.part ?? {}, sessionID = props.sessionID ?? part.sessionID ?? props.info?.sessionID ?? props.info?.id;
       if (event.type === 'session.created' && props.info?.parentID) parents.set(props.info.id, props.info.parentID);
+      if (event.type === 'session.deleted') {
+        clearInterval(sessions.get(sessionID)?.timer); sessions.delete(sessionID); parents.delete(sessionID); return;
+      }
       const binding = bindingFor(sessionID); if (!binding || binding.ended) return;
       if (event.type === 'session.error') {
         binding.events.push({ message: JSON.stringify({ type: 'error', sessionID, error: props.error }) });

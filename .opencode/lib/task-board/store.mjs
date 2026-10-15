@@ -1,4 +1,5 @@
 import { randomUUID } from "node:crypto";
+import { verifyIncrementalReplacement } from "./incremental.mjs";
 import { mkdir, readFile, rm, writeFile } from "node:fs/promises";
 import { dirname, join, relative } from "node:path";
 import { PROTOCOL, TERMINAL, atomicJson, check, controlledBytes, digest, hash, normalizeApiList, normalizeTask, selectMiningStrategy, summarize, timestamp } from "./contract.mjs";
@@ -45,7 +46,7 @@ export class TaskBoardStore {
     this.path = path; this.reportsRoot = reportsRoot; this.auditId = auditId; this.scopeDigest = scopeDigest;
     this.onChange = onChange; this.queue = Promise.resolve(); this.owner = randomUUID();
   }
-  async open() {
+  async open({ reclaim = true } = {}) {
     this.lockPath = `${this.path}.lock`;
     await mkdir(dirname(this.path), { recursive: true });
     for (let attempt = 0; attempt < 2; attempt++) {
@@ -63,7 +64,7 @@ export class TaskBoardStore {
     try {
       this.board = await readBoard(this.path);
       check(this.board.audit_id === this.auditId && (!this.board.scope_digest || this.board.scope_digest === this.scopeDigest), "任务面板与冻结源码范围不一致。");
-      await this.mutate(board => {
+      if (reclaim) await this.mutate(board => {
         board.scope_digest = this.scopeDigest;
         for (const file of board.file_sweep?.files ?? []) if (file.status === "READING") { file.status = "PENDING"; file.attempt_id = null; }
         for (const task of board.tasks) if (task.status === "RUNNING") {
@@ -194,11 +195,12 @@ export class TaskBoardStore {
       const task = board.tasks.find(row => row.task_id === taskId);
       check(task && task.attempt_id === attemptId, "旧执行尝试不得提交报告。");
       if (TERMINAL.has(task.status)) {
-        check(task.status === receipt.outcome && (task.report?.sha256 ?? null) === reportDigest && (task.reason ?? null) === (receipt.outcome === "GAP" ? receipt.reason.trim() : null), "重复回执与已接收结果不同。");
+        check(task.status === receipt.outcome && (receipt.outcome === "GAP" || (task.report?.sha256 ?? null) === reportDigest) && (task.reason ?? null) === (receipt.outcome === "GAP" ? receipt.reason.trim() : null), "重复回执与已接收结果不同。");
         return { received: true, duplicate: true };
       }
       check(task.status === "RUNNING", "任务当前未运行。");
       if (bytes) await checkReportIntegrity(bytes, { reportsRoot: this.reportsRoot, taskId });
+      if (bytes) await verifyIncrementalReplacement(task, bytes, this.reportsRoot);
       if (bytes) {
         const extension = receipt.report_path.endsWith(".md") ? "md" : "json";
         const file = join(this.reportsRoot, "task-board", this.auditId, "reports", `${hash(taskId).slice(0, 24)}.${attemptId}.${extension}`);
@@ -208,6 +210,7 @@ export class TaskBoardStore {
       }
       check(canReceive(), "交付快照已失效。");
       task.status = receipt.outcome; task.reason = receipt.outcome === "GAP" ? receipt.reason.trim() : null; task.completed_at = timestamp();
+      if (receipt.outcome === "GAP" && task.incremental?.previous_report) task.report = structuredClone(task.incremental.previous_report);
       Object.assign(board.attempts.find(row => row.attempt_id === attemptId), { status: receipt.outcome, completed_at: task.completed_at });
       return { received: true, report: task.report };
     });
@@ -228,6 +231,7 @@ export class TaskBoardStore {
       const failures = task?.failure_count ?? board.attempts.filter(attempt => attempt.task_id === taskId && attempt.status === "FAILED").length;
       check(task?.status === "FAILED" && (failures >= 3 || task.timeout_recovery?.state === "exhausted"), "只有实际执行失败达到三次或模型超时恢复耗尽的任务才能 skip；待处理任务须保留，预算不足请 defer 暂停。");
       task.status = "GAP"; task.reason = reason.trim(); task.completed_at = timestamp();
+      if (task.incremental?.previous_report) task.report = structuredClone(task.incremental.previous_report);
     });
   }
   async close() {

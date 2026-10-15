@@ -10,7 +10,7 @@ const sources = [
   '../../lib/runtime-testing/browser.mjs', '../../lib/runtime-testing/worker-mcp.mjs', '../../lib/runtime-testing/worker-instructions.md',
   './environment-health.mjs', './opencode-process-monitor.mjs', './opencode-process-launcher.mjs',
   './tmux-monitor.mjs', './tmux-launcher.mjs', './opencode-shared-run.mjs', './opencode-runtime-config.mjs',
-  '../../lib/task-board/store.mjs', '../../lib/task-board/service.mjs', '../../lib/task-board/review.mjs',
+  '../../lib/task-board/store.mjs', '../../lib/task-board/service.mjs', '../../lib/task-board/review.mjs', '../../lib/task-board/incremental.mjs', '../../lib/task-board/worker.md',
   '../../lib/task-board/file-sweep.mjs', '../../lib/task-board/workflow.md', '../../lib/task-board/report.mjs',
   '../../scripts/task-board.mjs', '../../skills/common-subagent/audit-coverage-accounting/scripts/build-scope-manifest.mjs',
   '../../lib/task-board/report-integrity.mjs', '../../lib/task-board/report-correction.mjs', '../../lib/bac/contract.mjs',

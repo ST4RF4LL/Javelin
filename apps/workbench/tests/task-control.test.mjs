@@ -150,6 +150,16 @@ test('原始未归属任务使用受原平台保护的兼容接口；非法动�
   assert.equal(calls.length, 0);
 });
 
+test('增量审计沿用产品归属、版本与幂等键转发，不伪造新任务', async () => {
+  mockTransport(call => call.method === 'POST' ? json({ ...audit, status: 'queued' }) : undefined);
+  const response = await request(`audits/${audit.id}/actions`, post({ action: 'incremental', version: 7 }));
+  assert.equal(response.statusCode, 201);
+  const writes = calls.filter(call => call.method === 'POST');
+  assert.equal(writes.length, 1); assert.equal(writes[0].url.pathname, `/api/v2/products/${input.productId}/audits/${audit.id}/actions`);
+  assert.equal(writes[0].headers.get('if-match'), '"7"'); assert.equal(writes[0].headers.get('idempotency-key'), 'fixture-request-key');
+  assert.deepEqual(writes[0].body, { action: 'incremental' });
+});
+
 test('超时不自动重发 POST，保留原请求键以便用户确认结果', async () => {
   mockTransport(call => { if (call.method === 'POST') throw new Error('fixture transport failure'); });
   const response = await request('audits', post(input)); assert.equal(response.statusCode, 503); assert.match(response.json().message, /未能确认/); assert.equal(calls.length, 1);

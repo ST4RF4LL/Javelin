@@ -1,5 +1,6 @@
 import { PROTOCOL as TASK_BOARD_PROTOCOL, normalizeApiList, selectMiningStrategy, summarize as summarizeBoard } from "../../lib/task-board/contract.mjs";
-import { createBoard, readBoard } from "../../lib/task-board/store.mjs";
+import { createBoard, readBoard, TaskBoardStore } from "../../lib/task-board/store.mjs";
+import { incrementalPlan, hasIncrementalWork, reopenIncremental } from "../../lib/task-board/incremental.mjs";
 import { TaskBoardService } from "../../lib/task-board/service.mjs";
 import { verifyBoardCompletion } from "../../lib/task-board/review.mjs";
 import { EventLogReader } from "./event-log-reader.mjs";
@@ -40,7 +41,7 @@ const TERMINAL = new Set(["completed", "failed", "interrupted", "cancelled"]);
 const ACTIVE = new Set(["queued", "preparing", "recovering", "running", "pausing", "paused", "cancelling"]);
 const EXECUTING = new Set([...ACTIVE].filter(status => status !== "queued"));
 const RECOVERABLE = new Set(["failed", "interrupted", "cancelled"]);
-const NO_TASK_REPORTS_MESSAGE = "本轮已封存失败与缺口记录，但未收到任何源码审计报告，审计执行未完成。请修复执行问题后新建重试；不能据此判断目标是否存在漏洞。";
+const NO_TASK_REPORTS_MESSAGE = "本轮已封存失败与缺口记录，但未收到任何源码审计报告，审计执行未完成。请修复执行问题后在任务面板启动增量审计；不能据此判断目标是否存在漏洞。";
 const hasNoTaskReports = audit => audit.task_protocol === TASK_BOARD_PROTOCOL
   && audit.todo_completion?.complete === true && audit.todo_completion?.delivery_outcome === "NO_REPORTS";
 const MAX_LOG_LINE = 16 * 1024;
@@ -617,14 +618,17 @@ function taskBoardPrompt(audit, paths, contextPaths, resume = false) {
     `源码根 ${JSON.stringify(paths.source_root)} 只读；执行工作区 ${JSON.stringify(paths.workspace_root)} 不属于被审计范围。`,
     ...deliveryRootPrompt(audit, paths),
     "首先完整读取 .opencode/lib/task-board/workflow.md，按本协议执行；旧 Focus Area 全量分区、三视角分文件、audit-todo 和旧最终报告门禁均不适用。",
-    strategyPrompt,
-    "将本次策略传给威胁建模 Agent，要求使用 status 核对并按选定粒度规划。使用 AUDIT_TASK_BOARD_CLI 分批发布；monitor 自动按领域执行，每 worker 一次一个任务，收报告后继续下一项。不要自己再调用挖掘 Agent。",
+    ...(audit.incremental_audit ? [
+      `本次为第 ${audit.incremental_audit.number} 轮增量审计：后台已重开 ${audit.incremental_audit.task_ids.length} 项未完成或有缺口任务、${audit.incremental_audit.file_ids.length} 项文件浏览。先查询 status 和任务分页；不全量重跑，不重置已成功任务。`,
+      "monitor 自动领取重开的任务，每个 worker 从 task.incremental 读取原报告和缺口。只有 publication=OPEN 时才继续未完成的任务发布／文件浏览，复用已浏览文件与已发布任务；SEALED 时跳过威胁建模，直接等待补做交付。",
+      `原报告与面板快照保存在 ${JSON.stringify(audit.incremental_audit.previous)}。补做完成后对合并的全部交付重新 review-input、独立复核和 finalize，更新当前最终报告；不能直接沿用上一轮复核结论或删除旧报告。`,
+    ] : [strategyPrompt, "将本次策略传给威胁建模 Agent，要求使用 status 核对并按选定粒度规划。使用 AUDIT_TASK_BOARD_CLI 分批发布；monitor 自动按领域执行，每 worker 一次一个任务，收报告后继续下一项。不要自己再调用挖掘 Agent。"]),
     "发布完成后 seal；报告接收检查任务绑定、完整写入及专项 Finding 原样交付。收齐后必须 review-input；返回 batch_plan 时由 validator 使用 review-next/review-submit 逐批委派全新正方、反方、Moderator 会话，不复用其他批次 session、不读取全量候选进单个上下文。执行 review/finalize 生成最终中文报告。",
     resume ? "先查询 status，复用已经接收的报告和复核。SEALED 不重复发布；旧 RUNNING 由 monitor 回收，不重跑已交付任务。" : "面板已经创建；先查询 status 与分页 API 清单，不要把全量任务放进一次模型上下文。",
     "若 review-input 因已接收报告与专项 Finding 不一致而失败，按 workflow 的 correct-report 流程生成可追溯更正版本，再重新生成复核输入；不重复撞同一错误，不使用旧摘要提交带外复核。最终报告已封存时不能更正本轮。",
     contextPaths.additional_instructions ? `完整读取用户补充说明 ${JSON.stringify(contextPaths.additional_instructions)}，仅在既定审计范围内应用。` : "用户未提供额外审计要求。",
     audit.bac_analysis?.mode === "auto" ? "越权专项已启用：任务分析与后续质量复核须保留预期策略、实际路径和差分证据；缺少条件时明确保留专项缺口。" : "越权专项未启用。",
-    audit.runtime_testing ? "运行测试继续使用已冻结的 runtime-testing.v1 授权。CONTACT 已由平台控制器调度；静态 worker 仅提供运行假设，Orchestrator 按授权分派。开关关闭或环境为空时自动 SKIPPED。先封存运行证据再 review-input；本任务使用面板复核协议，所有源码/运行候选均经独立三方，不能使用旧 quick 或旧报告构建器。" : "未选择运行测试协议；动态验证为 SKIPPED，禁止自行启动浏览器或联系目标。",
+    audit.incremental_audit ? "本轮只增补静态分析和报告复核，复用既有运行证据；没有运行证据的部分保留缺口。禁止重新联系测试目标、启动浏览器或创建动态工作包；增量按钮不授予新动态测试权限。" : audit.runtime_testing ? "运行测试继续使用已冻结的 runtime-testing.v1 授权。CONTACT 已由平台控制器调度；静态 worker 仅提供运行假设，Orchestrator 按授权分派。开关关闭或环境为空时自动 SKIPPED。先封存运行证据再 review-input；本任务使用面板复核协议，所有源码/运行候选均经独立三方，不能使用旧 quick 或旧报告构建器。" : "未选择运行测试协议；动态验证为 SKIPPED，禁止自行启动浏览器或联系目标。",
     knowledgeContextPrompt(),
     "不要等待用户输入。失败原因逐项保留；执行失败达到重试上限后可使用 skip 显式登记缺口。若任务非空但收到报告数为 0，明确说明审计执行未完成；finalize 只封存执行失败记录，不能声称审计成功或未发现漏洞。返回中文报告路径并结束。",
   ].join("\n");
@@ -851,6 +855,17 @@ export class AuditRunner extends EventEmitter {
   }
 
   async reconcileManagedCompletion(audit, reason = "watchdog", { allowRunning = false } = {}) {
+    if (!audit) return false;
+    // Completion and explicit actions must not interleave: an old sealed report
+    // must never complete an audit while its incremental round is being opened.
+    const callerOwnsAction = reason === "recovery-preflight" && this.activeActions.has(audit.id);
+    if (this.activeActions.has(audit.id) && !callerOwnsAction) return false;
+    if (!callerOwnsAction) this.activeActions.add(audit.id);
+    try { return await this.reconcileManagedCompletionLocked(audit, reason, { allowRunning }); }
+    finally { if (!callerOwnsAction) this.activeActions.delete(audit.id); }
+  }
+
+  async reconcileManagedCompletionLocked(audit, reason = "watchdog", { allowRunning = false } = {}) {
     if (!this.enabled) return false;
     if (!audit || audit.status === "completed" || this.completions.has(audit.id)) return false;
     if (audit.status === "failed" && hasNoTaskReports(audit)) return false;
@@ -1252,9 +1267,62 @@ export class AuditRunner extends EventEmitter {
     const board = await readBoard(audit.task_board_path);
     const rows = board.tasks.filter(task => (!kind || task.kind === kind) && (!status || task.status === status));
     const start = Math.max(0, Math.floor(Number(offset) || 0)), size = Math.min(100, Math.max(1, Math.floor(Number(limit) || 50)));
-    return { summary: summarizeBoard(board), total: rows.length, items: rows.slice(start, start + size).map(task => ({ ...task,
+    const incremental = await this.incrementalAvailability(audit, board);
+    return { summary: summarizeBoard(board), incremental, total: rows.length, items: rows.slice(start, start + size).map(task => ({ ...task,
       validation: board.validation.assessments?.find(row => row.task_id === task.task_id) ?? null })),
       next_offset: start + size < rows.length ? start + size : null };
+  }
+
+  async incrementalAvailability(audit, board) {
+    const base = { available: false, task_count: 0, file_count: 0, round: board.incremental_rounds?.length ?? 0,
+      previous_report: board.incremental_rounds?.at(-1)?.previous?.report ?? null };
+    if (!this.enabled) return { ...base, reason: "只读服务不能启动增量审计。" };
+    if (!TERMINAL.has(audit.status) || this.processes.has(audit.id) || this.completions.has(audit.id)) return { ...base, reason: "任务停止后可增量审计；运行中或暂停的任务请先继续执行或结束。" };
+    if (audit.product_campaign_id && this.productCampaignGuard && !this.productCampaignGuard(audit.product_campaign_id)) return { ...base,
+      reason: "所属产品联合审计批次未运行，请先恢复批次；已封存的联合批次须新建补审批次。" };
+    if (isNativeAudit(audit)) {
+      const hub = this.nativeSessionController, client = hub?.clients.get(audit.id);
+      if (!client || hub.clock() - client.seen > hub.heartbeatMs) return { ...base, reason: "原生 Agent 已断开，请先重新连接原会话。" };
+      if (!client.capabilities.control) return { ...base, reason: "该原生 Agent 尚未接入会话控制，请在原会话执行任务管理。" };
+    }
+    try {
+      // Repeated pagination does not reread every immutable task report.
+      this.incrementalPlans ??= new Map();
+      let cached = this.incrementalPlans.get(audit.id);
+      if (cached?.revision !== board.revision) {
+        cached = { revision: board.revision, plan: await incrementalPlan(board, this.reportsRootForAudit(audit)) };
+        this.incrementalPlans.set(audit.id, cached);
+      }
+      const plan = cached.plan;
+      return { ...base, available: hasIncrementalWork(plan), task_count: plan.tasks.length, file_count: plan.files.length,
+        reason: hasIncrementalWork(plan) ? "补做缺口与未完成项，复用成功交付，重新复核并更新报告。" : "当前没有需要增补的任务、文件或报告复核。" };
+    } catch (error) { return { ...base, reason: `增量范围读取失败：${error.message}` }; }
+  }
+
+  async prepareIncrementalAudit(audit, requestDigest) {
+    if (audit.task_protocol !== TASK_BOARD_PROTOCOL) throw Object.assign(new Error("该历史任务未使用通用任务面板，请通过再次审计创建新任务。"), { statusCode: 409 });
+    if (!TERMINAL.has(audit.status) || this.processes.has(audit.id) || this.completions.has(audit.id)) throw Object.assign(new Error("请在任务停止后启动增量审计。"), { statusCode: 409 });
+    if (audit.product_campaign_id && this.productCampaignGuard && !this.productCampaignGuard(audit.product_campaign_id)) throw Object.assign(new Error("所属产品联合审计批次未运行，不能重开子任务。请先恢复批次；已封存的联合批次须新建补审批次。"), { statusCode: 409, code: "product-campaign-not-running" });
+    const repository = this.repositoryForAudit(audit);
+    if (!repository || !(await this.repositoryFacts(repository)).config_valid) throw Object.assign(new Error("原源码目录或执行配置不可用。"), { statusCode: 422 });
+    // Check the frozen source before invalidating the sealed board/report.
+    const paths = await this.prepareExecutionWorkspace(audit, repository);
+    await this.stopTaskBoard(audit);
+    await this.stopRuntimeTesting(audit);
+    const store = new TaskBoardStore({ path: audit.task_board_path, reportsRoot: paths.reports_root, auditId: audit.id, scopeDigest: audit.source_baseline.scope_digest });
+    await store.open({ reclaim: false });
+    try {
+      audit.incremental_audit = await reopenIncremental(store, requestDigest);
+      audit.todo_summary = store.summary();
+    } finally { await store.close(); }
+    audit.paths = paths;
+    audit.todo_completion = null;
+    audit.completion_source = null;
+    audit.error = null;
+    audit.finished_at = null;
+    audit.exit_code = null;
+    if (audit.timeout_recovery) audit.timeout_recovery = { ...audit.timeout_recovery, state: "stopped", attempts: 0, exhausted: false, next_retry_at: null };
+    return audit.incremental_audit;
   }
 
   async fileCoveragePage(id, options = {}) {
@@ -1983,7 +2051,10 @@ export class AuditRunner extends EventEmitter {
         authorization: authorization.public, privateContext: authorization.private, command: this.command, environment, workspaceRoot: paths.workspace_root, model,
         onChange: async snapshot => { audit.runtime_testing_state = snapshot; await this.record(audit, "audit.runtime-testing.updated", { status: snapshot.status, active_packet: snapshot.active_packet, reason: snapshot.reason }); } });
       this.runtimeTestingServices.set(audit.id, service);
-      await service.start();
+      if (audit.incremental_audit) {
+        await service.controller.ready;
+        await service.shutdown();
+      } else await service.start();
     }
     if (audit.task_protocol === TASK_BOARD_PROTOCOL) {
       const board = await readBoard(audit.task_board_path);
@@ -2767,7 +2838,7 @@ export class AuditRunner extends EventEmitter {
     const actionDigest = createHash("sha256").update(idempotencyKey).digest("hex");
     if ((audit.action_idempotency_digests ?? []).includes(actionDigest)) return publicAudit(audit);
     if (Number(expectedVersion) !== audit.version) throw Object.assign(new Error("审计版本已变化，请刷新后重试。"), { statusCode: 412, code: "version-mismatch" });
-    if (["pause", "cancel", "recover", "resume"].includes(action) && !idempotencyKey.startsWith("watchdog-timeout-recover:")) {
+    if (["pause", "cancel", "recover", "resume", "incremental"].includes(action) && !idempotencyKey.startsWith("watchdog-timeout-recover:")) {
       const waiting = audit.status === "interrupted" && this.timeoutRecoveryPending.has(id);
       clearTimeout(this.timeoutRecoveryTimers.get(id)); this.timeoutRecoveryTimers.delete(id);
       this.timeoutRecoveryPending.delete(id); this.clearOperationTimeoutTerminationGuard(id);
@@ -2786,14 +2857,15 @@ export class AuditRunner extends EventEmitter {
       if (!this.nativeSessionController) throw Object.assign(new Error('当前会话尚未重新连接审计服务。'), { statusCode: 409, code: 'agent-session-offline' });
       return this.nativeSessionController.action(audit, action, actionDigest, expectedVersion);
     }
-    if (action === "recover") {
-      if (hasNoTaskReports(audit)) {
+    if (action === "recover" || action === "incremental") {
+      const incremental = action === "incremental";
+      if (!incremental && hasNoTaskReports(audit)) {
         throw Object.assign(new Error(NO_TASK_REPORTS_MESSAGE), { statusCode: 409, code: "task-board-no-reports" });
       }
-      if (await this.reconcileTerminalCompletion(audit, "recovery-preflight")) return publicAudit(audit);
+      if (!incremental && await this.reconcileTerminalCompletion(audit, "recovery-preflight")) return publicAudit(audit);
       if (!this.enabled) throw Object.assign(new Error("运行驱动未启用，不能恢复审计。"), { statusCode: 503, code: "runner-disabled" });
-      if (!RECOVERABLE.has(audit.status) || this.processes.has(id) || this.completions.has(id)) {
-        throw Object.assign(new Error("只有已中断、失败或已取消且没有残留 Runner 的审计可以断点恢复。"), { statusCode: 409, code: "audit-not-recoverable" });
+      if (!(incremental ? TERMINAL : RECOVERABLE).has(audit.status) || this.processes.has(id) || this.completions.has(id)) {
+        throw Object.assign(new Error(incremental ? "只有已完成、失败、中断或取消且没有残留 Runner 的任务可以增量审计。" : "只有已中断、失败或已取消且没有残留 Runner 的审计可以断点恢复。"), { statusCode: 409, code: "audit-not-recoverable" });
       }
       const repository = this.repositoryForAudit(audit);
       if (!repository) throw Object.assign(new Error("审计所属源码对象不可用。"), { statusCode: 422, code: "repository-not-allowed" });
@@ -2828,20 +2900,19 @@ export class AuditRunner extends EventEmitter {
         audit.terminal.status = "closed";
       }
 
+      if (incremental) await this.prepareIncrementalAudit(audit, actionDigest);
       audit.recovery_count = Number(audit.recovery_count ?? 0) + 1;
       audit.last_recovered_at = new Date().toISOString();
       audit.action_idempotency_digests = [...(audit.action_idempotency_digests ?? []), actionDigest].slice(-100);
-      await this.record(audit, "audit.recovery.requested", {
+      // Persist the reopened board together with a queued execution state.
+      // A crash must not leave an idempotently accepted action marked completed.
+      audit.status = "queued";
+      audit.queue = { mode: "recover", enqueued_at: new Date().toISOString(), provider_session_id: existingSessionId };
+      await this.record(audit, incremental ? "audit.incremental.requested" : "audit.recovery.requested", {
         recovery_count: audit.recovery_count,
         recovery_mode: existingSessionId ? "session-and-artifacts" : "artifacts",
         provider_session_id: existingSessionId,
       });
-      audit.status = "queued";
-      audit.queue = {
-        mode: "recover",
-        enqueued_at: new Date().toISOString(),
-        provider_session_id: existingSessionId,
-      };
       await this.record(audit, "audit.recovery.queued", { recovery_count: audit.recovery_count });
       if (this.queueScheduler) {
         const queued = typeof this.queueScheduler.enqueueRecoveryAudit === "function"

@@ -31,6 +31,12 @@
 7. 写回执后立即结束本次会话。monitor 接收报告后会派下一项；你不领取任务、不修改任务面板、不读取完整队列、不等待其他任务。
 
 
+## 增量审计
+
+附件 `task.incremental` 存在时，本次只补充该任务的缺口。先阅读 `reasons`、`previous_validation`，并按 `reports_root` 下的 `previous_report` 路径和 SHA-256 读取原交付；保留原来有效的发现及证据，重点解决不足部分。新报告仍须是该任务完整的替代报告，绑定本次 attempt/session；不能只写补丁而丢失旧发现。撤回或改变旧结论须在摘要写明具体证据和原因，交给独立复核。不修改旧文件，不复用旧回执；缺少环境或业务信息时如实保留缺口，不能为了完成而伪造补证。增量审计不新增动态测试授权。
+
+若修改或撤回原报告中的某条 finding，报告必须追加 `incremental_changes:[{previous_finding_sha256,reason,evidence_refs}]`，每条变更使用 `task.incremental.previous_findings` 中的 SHA-256（原 finding 按原字段顺序 JSON.stringify 的摘要）、具体中文原因及非空证据引用。未变更的 finding 原样保留；专项 finding 重新绑定本次 attempt 时也要记录变更。复核输入会同时包含原报告引用和这些变更，不能静默丢弃旧发现。
+
 ## 产品与 Repo 长期记忆（product-memory.v1）
 
 当附件带 `memory_context` 或环境提供 `AUDIT_MEMORY_CLI` 与 `AUDIT_MEMORY_CONNECTION_PATH` 时，先以 `node "$AUDIT_MEMORY_CLI" context` 取得当前产品/Repo、源码快照、记忆模式与读取水位。按需使用 `search <query.json>`、`show <query.json>`、`issue <query.json>`、`compare <query.json>`、`todos <query.json>`，不要遍历整库。SKIPPED/GAP 时继续本轮静态分析并保留缺口；不得读取数据库或其他会话凭据绕过限制。

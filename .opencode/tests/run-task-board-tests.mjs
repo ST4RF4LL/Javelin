@@ -11,6 +11,7 @@ import { TaskBoardService, workerConfiguration } from "../lib/task-board/service
 import { acceptReview, finalizeBoard, prepareReview, verifyBoardCompletion } from "../lib/task-board/review.mjs";
 import { AuditRunner } from "../web/dynamic-validation-observatory/audit-runner.mjs";
 import { auditsFromArtifacts } from "../web/dynamic-validation-observatory/workspace-model.mjs";
+import { incrementalPlan, reopenIncremental } from "../lib/task-board/incremental.mjs";
 
 const scope = "a".repeat(64), auditId = "audit-board-test";
 const task = (id, domain = "java", extra = {}) => ({ task_id: id, kind: "focus_area", title: `审查 ${id}`, domain, source_ref: `threat:${id}`, prompt: "分析指定业务路径及权限控制。", code_refs: [], ...extra });
@@ -38,6 +39,81 @@ async function quality(root, inputRef, tasks, overrides = {}) {
 }
 
 const deferred = () => { let resolve; const promise = new Promise(done => { resolve = done; }); return { promise, resolve }; };
+
+test("增量范围包含执行、报告和复核缺口，保留成功报告与旧尝试，重复请求不重开", async t => {
+  const { root, reportsRoot, store } = await fixture(t);
+  await store.publish({ tasks: ["good", "partial", "review", "format", "gap", "failed", "pending"].map(id => task(id)) });
+  await deliver(store, root, await store.claim("java", 5000));
+  const partial = await store.claim("java", 5000);
+  const old = await deliver(store, root, partial, { summary: "已检查部分路径", findings: [], gaps: ["下游权限控制缺少证据"] });
+  await deliver(store, root, await store.claim("java", 5000));
+  await deliver(store, root, await store.claim("java", 5000), "原报告格式不完整");
+  const gap = await store.claim("java", 5000);
+  await store.receive({ taskId: gap.task.task_id, attemptId: gap.attempt.attempt_id, inputRoot: root,
+    receipt: { protocol: PROTOCOL, audit_id: auditId, task_id: gap.task.task_id, attempt_id: gap.attempt.attempt_id, outcome: "GAP", reason: "模型响应超时" } });
+  const failed = await store.claim("java", 5000); await store.fail(failed.task.task_id, failed.attempt.attempt_id, "执行进程退出", { terminal: true });
+  await store.mutate(board => { board.validation.assessments = [{ task_id: "review", status: "NEEDS_FOLLOWUP", reason: "须补查共享状态", gaps: [] }]; });
+  await store.seal();
+  const before = store.snapshot(), plan = await incrementalPlan(before, reportsRoot);
+  assert.deepEqual(plan.tasks.map(row => row.task_id).sort(), ["partial", "review", "format", "gap", "failed", "pending"].sort());
+  const round = await reopenIncremental(store, "1".repeat(64));
+  const after = store.snapshot();
+  assert.equal(round.task_ids.length, 6); assert.deepEqual(after.tasks[0], before.tasks[0]);
+  assert.equal(after.attempts.length, before.attempts.length); assert.equal(after.tasks[1].status, "PENDING");
+  assert.deepEqual(after.tasks[1].incremental.previous_report, before.tasks[1].report);
+  assert.equal(after.validation.status, "NOT_STARTED"); assert.equal(after.publication.state, "SEALED");
+  assert.deepEqual(await reopenIncremental(store, "1".repeat(64)), round);
+  assert.equal(store.snapshot().incremental_rounds.length, 1);
+  await assert.rejects(store.receive({ taskId: partial.task.task_id, attemptId: partial.attempt.attempt_id, receipt: old.receipt, inputRoot: old.work }), /旧执行尝试/);
+});
+
+test("已封存缺口任务增补后重新复核更新报告，旧版本保留且不被完成校验误判", async t => {
+  const { root, reportsRoot, store, path } = await fixture(t);
+  await store.publish({ tasks: [task("one")] });
+  await deliver(store, root, await store.claim("java", 5000), { summary: "部分分析", findings: [], gaps: ["尚未检查下游"] }); await store.seal();
+  const input = await prepareReview(store);
+  await acceptReview(store, { quality: await quality(reportsRoot, input, [], { assessments: [{ task_id: "one", status: "NEEDS_FOLLOWUP", reason: "缺少下游证据", evidence_refs: [], gaps: ["补查下游"] }] }) });
+  await finalizeBoard(store); const previous = store.snapshot().final_report;
+  const oldBytes = await readFile(join(reportsRoot, previous.path));
+  const round = await reopenIncremental(store, "2".repeat(64));
+  const audit = { id: auditId, task_board_path: path, source_baseline: { scope_digest: scope } };
+  assert.equal((await verifyBoardCompletion({ audit, reportsRoot })).complete, false);
+  assert.deepEqual(await readFile(join(reportsRoot, round.previous.report.path)), oldBytes);
+  assert.deepEqual(await readFile(join(reportsRoot, previous.path)), oldBytes, "补做期间旧报告仍可查看");
+  await deliver(store, root, await store.claim("java", 5000));
+  await assert.rejects(finalizeBoard(store), /复核未完成/);
+  const next = await prepareReview(store);
+  await acceptReview(store, { quality: await quality(reportsRoot, next, store.snapshot().tasks) });
+  await finalizeBoard(store);
+  assert.equal((await verifyBoardCompletion({ audit, reportsRoot })).complete, true);
+  assert.notEqual(store.snapshot().final_report.sha256, previous.sha256);
+  assert.deepEqual(await readFile(join(reportsRoot, round.previous.report.path)), oldBytes);
+  assert.match(await readFile(join(reportsRoot, previous.path), "utf8"), /增量审计记录/);
+  assert.deepEqual((await incrementalPlan(store.snapshot(), reportsRoot)).tasks, []);
+  await assert.rejects(reopenIncremental(store, "3".repeat(64)), /没有需要增补/);
+});
+
+test("增量报告不能静默丢失旧发现，再次失败时保留原报告与新缺口", async t => {
+  const { root, reportsRoot, store } = await fixture(t);
+  await store.publish({ tasks: [task("one")] });
+  const finding = { finding_id: "known", title: "已有有效发现" };
+  await deliver(store, root, await store.claim("java", 5000), { summary: "已有发现但另一路径待查", findings: [finding], gaps: ["补查其他路径"] });
+  await store.seal(); const prior = store.snapshot().tasks[0].report;
+  await reopenIncremental(store, "4".repeat(64)); const job = await store.claim("java", 5000);
+  await assert.rejects(deliver(store, root, job), /遗漏或修改了原有发现/);
+  const receipt = { protocol: PROTOCOL, audit_id: auditId, task_id: "one", attempt_id: job.attempt.attempt_id, outcome: "GAP", reason: "补做仍然超时" };
+  await store.receive({ taskId: "one", attemptId: job.attempt.attempt_id, receipt, inputRoot: root });
+  await store.receive({ taskId: "one", attemptId: job.attempt.attempt_id, receipt, inputRoot: root });
+  assert.deepEqual(store.snapshot().tasks[0].report, prior);
+  const review = await prepareReview(store), document = JSON.parse(await readFile(join(reportsRoot, review.path), "utf8"));
+  assert.equal(document.candidates.length, 1); assert.equal(document.tasks[0].reason, "补做仍然超时");
+  await reopenIncremental(store, "5".repeat(64));
+  const replacement = await store.claim("java", 5000);
+  await deliver(store, root, replacement, { summary: "根据新证据撤回旧候选", findings: [], gaps: [], incremental_changes: [
+    { previous_finding_sha256: hash(JSON.stringify(finding)), reason: "调用上游存在充分守卫", evidence_refs: ["src/guard.java:12"] },
+  ] });
+  assert.equal(store.summary().reported, 1);
+});
 const afterAbort = signal => signal.aborted ? Promise.resolve() : new Promise(resolve => signal.addEventListener("abort", resolve, { once: true }));
 async function timeoutFixture(t, worker, leaseMs = 100) {
   const context = await fixture(t); const { root, path, reportsRoot, store } = context;

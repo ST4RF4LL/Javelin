@@ -3,6 +3,7 @@ import { dirname, join } from "node:path";
 import { PROTOCOL, check, controlledBytes, digest, hash, summarize, timestamp } from "./contract.mjs";
 import { checkReportIntegrity } from "./report-integrity.mjs";
 import { summarizeTaskBac } from "./bac.mjs";
+import { verifyIncrementalReplacement } from "./incremental.mjs";
 
 // Only an unsealed audit can bind a new report version; old bytes are immutable.
 export async function correctReport(store, { task_id: taskId, expected_sha256: expected, report: ref, reason }) {
@@ -16,6 +17,7 @@ export async function correctReport(store, { task_id: taskId, expected_sha256: e
     check(summarize(board).mining_complete, "报告尚未收齐，不能更正已交付报告。");
     const task = board.tasks.find(row => row.task_id === taskId);
     check(task?.status === "REPORTED" && task.report, "只能更正已接收的报告。");
+    await verifyIncrementalReplacement(task, bytes, store.reportsRoot);
     const prior = board.report_corrections?.find(row => row.task_id === taskId && row.previous.sha256 === expected && row.replacement.sha256 === ref.sha256 && row.reason === reason.trim());
     if (task.report.sha256 === ref.sha256 && prior) return { corrected: true, duplicate: true, correction: prior };
     check(task.report.sha256 === expected, "报告版本已变化，请刷新后重新更正。");

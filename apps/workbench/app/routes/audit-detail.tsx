@@ -35,7 +35,7 @@ export default function PreviewAuditDetail() {
     };
     return () => { stream.close(); clearTimeout(refreshTimer); };
   }, [source, id, query.isSuccess, client]);
-  const labels: Record<AuditAction, string> = { pause: '暂停任务', resume: '恢复任务', recover: '断点恢复', dispatch: '立即调度', cancel: '取消任务' };
+  const labels: Record<AuditAction, string> = { pause: '暂停任务', resume: '恢复任务', recover: '断点恢复', incremental: '增量审计', dispatch: '立即调度', cancel: '取消任务' };
   const mutation = useMutation({
     mutationFn: (action: AuditAction) => {
       const version = query.data!.version; const token = `${id}:${version}:${action}`;

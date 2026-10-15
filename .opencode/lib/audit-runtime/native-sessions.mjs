@@ -49,8 +49,7 @@ export class NativeSessionController {
       if (previous) {
         if (input.target_id && input.target_id !== previous.repository_id || input.source_root && await realpath(input.source_root) !== this.runner.repositoryForAudit(previous)?.path) throw fail('当前 session 已绑定另一审计范围，请先结束该任务。');
         audit = previous;
-        if (done(audit.status)) return { protocol: AGENT_SESSION_PROTOCOL, audit: this.runner.getAudit(audit.id), terminal: true };
-        if (!this.runner.nativeContexts.has(audit.id) || audit.status === 'interrupted') {
+        if (!done(audit.status) && (!this.runner.nativeContexts.has(audit.id) || audit.status === 'interrupted')) {
           await this.restart(audit, session);
           if (audit.execution.suspended) {
             await this.runner.stopTaskBoard(audit); await this.runner.stopRuntimeTesting(audit); audit.status = 'paused';
@@ -75,9 +74,11 @@ export class NativeSessionController {
   }
   context(audit, clientId) {
     const context = this.runner.nativeContexts.get(audit.id);
+    if (!context && done(audit.status)) return { protocol: AGENT_SESSION_PROTOCOL, client_id: clientId, audit: this.runner.getAudit(audit.id),
+      terminal: true, environment: {}, prompt: '', workspace_root: audit.paths?.workspace_root, heartbeat_ms: Math.min(5000, this.heartbeatMs / 4) };
     if (!context) throw fail('当前任务上下文不可用，请在原会话重新登记。');
     const environment = Object.fromEntries(Object.entries(context.environment).filter(([key]) => key.startsWith('AUDIT_')));
-    return { protocol: AGENT_SESSION_PROTOCOL, client_id: clientId, audit: this.runner.getAudit(audit.id),
+    return { protocol: AGENT_SESSION_PROTOCOL, client_id: clientId, audit: this.runner.getAudit(audit.id), terminal: done(audit.status),
       environment, workspace_root: context.paths.workspace_root,
       prompt: context.prompt.replace(/(?<![\w./])\.opencode\//g, `${this.runner.platformRoot}/.opencode/`), heartbeat_ms: Math.min(5000, this.heartbeatMs / 4) };
   }
@@ -97,10 +98,10 @@ export class NativeSessionController {
             await this.runner.stopTaskBoard(audit); await this.runner.stopRuntimeTesting(audit);
             audit.status = 'interrupted'; audit.error = '原生 Agent 未能执行任务管理指令，请在当前会话查看原因后重新登记。';
           } else {
-            audit.status = { pause: 'paused', cancel: 'cancelled', resume: 'running', recover: 'running' }[command.action];
+            audit.status = { pause: 'paused', cancel: 'cancelled', resume: 'running', recover: 'running', incremental: 'running' }[command.action];
             audit.execution.suspended = command.action === 'pause';
             if (command.action === 'cancel') audit.finished_at = new Date(this.clock()).toISOString();
-            if (['resume', 'recover'].includes(command.action)) this.runner.taskBoardServices.get(audit.id)?.resume();
+            if (['resume', 'recover', 'incremental'].includes(command.action)) this.runner.taskBoardServices.get(audit.id)?.resume();
           }
           await this.runner.record(audit, `audit.${audit.status}`, { action: command.action, command_id: command.id, source: 'agent-session' });
         }
@@ -130,18 +131,19 @@ export class NativeSessionController {
       if (!client || this.clock() - client.seen > this.heartbeatMs) throw fail('原生 Agent 会话未连接，请在原会话重新登记后继续。', 'agent-session-offline');
       if (!client.capabilities.control) throw fail('此 Agent 尚未接入当前会话控制，请在原会话操作。', 'agent-control-unavailable');
       if (audit.native_context?.command?.state === 'pending') throw fail('上一条任务指令仍在执行，请等待会话确认。', 'agent-command-pending');
-      const allowed = { pause: ['running'], resume: ['paused'], recover: ['interrupted', 'cancelled'], cancel: ['running', 'paused', 'interrupted'] };
+      const allowed = { pause: ['running'], resume: ['paused'], recover: ['interrupted', 'cancelled'], incremental: ['completed', 'failed', 'interrupted', 'cancelled'], cancel: ['running', 'paused', 'interrupted'] };
       if (!allowed[action]?.includes(audit.status)) throw fail('操作与当前任务状态不匹配。', 'action-not-allowed');
       if (['pause', 'cancel'].includes(action)) { await this.runner.stopTaskBoard(audit); await this.runner.stopRuntimeTesting(audit); }
-      if (['resume', 'recover'].includes(action) && !this.runner.taskBoardServices.has(audit.id)) {
+      if (action === 'incremental') await this.runner.prepareIncrementalAudit(audit, digest);
+      if (['resume', 'recover', 'incremental'].includes(action) && !this.runner.taskBoardServices.has(audit.id)) {
         await this.restart(audit, client.session);
         await this.runner.taskBoardServices.get(audit.id)?.pause();
         audit.recovery_count = (audit.recovery_count ?? 0) + 1;
       }
       const context = this.context(audit, client.id);
       audit.native_context = { command: { id: randomUUID(), action, state: 'pending',
-        ...(['resume', 'recover'].includes(action) ? { prompt: `继续当前审计，复用已交付制品和检查点。\n${context.prompt}` } : {}) } };
-      audit.status = { pause: 'pausing', resume: 'recovering', recover: 'recovering', cancel: 'cancelling' }[action];
+        ...(['resume', 'recover', 'incremental'].includes(action) ? { prompt: `继续当前审计，复用已交付制品和检查点。\n${context.prompt}`, environment: context.environment } : {}) } };
+      audit.status = { pause: 'pausing', resume: 'recovering', recover: 'recovering', incremental: 'recovering', cancel: 'cancelling' }[action];
       audit.action_idempotency_digests = [...(audit.action_idempotency_digests ?? []), digest].slice(-100);
       await this.runner.record(audit, 'audit.session.command', { action, command_id: audit.native_context.command.id });
       return this.runner.getAudit(audit.id);

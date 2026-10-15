@@ -9,6 +9,7 @@ const source = await readFile(new URL('../web/dynamic-validation-observatory/pub
 // Execute the real controller functions with fixture I/O; no browser, port,
 // Agent, or production task is started by these regression checks.
 const functionNames = ['renderAudits', 'renderAuditSelection', 'selectAuditPage', 'openBatchDeleteAudits', 'renderBatchDeleteAudits', 'closeBatchDeleteAudits', 'submitBatchDeleteAudits', 'loadAuditsPage', 'findAudit', 'auditProductId', 'selectAudit', 'requestAuditAction', 'retryAudit', 'selectAuditProductFilter', 'loadProductTargets', 'openAuditDialog', 'auditDeleteButton', 'openDeleteAuditDialog', 'closeDeleteAuditDialog', 'submitDeleteAudit'];
+functionNames.push('renderTaskBoard');
 const functions = functionNames.map(name => {
   const match = source.match(new RegExp(`^(?:async )?function ${name}\\([^]*?^}`, 'm'));
   assert.ok(match, name); return match[0];
@@ -27,11 +28,34 @@ class Element {
 }
 const audit = (id, productId, status = 'queued') => ({ id, name: id, repository_id: `${productId}-target`, repository_name: productId, status, version: 4, progress: 0, stage: '等待调度', stages: [], provenance: { audit_product_id: productId, product_id: productId, audit_managed: true } });
 
+test('任务面板增量按钮使用后台完整范围，点击同任务动作并带版本；成功后禁用重复提交', async () => {
+  const f = fixture(), item = audit('audit-incremental', 'p2', 'completed');
+  item.mining_strategy = 'focus_area';
+  item.task_board = { total: 5, reported: 2, running: 0, pending: 0, gap: 3, failed: 0, publication: 'SEALED', validation: { status: 'REVIEWED' }, tracks: { focus_area: { total: 5, reported: 2 } } };
+  f.state.audits = [item]; let submitted = false;
+  f.context.respond = async (url, options) => {
+    if (options.method === 'POST') { submitted = true; return { ...item, status: 'queued' }; }
+    if (url.includes('/task-board?')) return { total: 1, items: [{ task_id: 'one', title: '当前页缺口', kind: 'focus_area', domain: 'web', status: 'GAP', attempt_count: 1, prompt: '补查授权路径' }], next_offset: null,
+      incremental: { available: !submitted, task_count: 3, file_count: 0, round: submitted ? 1 : 0, reason: submitted ? '增量审计已入队' : '补做未完成项' } };
+    return item;
+  };
+  const panel = f.context.renderTaskBoard(item); await panel.taskBoardReady;
+  const nodes = node => [node, ...node.children.flatMap(nodes)];
+  const button = nodes(panel).find(node => node.tagName === 'button' && node.textContent.startsWith('增量审计'));
+  assert.equal(button.textContent, '增量审计（3 项）'); assert.equal(button.disabled, false);
+  await button.listeners.click();
+  const writes = f.calls.filter(call => call.options.method === 'POST'); assert.equal(writes.length, 1);
+  assert.equal(writes[0].url, '/api/v2/products/p2/audits/audit-incremental/actions');
+  assert.deepEqual(JSON.parse(writes[0].options.body), { action: 'incremental' });
+  assert.equal(writes[0].options.headers['If-Match'], '"4"'); assert.ok(writes[0].options.headers['Idempotency-Key']);
+  assert.equal(button.disabled, true); assert.equal(f.errors.length, 0);
+});
+
 function fixture() {
   const nodes = new Map(), calls = [], errors = [], targetsLoaded = [];
   const $ = id => { if (!nodes.has(id)) nodes.set(id, new Element()); return nodes.get(id); };
   const state = { view: 'audits', selectedProductId: 'p1', auditProductFilter: 'p1', selectedTargetIds: new Set(['selected-target']), products: [{ id: 'p1', name: '产品一', status: 'active' }, { id: 'p2', name: '产品二', status: 'active' }], targets: [], workspace: { audits: [], queue: {} }, audits: [], auditTab: 'all', auditPage: 1, auditPageSize: 20, auditTotal: 0, auditTotalPages: 1, runtime: { runner: { enabled: true } }, auditDialogRequest: 0, modelSettings: { selected_model: 'default', options: [{ value: 'default', label: '默认' }] } };
-  Object.assign(state, { selectedAudits: new Map(), auditSelectionScope: null, batchDeleteItems: [], batchDeleteStarted: false, batchDeleteBusy: false, batchDeleteStop: false });
+  Object.assign(state, { taskBoardViews: new Map(), selectedAudits: new Map(), auditSelectionScope: null, batchDeleteItems: [], batchDeleteStarted: false, batchDeleteBusy: false, batchDeleteStop: false });
   const context = vm.createContext({ state, $, document: { querySelectorAll: () => [] }, URLSearchParams, AbortController, crypto, structuredClone, auditListPath, auditScope, resolveAuditScope, auditCanDelete, auditSelectionKey, deleteAuditRequest,
     element: (...args) => new Element(...args), table: () => [new Element('table'), new Element('tbody')], cell() {}, short: String, auditStatus: () => new Element(), auditProgressText: () => '',
     renderActiveView() {}, renderAuditDetail() {}, connectEventStream() {}, closeAuditDrawer() { $('audit-drawer').open = false; },

@@ -14,6 +14,7 @@ import { prepareReview, acceptReview, finalizeBoard, verifyBoardCompletion } fro
 import { fileFocusCoverage } from '../web/dynamic-validation-observatory/file-focus-coverage.mjs';
 import { AuditRunner } from '../web/dynamic-validation-observatory/audit-runner.mjs';
 import { applyAuditProgress } from '../web/dynamic-validation-observatory/audit-progress.mjs';
+import { incrementalPlan, reopenIncremental } from '../lib/task-board/incremental.mjs';
 const exec = promisify(execFile), auditId = 'audit-file-sweep-test', scope = 'a'.repeat(64);
 const cli = resolve('.opencode/scripts/task-board.mjs');
 async function fixture(t, contents = { 'auth.py': 'def auth():\n  return True\n', 'config.yml': 'debug: true\n', 'image.png': Buffer.from([0,1,2]) }) {
@@ -29,6 +30,20 @@ async function fixture(t, contents = { 'auth.py': 'def auth():\n  return True\n'
  return {root,sourceRoot,reportsRoot,path,manifest,manifestPath,store};
 }
 const area=(file,id='fa-auth')=>({task_id:id,kind:'focus_area',title:'核查认证控制',domain:'python',source_ref:file.file_id,prompt:'核查入口到权限守卫的真实调用关系。',code_refs:[{path:file.path,line:1}]});
+test('增量审计重开有缺口的文件浏览，保留已浏览和排除项，不接收旧浏览回执', async t => {
+ const f=await fixture(t);
+ const first=await browse(f,f.manifest.files[0].file_id); await f.store.completeFile(completion(first),f.sourceRoot);
+ const second=await browse(f,f.manifest.files[1].file_id);
+ await f.store.completeFile({...second,outcome:'GAP',summary:'已读配置，但尚未核对配置消费者'},f.sourceRoot); await f.store.seal({empty_reason:'无已发布疑点'});
+ const before=f.store.snapshot(); assert.equal((await incrementalPlan(before,f.reportsRoot)).files.length,1);
+ await reopenIncremental(f.store,'f'.repeat(64));
+ const after=f.store.snapshot(); assert.equal(after.publication.state,'OPEN');
+ assert.deepEqual(after.file_sweep.files[0],before.file_sweep.files[0]); assert.deepEqual(after.file_sweep.files[2],before.file_sweep.files[2]);
+ assert.equal(after.file_sweep.files[1].status,'PENDING');
+ await assert.rejects(f.store.completeFile({...second,outcome:'GAP',summary:'迟到回执'},f.sourceRoot));
+ const retry=await browse(f,second.file_id); await f.store.completeFile(completion(retry),f.sourceRoot);
+ await f.store.seal({empty_reason:'补充浏览后无疑点'}); assert.equal(f.store.summary().file_sweep.gap_files,0);
+});
 const completion=(file,ids=[])=>({file_id:file.file_id,attempt_id:file.attempt_id,outcome:'BROWSED',summary:'已浏览文件职责、输入和控制条件；需要进一步核查的区域已关联任务。',task_ids:ids});
 async function browse(f,id) {const file=await f.store.claimFile({file_id:id});await f.store.readFile(f.sourceRoot,{...file,start_line:1,limit:300});return file;}
 async function quality(f,ref,overrides={}) {

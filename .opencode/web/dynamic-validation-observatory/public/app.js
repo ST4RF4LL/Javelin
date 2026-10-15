@@ -978,7 +978,7 @@ function renderTaskBoard(audit) {
   const panel = element("section", "task-board-panel");
   panel.append(element("p", "eyebrow", "TASK BOARD"), element("h3", "", "审计任务面板"));
   const summary = audit.task_board;
-  if (audit.execution_incomplete) panel.append(element("p", "notice error", "本轮未收到任何源码审计报告，无法据此判断目标是否存在漏洞。失败与缺口记录已封存，请修复执行问题后新建重试。"));
+  if (audit.execution_incomplete) panel.append(element("p", "notice error", "本轮未收到任何源码审计报告，无法据此判断目标是否存在漏洞。失败与缺口记录已封存，修复执行问题后可点击增量审计补做。"));
   const strategy = audit.mining_strategy ?? summary.mining_strategy;
   const strategyLabel = strategy === "file_sweep" ? "逐文件地毯式审计" : strategy === "api" ? "逐接口 API 审查" : strategy === "focus_area" ? "高风险 Focus Area" : "原有并列任务范围";
   panel.append(element("p", "", `漏洞挖掘策略：${strategyLabel}`));
@@ -987,6 +987,14 @@ function renderTaskBoard(audit) {
   if (!["focus_area", "file_sweep"].includes(strategy)) panel.append(element("p", "", `API 任务报告交付 ${summary.tracks.api.reported}/${summary.tracks.api.total}；用户 API 清单 ${summary.api_inventory.reported}/${summary.api_inventory.submitted} 项已收齐报告。`));
   if (summary.file_sweep) { const files = summary.file_sweep; panel.append(element("p", "", `任务发布：文件已浏览 ${files.browsed_files}/${files.eligible_files} · 浏览中 ${files.reading_files} · 待浏览 ${files.pending_files} · 缺口 ${files.gap_files} · 已发布 Focus Area ${files.published_areas}`), element("p", "muted", "已浏览表示完成威胁发现初筛，深入分析以 Focus Area 领取与报告交付为准。")); }
   panel.append(metrics, element("p", "muted", `发布${summary.publication === "SEALED" ? "已结束" : "进行中"}；内容复核${summary.validation?.status === "REVIEWED" ? "已完成" : "未完成"}。报告交付进度与内容复核分别统计。`));
+  const incrementalActions = element("div", "action-row"), incrementalButton = element("button", "button primary", "增量审计"), incrementalNote = element("p", "muted", "正在检查可增补范围…");
+  incrementalButton.disabled = true;
+  incrementalActions.append(incrementalButton); panel.append(incrementalActions, incrementalNote);
+  incrementalButton.addEventListener("click", async () => {
+    incrementalButton.disabled = true;
+    await requestAuditAction(audit, "incremental");
+    await refresh();
+  });
   const controls = element("div", "action-row"), kind = element("select"), status = element("select");
   kind.setAttribute("aria-label", "任务类型"); status.setAttribute("aria-label", "任务执行状态");
   for (const [value, label] of [["", "全部类型"], ["focus_area", "Focus Area"], ["api", "API"]]) { const option = element("option", "", label); option.value = value; kind.append(option); }
@@ -1006,6 +1014,10 @@ function renderTaskBoard(audit) {
       const params = new URLSearchParams({ offset: view.offset, limit: 25, kind: view.kind, status: view.status });
       const data = await api(`/api/v2/products/${encodeURIComponent(productId)}/audits/${encodeURIComponent(audit.id)}/task-board?${params}`);
       if (sequence !== view.requestSequence) return;
+      const incremental = data.incremental;
+      incrementalButton.disabled = !incremental?.available;
+      incrementalButton.textContent = incremental?.task_count ? `增量审计（${incremental.task_count} 项）` : "增量审计";
+      incrementalNote.textContent = `${incremental?.round ? `已启动 ${incremental.round} 轮增量审计。` : ""}${incremental?.reason ?? "当前服务尚未支持增量审计，请更新后台。"}${incremental?.file_count ? `另含 ${incremental.file_count} 个未完成浏览的文件。` : ""}旧报告保留，补做结束后更新当前报告。`;
       if (view.offset > 0 && view.offset >= data.total) {
         view.offset = Math.max(0, Math.ceil(data.total / 25) - 1) * 25;
         return refresh();
@@ -1024,12 +1036,16 @@ function renderTaskBoard(audit) {
         if (task.report) detail.append(element("p", "", `报告：${task.report.path}`));
         if (task.reason) detail.append(element("p", "", `执行缺口：${task.reason}`));
         if (task.validation) detail.append(element("p", "", `复核说明：${task.validation.reason}`));
+        if (task.incremental) detail.append(element("p", "muted", `增量审计第 ${task.incremental.round} 轮：${task.incremental.reasons.join("；")}`));
         list.append(detail);
       }
       if (!data.items.length) list.append(element("p", "muted", "暂无符合条件的任务；规划中的任务会在发布后出现。"));
       nextOffset = data.next_offset; previous.disabled = view.offset === 0; next.disabled = nextOffset == null;
       page.textContent = `${data.total} 项 · 第 ${Math.floor(view.offset / 25) + 1} 页`;
-    } catch (error) { if (sequence === view.requestSequence) list.replaceChildren(element("p", "", error.message)); }
+    } catch (error) { if (sequence === view.requestSequence) {
+      incrementalButton.disabled = true; incrementalNote.textContent = `增量范围读取失败：${error.message}`;
+      list.replaceChildren(element("p", "", error.message));
+    } }
   }
   kind.addEventListener("change", () => { view.kind = kind.value; view.offset = 0; refresh(); });
   status.addEventListener("change", () => { view.status = status.value; view.offset = 0; refresh(); });
@@ -1285,7 +1301,7 @@ async function requestAuditAction(audit, action) {
       headers: { "Content-Type": "application/json", "If-Match": `"${audit.version}"`, "Idempotency-Key": crypto.randomUUID() },
       body: JSON.stringify({ action }),
     });
-    toast(`已提交${({ pause: "暂停", resume: "恢复", recover: "断点恢复", cancel: "取消", dispatch: "立即开始" })[action]}操作`);
+    toast(`已提交${({ pause: "暂停", resume: "恢复", recover: "断点恢复", incremental: "增量审计", cancel: "取消", dispatch: "立即开始" })[action]}操作`);
     await load();
   } catch (error) { showError(error); }
 }
