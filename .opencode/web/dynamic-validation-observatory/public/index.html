@@ -78,7 +78,14 @@
 
           <section id="view-findings" class="view"><div class="page-heading"><div><p class="eyebrow">FINDING LEDGER</p><h2>漏洞发现</h2><p>按产品和任务查看发现，追溯报告、源码证据与复核结论。</p></div><label class="search"><span>⌕</span><input id="finding-query" placeholder="搜索漏洞、产品、任务或代码"></label></div><label class="finding-risk-filter">风险等级 <select id="finding-severity"><option value="">全部等级</option><option value="CRITICAL">严重</option><option value="HIGH">高危</option><option value="MEDIUM">中危</option><option value="LOW">低危</option><option value="INFO">信息</option><option value="UNKNOWN">未评级</option></select></label><div id="finding-source-filters" class="source-filters" aria-label="漏洞来源筛选"></div><article class="panel"><div id="finding-table" class="finding-list"></div></article></section>
 
-          <section id="view-reports" class="view"><div class="page-heading"><div><p class="eyebrow">REPORT DELIVERY</p><h2>审计报告</h2><p>查看产品与审计任务对应的报告和执行结果。</p></div></div><div id="report-source-filters" class="source-filters" aria-label="报告来源筛选"></div><div id="report-grid" class="report-grid"></div></section>
+          <section id="view-reports" class="view">
+            <div class="page-heading">
+              <div><p class="eyebrow">REPORT DELIVERY</p><h2>审计报告</h2><p>查看产品与审计任务对应的报告和执行结果。</p></div>
+              <div class="request-filters"><label>时间排序<select id="report-sort"><option value="newest">最新优先</option><option value="oldest">最早优先</option></select></label></div>
+            </div>
+            <div id="report-source-filters" class="source-filters" aria-label="报告来源筛选"></div>
+            <div id="report-grid" class="report-grid"></div>
+          </section>
 
           <section id="view-validation" class="view">
             <div class="page-heading"><div><p class="eyebrow">VULNERABILITY VALIDATION</p><h2>动态验证</h2><p>从漏洞追溯每一步验证动作，查看实际请求与响应，导出到 Bruno 继续分析。</p></div></div>

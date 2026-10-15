@@ -80,6 +80,16 @@ export async function deleteAuditRequest(audit, api) {
   return result;
 }
 
+export function sortReportsByTime(reports, order = "newest") {
+  return [...reports].sort((left, right) => {
+    const a = Date.parse(left.sealed_at ?? ""), b = Date.parse(right.sealed_at ?? "");
+    const knownA = Number.isFinite(a), knownB = Number.isFinite(b);
+    if (knownA !== knownB) return knownA ? -1 : 1;
+    const difference = knownA ? (order === "oldest" ? a - b : b - a) : 0;
+    return difference || String(left.id).localeCompare(String(right.id));
+  });
+}
+
 export function mountWorkbench({ document = globalThis.document, window = globalThis.window, initialView = "dashboard", initialFilters = {}, onNavigate = null, onFileCoverage = null, onBatchCreate = null, onMutation = null } = {}) {
 let disposed = false;
 let navigationSequence = 0;
@@ -126,6 +136,7 @@ const state = {
   validationPage: 1,
   validationRequestSequence: 0,
   selectedReportId: null,
+  reportSort: "newest",
   sourceOptions: { products: [], audits: [], reports: [] },
   sourceOptionsRequestSequence: 0,
   sourceFilters: { finding: { product_id: "", audit_id: "", report_id: "" }, validation: { product_id: "", audit_id: "", report_id: "" }, report: { product_id: "", audit_id: "", report_id: "" } },
@@ -1810,7 +1821,9 @@ async function submitFindingWorkflow(event) {
 
 function renderReports() {
   renderSourceFilters("report");
-  const cards = state.workspace.reports.filter(report => matchesSource(report, "report")).map(report => {
+  $("report-sort").value = state.reportSort;
+  const reports = sortReportsByTime(state.workspace.reports.filter(report => matchesSource(report, "report")), state.reportSort);
+  const cards = reports.map(report => {
     const card = element("article", "report-card");
     card.append(element("p", "eyebrow", "AUDIT REPORT"), element("h3", "", report.name), element("p", "mono", report.path));
     const footer = element("footer", "", `${report.repository_name ?? "—"} · ${bytes(report.size)} · ${formatDate(report.sealed_at)}`);
@@ -3278,6 +3291,10 @@ $("audit-query").addEventListener("input", () => {
   }, 300);
 });
 $("finding-severity").addEventListener("change", () => loadFindingsPage(1).catch(showError));
+$("report-sort").addEventListener("change", event => {
+  state.reportSort = event.currentTarget.value === "oldest" ? "oldest" : "newest";
+  renderReports();
+});
 $("finding-query").addEventListener("input", () => {
   window.clearTimeout(state.findingSearchTimer);
   state.findingSearchTimer = window.setTimeout(() => loadFindingsPage(1).catch(showError), 300);
