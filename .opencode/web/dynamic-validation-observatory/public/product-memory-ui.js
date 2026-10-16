@@ -76,14 +76,47 @@ export function initProductMemoryUI({ state, api, element, table, status, toast,
     const productId = state.selectedProductId, { dialog, article } = modal(`联合静态审计${selection.title ? ` · ${selection.title}` : ''}`);
     const form = element('form', 'memory-form'), name = input('name', '批次名称', `${selection.title ?? state.products.find(p => p.id === productId)?.name ?? '产品'} 联合审计`);
     name.required = true;
-    const model = select((state.modelSettings?.options ?? [{ value: 'default', label: '默认' }]).map(o => [o.value, o.label])); model.value = state.modelSettings?.selected_model ?? 'default';
+    const engine = select([['', '正在读取 Agent 基座…']]), model = select([['', '请先选择基座']]);
+    engine.disabled = true; model.disabled = true;
     const mode = select([['full', '使用历史事实、人工理由与产品经验'], ['facts_only', '仅参考接口、资产与结构事实'], ['off', '不读取历史记忆'], ['blind', '盲审：隔离历史漏洞经验']]);
     const notes = element('textarea'); notes.maxLength = 8000; const error = element('p', 'notice error'); error.hidden = true;
-    const submit = element('button', 'button primary', '创建产品审计批次'); submit.type = 'submit';
-    form.append(field('批次名称', name), field('模型', model), field('历史记忆', mode), field('审计重点（可选）', notes), element('p', 'muted', '冻结当前选中 Repo 与源码版本。跨 Repo 补审限于本轮范围；动态测试沿用单 Repo 的授权入口。'), error, submit);
-    form.addEventListener('submit', async event => { event.preventDefault(); submit.disabled = true;
-      try { await action(`${prefix(productId)}/product-audits`, { ...(selection.node_id ? { node_id: selection.node_id } : {}), name: name.value, model: model.value, memory_mode: mode.value, additional_instructions: notes.value }); dialog.close(); toast('产品审计批次已创建'); await refresh(true); }
-      catch (cause) { error.textContent = cause.message; error.hidden = false; } finally { submit.disabled = false; } }); article.append(form);
+    const submit = element('button', 'button primary', '创建产品审计批次'); submit.type = 'submit'; submit.disabled = true;
+    const engineStatus = element('p', 'muted');
+    let agents, modelSequence = 0, closed = false, ready = false;
+    dialog.addEventListener('close', () => { closed = true; modelSequence++; });
+    const loadModels = async () => {
+      const sequence = ++modelSequence, selectedEngine = engine.value;
+      ready = false; submit.disabled = true; model.disabled = true; error.hidden = true;
+      const profile = agents.profiles.find(item => item.id === selectedEngine);
+      if (!profile || profile.enabled === false) {
+        engineStatus.textContent = '请先在工作台设置中启用 Agent 基座。';
+        model.replaceChildren(...select([['', '请先启用并选择 Agent 基座']]).children);
+        return;
+      }
+      engineStatus.textContent = profile?.available ? `${profile.label}；各 Repo 与跨 Repo 分析沿用此基座。` : profile?.reason || '此基座不可用，请检查工作台设置。';
+      try {
+        const data = await api(`/api/v1/settings/model?engine=${encodeURIComponent(selectedEngine)}`, { signal: AbortSignal.timeout(20000) });
+        if (closed || sequence !== modelSequence) return;
+        model.replaceChildren(...data.model.options.map(item => { const option = element('option', '', item.label); option.value = item.value; return option; }));
+        model.value = data.model.selected_model ?? 'default'; model.disabled = false;
+        ready = profile?.available === true && data.model.options.some(item => item.value === model.value);
+        submit.disabled = !ready;
+      } catch (cause) { if (!closed && sequence === modelSequence) { error.textContent = `模型读取失败：${cause.message}`; error.hidden = false; } }
+    };
+    engine.addEventListener('change', loadModels);
+    model.addEventListener('change', () => { ready = agents?.profiles.some(item => item.id === engine.value && item.enabled !== false && item.available) && Boolean(model.value); submit.disabled = !ready; });
+    form.append(field('批次名称', name), field('Agent 基座', engine), engineStatus, field('模型', model), field('历史记忆', mode), field('审计重点（可选）', notes), element('p', 'muted', '冻结当前选中 Repo 与源码版本。跨 Repo 补审限于本轮范围；动态测试沿用单 Repo 的授权入口。'), error, submit);
+    form.addEventListener('submit', async event => { event.preventDefault(); if (!ready || submit.disabled) return; submit.disabled = true;
+      try { await action(`${prefix(productId)}/product-audits`, { ...(selection.node_id ? { node_id: selection.node_id } : {}), name: name.value, engine: engine.value, model: model.value, memory_mode: mode.value, additional_instructions: notes.value }); dialog.close(); toast('产品审计批次已创建'); await refresh(true); }
+      catch (cause) { error.textContent = cause.message; error.hidden = false; } finally { submit.disabled = !ready; } }); article.append(form);
+    try {
+      agents = (await api('/api/v1/settings/agents', { signal: AbortSignal.timeout(20000) })).agents;
+      if (closed) return;
+      const enabledProfiles = agents.profiles.filter(item => item.enabled !== false);
+      engine.replaceChildren(...enabledProfiles.map(item => { const option = element('option', '', `${item.label}${item.available ? '' : '（不可用）'}`); option.value = item.id; return option; }));
+      if (!enabledProfiles.length) engine.append(...select([['', '未启用任何 Agent']]).children);
+      engine.value = agents.default_engine ?? ''; engine.disabled = !enabledProfiles.length; await loadModels();
+    } catch (cause) { if (!closed) { error.textContent = `Agent 基座读取失败：${cause.message}`; error.hidden = false; } }
   }
   function renderCampaigns(campaigns) {
     campaignsBody.replaceChildren();

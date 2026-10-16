@@ -19,6 +19,7 @@ import { openCodeEventView } from "../web/dynamic-validation-observatory/opencod
 import { FindingWorkflowStore } from "../web/dynamic-validation-observatory/finding-workflow.mjs";
 import { auditsFromArtifacts, buildWorkspaceSnapshot, findingsFromArtifacts, materializeFinalReportFromModel } from "../web/dynamic-validation-observatory/workspace-model.mjs";
 import { createAuditWorkbenchServer, paginateFindings, parseArgs } from "../web/dynamic-validation-observatory/server.mjs";
+import { AgentSettingsStore } from '../lib/audit-runtime/agent-settings.mjs';
 import { finalReportModelDigest, renderFinalReport } from "../skills/common-subagent/audit-coverage-accounting/scripts/final-report-model-core.mjs";
 import { buildWebXssInputEnvelope, buildWebXssRuntimeRequest } from "./fixtures/web-xss-runtime-fixture.mjs";
 
@@ -616,6 +617,7 @@ if (mode === "run") {
   assert.equal(queuedRunner.getAudit(queuedAudit.id).model, "global-provider/global-audit");
   assert.equal(await queuedRunner.modelForLaunch({ model: null }), null, "显式默认不得被全局模型覆盖");
   const originalContexts = {
+    engine: 'opencode',
     memory_mode: 'full',
     additional_instructions_enabled: true,
     additional_instructions: "只验证指定入口。\n\n保留这段说明的分行与中文。",
@@ -633,6 +635,7 @@ if (mode === "run") {
     audit_id: "audit-retry-context-edited", ...retryDraft, additional_instructions: "重试时修改的关注点。",
     test_environment_enabled: false }, "retry-context-edited");
   assert.deepEqual(await queuedRunner.retryDraft(editedRetry.id), {
+    engine: 'opencode',
     memory_mode: 'full',
     additional_instructions_enabled: true, additional_instructions: "重试时修改的关注点。",
     test_environment_enabled: false, test_environment_context: "",
@@ -1213,6 +1216,10 @@ if (mode === "run") {
     dynamicRunner,
     environmentService,
     findingWorkflow,
+    agentSettingsStore: new AgentSettingsStore({ path: join(temp, 'agent-settings.json'), commands: { opencode: runner.command },
+      resolveCommand: async command => command,
+      probe: async (command, args) => ({ stdout: args.includes('--help') ? '--server --standalone' : command === 'opencode2' ? '2.0.29' : command === 'grow' ? 'Grow 2.2.2' : '1.16.19' }),
+    }),
     modelConfigPaths: [join(repositoryRoot, ".opencode", "opencode.json"), globalModelConfig],
   });
   server.listen(0, "127.0.0.1");
@@ -1462,7 +1469,8 @@ if (mode === "run") {
     assert.equal(JSON.stringify(created).includes("proxy-fixture.test"), false);
 
     for (let attempt = 0; attempt < 100 && runner.getAudit(created.id)?.status !== "running"; attempt += 1) await new Promise(resolve => setTimeout(resolve, 2));
-    assert.equal(runner.getAudit(created.id).status, "running");
+    assert.equal(runner.getAudit(created.id).status, "running", JSON.stringify({ status: runner.getAudit(created.id).status, error: runner.getAudit(created.id).error,
+      events: (await readFile(join(stateRoot, created.id, 'events.jsonl'), 'utf8')).trim().split('\n').slice(-8).map(line => JSON.parse(line).type) }));
     assert.equal(spawnCall.command, process.execPath);
     assert.equal(spawnCall.options.shell, false);
     const executionWorkspace = join(platformRoot, "workspace", "audit-runs", created.id);
@@ -1615,6 +1623,7 @@ if (mode === "run") {
     assert.equal(retryDraftResponse.status, 200);
     assert.equal(retryDraftResponse.headers.get("cache-control"), "no-store");
     assert.deepEqual(await retryDraftResponse.json(), {
+      engine: 'opencode',
       memory_mode: 'full',
       additional_instructions_enabled: true,
       additional_instructions: "只验证 XSS 漏洞；其他类型只记录静态证据。",

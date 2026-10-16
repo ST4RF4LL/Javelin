@@ -1,4 +1,4 @@
-import type { Audit, AuditPage, Snapshot, Source, WorkbenchRuntime, FindingPage, ReportContent, TaskOptions, TaskTarget, TaskProduct, TaskModels, RealAuditInput, RealAuditDraft } from '../../shared/contracts';
+import type { Audit, AuditPage, Snapshot, Source, WorkbenchRuntime, FindingPage, ReportContent, TaskOptions, TaskTarget, TaskProduct, TaskModels, RealAuditInput, RealAuditDraft, AgentSettings, CodingEngine } from '../../shared/contracts';
 export class ApiError extends Error {
   status: number;
   requestId: string | null;
@@ -48,7 +48,8 @@ export const api = {
   create: (source: Source, input: { name: string; repository: string; strategy: string }) => request<Audit>('audits', source, { method: 'POST', body: JSON.stringify(input) }),
   taskOptions: (signal?: AbortSignal) => request<TaskOptions>('task-options', 'live', { signal }, initialization('任务配置')),
   taskProducts: (signal?: AbortSignal) => request<{ items: TaskProduct[] }>('task-products', 'live', { signal }, initialization('产品目录')),
-  taskModels: (signal?: AbortSignal) => request<TaskModels>('task-models', 'live', { signal }, initialization('模型配置')),
+  taskAgents: (signal?: AbortSignal) => request<AgentSettings>('task-agents', 'live', { signal }, { timeoutMs: 20000, label: 'Agent 基座' }),
+  taskModels: (signal?: AbortSignal, engine?: CodingEngine) => request<TaskModels>(`task-models${engine ? `?engine=${encodeURIComponent(engine)}` : ''}`, 'live', { signal }, initialization('模型配置')),
   taskRunner: (signal?: AbortSignal) => request<{ runnerEnabled: boolean }>('task-runner', 'live', { signal }, initialization('执行器状态')),
   targets: (productId: string, signal?: AbortSignal) => request<{ items: TaskTarget[] }>(`products/${encodeURIComponent(productId)}/targets`, 'live', { signal }, initialization('源码目录')),
   registerTarget: (productId: string, input: { name: string; path: string }) => request<TaskTarget>(`products/${encodeURIComponent(productId)}/targets`, 'live', { method: 'POST', body: JSON.stringify(input) }),

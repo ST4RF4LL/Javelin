@@ -348,6 +348,10 @@ main { padding: 30px 34px 48px; max-width: 1600px; margin: 0 auto; }
 .settings-form label { display: grid; gap: 7px; color: #4b5751; font-size: 11px; font-weight: 700; }
 .settings-form input, .settings-form select { width: 100%; height: 42px; padding: 0 12px; color: var(--ink); background: white; border: 1px solid #ccd4d0; border-radius: 7px; outline: none; }
 .settings-form input:focus, .settings-form select:focus { border-color: var(--green); box-shadow: 0 0 0 3px var(--green-soft); }
+.agent-command-field { display: grid; gap: 7px; }
+.agent-command-heading { display: flex; align-items: center; justify-content: space-between; gap: 12px; }
+.settings-form label.enable-switch { display: block; cursor: pointer; }
+.agent-command-field.is-disabled > input { background: #f6f7f8; color: var(--muted); }
 .field-unit { color: var(--muted); font-size: 10px; font-weight: 500; }
 .settings-note { margin: 0; color: var(--muted); font-size: 11px; line-height: 1.65; }
 .settings-panel .detail-facts { margin-bottom: 0; }

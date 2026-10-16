@@ -5,6 +5,8 @@ import { TaskBoardService } from "../../lib/task-board/service.mjs";
 import { verifyBoardCompletion } from "../../lib/task-board/review.mjs";
 import { EventLogReader } from "./event-log-reader.mjs";
 import { executionBinding, isNativeAudit } from "../../lib/audit-runtime/contract.mjs";
+import { auditEngine, normalizeEngineModel, prepareAgentLaunch, normalizeAgentLine } from "../../lib/audit-runtime/engines/index.mjs";
+import { waitForInteractiveRelease } from "../../lib/audit-runtime/engines/interactive-lease.mjs";
 import { acquireStateLease } from "../../lib/audit-runtime/state-lease.mjs";
 import { operationTimeout, timeoutRetryDelay } from "../../lib/audit-runtime/operation-timeout.mjs";
 import { TimeoutRecoverySettingsStore } from "../../lib/audit-runtime/timeout-recovery-settings.mjs";
@@ -666,6 +668,8 @@ export class AuditRunner extends EventEmitter {
     this.stageDeliveryVerifier = stageDeliveryVerifier;
     this.todoCompletionVerifier = todoCompletionVerifier;
     this.terminalMonitor = terminalMonitor ?? new OpenCodeProcessMonitor({ stateRoot: this.stateRoot, command: this.command, environment: this.environment, spawnProcess });
+    this.customTerminalMonitor = Boolean(terminalMonitor);
+    this.engineMonitors = new Map();
     this.audits = new Map();
     this.processes = new Map();
     this.completions = new Map();
@@ -744,8 +748,8 @@ export class AuditRunner extends EventEmitter {
         } else if (ACTIVE.has(audit.status)) {
           const previousStatus = audit.status;
           let terminalLive = false;
-          if (audit.terminal?.supported && audit.terminal?.socket_name && audit.terminal?.target && typeof this.terminalMonitor.targetLive === "function") {
-            terminalLive = await this.terminalMonitor.targetLive(audit.terminal.socket_name, audit.terminal.target).catch(() => false);
+          if (audit.terminal?.supported && audit.terminal?.socket_name && audit.terminal?.target && typeof this.monitorFor(audit).targetLive === "function") {
+            terminalLive = await this.monitorFor(audit).targetLive(audit.terminal.socket_name, audit.terminal.target).catch(() => false);
           }
           audit.status = "interrupted";
           if (isNativeAudit(audit)) {
@@ -841,7 +845,7 @@ export class AuditRunner extends EventEmitter {
       ...data,
     });
     if (audit.terminal?.live && !isNativeAudit(audit)) {
-      await this.terminalMonitor.abort(audit.terminal, audit.paths?.workspace_root).catch(() => {});
+      await this.monitorFor(audit).abort(audit.terminal, audit.paths?.workspace_root).catch(() => {});
       if (!child) {
         await this.finalizeTerminal(audit).catch(() => {
           audit.terminal = { ...(audit.terminal ?? {}), live: false, status: "closed", message: "审计已由完成性校验收敛，终端归档失败。" };
@@ -1368,8 +1372,10 @@ export class AuditRunner extends EventEmitter {
 
   async modelForLaunch(audit) {
     const configured = Object.hasOwn(audit, "model") ? audit.model : this.modelResolver ? await this.modelResolver(audit) : null;
-    return normalizeOpenCodeModel(configured);
+    return auditEngine(audit) === 'opencode' ? normalizeOpenCodeModel(configured) : normalizeEngineModel(configured, auditEngine(audit));
   }
+
+  monitorFor(audit) { return this.engineMonitors.get(audit.id) ?? this.terminalMonitor; }
 
   queueSnapshot() {
     const audits = [...this.audits.values()];
@@ -1562,7 +1568,7 @@ export class AuditRunner extends EventEmitter {
     const audit = this.audits.get(auditId);
     if (!audit) throw Object.assign(new Error("原审计任务不存在，无法恢复重试内容。"), { statusCode: 404, code: "audit-not-found" });
     const paths = await this.verifiedPrivateContextPaths(audit);
-    const draft = {};
+    const draft = { engine: auditEngine(audit) };
     if (audit.memory_mode) draft.memory_mode = audit.memory_mode;
     if (audit.mining_strategy) draft.mining_strategy = audit.mining_strategy;
     for (const [key, enabledField, valueField] of [
@@ -1747,7 +1753,7 @@ export class AuditRunner extends EventEmitter {
   }
 
   async createAudit(input, idempotencyKey) {
-    executionBinding({ engine: input.engine ?? 'opencode' });
+    const execution = executionBinding({ engine: input.engine ?? 'opencode' });
     await this.ready;
     if (!this.enabled) throw Object.assign(new Error("运行驱动未启用；请用 --enable-runner 启动平台。"), { statusCode: 503, code: "runner-disabled" });
     if (!idempotencyKey || idempotencyKey.length > 200) throw Object.assign(new Error("缺少有效的 Idempotency-Key。"), { statusCode: 400, code: "idempotency-key-required" });
@@ -1790,6 +1796,7 @@ export class AuditRunner extends EventEmitter {
     const audit = {
       id,
       name: typeof input.name === "string" && input.name.trim() ? input.name.trim().slice(0, 160) : `仓库级安全审计 · ${repository.name}`,
+      execution,
       memory_mode: ["full", "facts_only", "off", "blind"].includes(input.memory_mode) ? input.memory_mode : "full",
       repository_id: repository.id,
       repository_name: repository.name,
@@ -1807,7 +1814,7 @@ export class AuditRunner extends EventEmitter {
       allow_dirty: input.allow_dirty === true,
       // Persist the task selection, including null for OpenCode defaults.
       // Queue dispatch and recovery must preserve this binding.
-      model: normalizeOpenCodeModel(input.model),
+      model: normalizeEngineModel(input.model, input.engine ?? "opencode"),
       task_protocol: taskProtocol,
       ...(taskProtocol === TASK_BOARD_PROTOCOL ? { task_board_path: join(this.stateRoot, id, "task-board.json"), mining_strategy: miningStrategy } : {}),
       runtime_testing: runtimeSelection(input),
@@ -1917,7 +1924,7 @@ export class AuditRunner extends EventEmitter {
       exit_code: null,
       error: null,
       allow_dirty: true,
-      model: normalizeOpenCodeModel(input.model),
+      model: normalizeEngineModel(input.model, input.engine ?? "opencode"),
       task_protocol: taskProtocol,
       ...(taskProtocol === TASK_BOARD_PROTOCOL ? { task_board_path: join(this.stateRoot, id, "task-board.json"), mining_strategy: miningStrategy } : {}),
       runtime_testing: runtimeSelection(input),
@@ -1967,6 +1974,15 @@ export class AuditRunner extends EventEmitter {
 
   async start(audit, repository, { resume = false, existingSessionId = null, nativeSession = null } = {}) {
     if (isNativeAudit(audit) && !nativeSession) throw new Error('外部会话只能重新登记，不能另起主任务。');
+    const engine = auditEngine(audit);
+    // Codex's existing native entry still delegates its static workers to v1.
+    const workerEngine = engine === 'codex' && isNativeAudit(audit) ? 'opencode' : engine;
+    const profile = this.agentSettings ? await this.agentSettings.resolve(workerEngine)
+      : { command: workerEngine === 'opencode' ? this.command : workerEngine === 'grow' ? 'grow' : 'opencode2', available: true };
+    if (!profile.available) throw Object.assign(new Error(profile.reason ?? '所选 Agent 未安装或版本不兼容，请检查工作台设置。'), { statusCode: 422, code: 'agent-launch-unavailable' });
+    let engineCommand = profile.command;
+    if (!this.customTerminalMonitor && (workerEngine !== 'opencode' || this.agentSettings)) this.engineMonitors.set(audit.id,
+      new OpenCodeProcessMonitor({ stateRoot: this.stateRoot, command: engineCommand, engine: workerEngine, environment: this.environment, spawnProcess: this.spawnProcess }));
     audit.status = resume ? "recovering" : "preparing";
     audit.started_at ??= new Date().toISOString();
     audit.finished_at = null;
@@ -1974,7 +1990,9 @@ export class AuditRunner extends EventEmitter {
     audit.pid = null;
     audit.error = null;
     audit.interruption_reason = null;
+    if (audit.execution && !nativeSession) audit.execution.generation = randomUUID();
     await this.record(audit, resume ? "audit.recovering" : "audit.preparing", resume ? { recovery_count: audit.recovery_count, queue_mode: audit.queue?.mode ?? "recover" } : { queue_mode: audit.queue?.mode ?? "start" });
+    if (engine === 'grow') await waitForInteractiveRelease(join(this.stateRoot, audit.id, 'agent-terminal-lease.json'));
     const paths = await this.prepareExecutionWorkspace(audit, repository);
     audit.paths = paths;
     await this.record(audit, "audit.workspace.ready", paths);
@@ -1998,6 +2016,7 @@ export class AuditRunner extends EventEmitter {
       AUDIT_REPORTS_ROOT: paths.reports_root,
       AUDIT_TMP_ROOT: paths.tmp_root,
       AUDIT_TASK_PROTOCOL: audit.task_protocol ?? "",
+      AUDIT_CODING_ENGINE: workerEngine,
       AUDIT_MINING_STRATEGY: audit.mining_strategy ?? "",
       AUDIT_MEMORY_MODE: audit.memory_mode ?? "full",
       AUDIT_MEMORY_CONNECTION_PATH: "",
@@ -2025,7 +2044,8 @@ export class AuditRunner extends EventEmitter {
         AUDIT_TEST_ENVIRONMENT_CONTEXT_SHA256: audit.private_context.test_environment.sha256,
       } : {}),
     };
-    const sessionId = providerSessionId(existingSessionId ?? audit.provider_session_id ?? audit.terminal?.provider_session_id);
+    const sessionId = providerSessionId(existingSessionId ?? audit.provider_session_id ?? audit.terminal?.provider_session_id
+      ?? (engine === 'grow' ? audit.execution?.resumed_from_session_id : null));
     const focusConfig = JSON.parse(environment.OPENCODE_CONFIG_CONTENT);
     if (audit.task_protocol === TASK_BOARD_PROTOCOL) configureTaskReviewPermissions(focusConfig, { workspaceRoot: paths.workspace_root, reportsRoot: paths.reports_root });
     // Explicit loading also covers OPENCODE_DISABLE_PROJECT_CONFIG=true.
@@ -2048,7 +2068,7 @@ export class AuditRunner extends EventEmitter {
         context: contextPaths.test_environment ? await readFile(contextPaths.test_environment, "utf8") : "",
         sourceBinding: audit.commit ?? audit.execution_spec_digest, scopeDigest: audit.source_baseline.scope_digest });
       const service = new RuntimeTestingService({ root: environment.AUDIT_RUNTIME_STATE_ROOT, privateRoot: dirname(environment.AUDIT_RUNTIME_CONNECTION_PATH),
-        authorization: authorization.public, privateContext: authorization.private, command: this.command, environment, workspaceRoot: paths.workspace_root, model,
+        authorization: authorization.public, privateContext: authorization.private, command: engineCommand, engine: workerEngine, environment, workspaceRoot: paths.workspace_root, model, spawnProcess: this.spawnProcess,
         onChange: async snapshot => { audit.runtime_testing_state = snapshot; await this.record(audit, "audit.runtime-testing.updated", { status: snapshot.status, active_packet: snapshot.active_packet, reason: snapshot.reason }); } });
       this.runtimeTestingServices.set(audit.id, service);
       if (audit.incremental_audit) {
@@ -2068,7 +2088,8 @@ export class AuditRunner extends EventEmitter {
       const service = new TaskBoardService({ path: audit.task_board_path, reportsRoot: paths.reports_root,
         fileManifestPath: audit.source_baseline.path,
         privateRoot: dirname(environment.AUDIT_TASK_BOARD_CONNECTION_PATH), workspaceRoot: paths.workspace_root, sourceRoot: paths.source_root,
-        auditId: audit.id, scopeDigest: audit.source_baseline.scope_digest, environment, command: this.command, model,
+        auditId: audit.id, scopeDigest: audit.source_baseline.scope_digest, environment, command: engineCommand, engine: workerEngine, model,
+        spawnProcess: this.spawnProcess,
         getTimeoutRecoveryPolicy: () => this.timeoutRecoveryPolicy,
         runtimeRequired: Boolean(audit.runtime_testing), bacMode: audit.bac_analysis?.mode ?? "off", memory: memoryAdapter,
         onChange: async summary => { audit.todo_summary = summary; await this.record(audit, "audit.task-board.updated", summary); },
@@ -2102,7 +2123,7 @@ export class AuditRunner extends EventEmitter {
       return;
     }
     audit.execution ??= executionBinding();
-    let command = this.command;
+    let command = engineCommand;
     let args = [
       "run", "--format", "json",
       ...(sessionId ? ["--session", sessionId] : []),
@@ -2113,30 +2134,46 @@ export class AuditRunner extends EventEmitter {
       prompt,
     ];
     audit.execution_transport = "opencode-run";
+    let launch = null;
+    let launchEnvironment = environment;
+    if (engine !== 'opencode') {
+      const launchSession = engine === 'grow' && sessionId
+        ? (await import('../../lib/audit-runtime/engines/grow-session.mjs')).readCheckpointSession(join(this.stateRoot, audit.id, 'agent-runtime', 'grow-home'), sessionId)
+        : sessionId;
+      launch = await prepareAgentLaunch({ engine, command, environment, config: JSON.parse(environment.OPENCODE_CONFIG_CONTENT),
+        role: 'security-audit-orchestrator', prompt, model, sessionId: launchSession, cwd: paths.workspace_root,
+        outputRoot: join(this.stateRoot, audit.id, 'agent-runtime'), title: audit.name });
+      command = launch.command; args = launch.args;
+      launchEnvironment = launch.environment;
+      audit.execution_transport = `${engine}-run`;
+      if (launch.resumedFromSessionId) audit.execution.resumed_from_session_id = launch.resumedFromSessionId;
+      else delete audit.execution.resumed_from_session_id;
+    }
     try {
-      const probe = await this.terminalMonitor.probe();
+      const probe = await this.monitorFor(audit).probe();
       if (typeof probe.opencode_command === "string" && probe.opencode_command) {
-        this.command = probe.opencode_command;
+        engineCommand = probe.opencode_command;
         command = probe.opencode_command;
       }
       if (!probe.available) {
         audit.terminal = { backend: probe.backend ?? "opencode-process", supported: false, status: "unavailable", live: false, message: probe.message };
         await this.record(audit, "audit.terminal.unavailable", { message: redact(probe.message) });
       } else {
-        audit.terminal = { backend: probe.backend ?? "opencode-process", supported: true, status: "starting", live: false, message: "正在后台启动 OpenCode 共享会话。" };
+        audit.terminal = { backend: probe.backend ?? "opencode-process", supported: true, status: "starting", live: false,
+          message: engine === 'grow' ? '正在后台启动 Grow 审计会话。' : `正在后台启动 ${engine === 'opencode-v2' ? 'OpenCode v2' : 'OpenCode v1'} 共享会话。` };
         await this.record(audit, "audit.terminal.starting", {});
-        audit.terminal = await this.terminalMonitor.start({
+        audit.terminal = await this.monitorFor(audit).start({
           audit,
           repository,
-          environment,
+          environment: launchEnvironment,
           executionDirectory: paths.workspace_root,
-          providerSessionId: sessionId,
+          providerSessionId: launch?.resumedFromSessionId ? null : sessionId,
           args,
         });
         audit.execution_transport = audit.terminal.transport;
         audit.provider_session_id = providerSessionId(audit.terminal.provider_session_id);
         audit.execution.session_id = audit.provider_session_id;
-        if (audit.terminal.backend !== 'opencode-process') {
+        if (!['opencode-process', 'agent-process'].includes(audit.terminal.backend)) {
           if (!isAbsolute(audit.terminal.relay_spec_path ?? "")) throw new Error("终端输出中继配置缺失。");
           command = process.execPath;
           args = [TERMINAL_OUTPUT_RELAY, audit.terminal.relay_spec_path];
@@ -2149,23 +2186,24 @@ export class AuditRunner extends EventEmitter {
         });
       }
     } catch (error) {
-      await this.terminalMonitor.stop(audit.terminal).catch(() => {});
+      await this.monitorFor(audit).stop(audit.terminal).catch(() => {});
+      if (engine !== 'opencode') throw error;
       audit.terminal = { backend: audit.terminal?.backend ?? "opencode-process", supported: false, status: "error", live: false, message: `终端监控启动失败，已回退普通 Runner：${redact(error.message)}` };
-      audit.execution_transport = "opencode-run";
+      audit.execution_transport = `${engine}-run`;
       await this.record(audit, "audit.terminal.failed", { message: audit.terminal.message });
     }
     const taskBoardService = this.taskBoardServices.get(audit.id);
-    if (taskBoardService) { taskBoardService.command = this.command; taskBoardService.resume(); }
+    if (taskBoardService) { taskBoardService.command = engineCommand; taskBoardService.resume(); }
     const runtimeService = this.runtimeTestingServices.get(audit.id);
     if (runtimeService) {
-      runtimeService.command = this.command;
+      runtimeService.command = engineCommand;
       await runtimeService.contact();
     }
     if (audit.status === "cancelled" || audit.product_campaign_id && this.productCampaignGuard && !this.productCampaignGuard(audit.product_campaign_id)) throw Object.assign(new Error("产品批次已暂停或取消，未启动审计 Agent。"), { code: "product-campaign-not-running" });
-    const child = audit.terminal?.backend === 'opencode-process' && audit.terminal.supported
-      ? this.terminalMonitor.launch(audit.terminal) : this.spawnProcess(command, args, {
+    const child = ['opencode-process', 'agent-process'].includes(audit.terminal?.backend) && audit.terminal.supported
+      ? this.monitorFor(audit).launch(audit.terminal) : this.spawnProcess(command, args, {
       cwd: paths.workspace_root,
-      env: environment,
+      env: launchEnvironment,
       stdio: ["ignore", "pipe", "pipe"],
       windowsHide: true,
       shell: false,
@@ -2181,7 +2219,8 @@ export class AuditRunner extends EventEmitter {
         buffer += chunk;
         const lines = buffer.split("\n");
         buffer = lines.pop() ?? "";
-        for (const line of lines) {
+        for (const raw of lines) {
+          const line = normalizeAgentLine(raw, launch); if (line == null) continue;
           if (this.processes.get(audit.id) !== child) continue;
           this.captureProviderSession(audit, line).catch(() => {});
           this.observeOperationTimeout(audit, source, line);
@@ -2191,6 +2230,7 @@ export class AuditRunner extends EventEmitter {
       });
       stream?.on("end", () => {
         if (!buffer || this.processes.get(audit.id) !== child) return;
+        buffer = normalizeAgentLine(buffer, launch); if (buffer == null) return;
         this.captureProviderSession(audit, buffer).catch(() => {});
         this.observeOperationTimeout(audit, source, buffer);
         this.observeContextWindowOverflow(audit, source, buffer);
@@ -2212,6 +2252,12 @@ export class AuditRunner extends EventEmitter {
         await this.stopRuntimeTesting(audit);
         this.processes.delete(audit.id);
         audit.pid = null;
+        if (auditEngine(audit) === 'grow' && audit.status === 'pausing') {
+          audit.status = 'paused'; audit.finished_at = null; audit.exit_code = null;
+          audit.pause_checkpoint = true;
+          await this.finalizeTerminal(audit);
+          return this.record(audit, 'audit.paused', { mode: 'session-checkpoint' });
+        }
         if ((audit.status === "completed" || audit.status === "failed" && hasNoTaskReports(audit)) && audit.completion_source === "todo-artifact-watchdog") {
           audit.exit_code ??= code ?? 0;
           audit.finished_at ??= new Date().toISOString();
@@ -2321,9 +2367,10 @@ export class AuditRunner extends EventEmitter {
     if (audit.execution) audit.execution.session_id = sessionId;
     if (audit.terminal) {
       audit.terminal.provider_session_id = sessionId;
-      audit.terminal.opencode_command = `opencode -s ${sessionId}`;
+      audit.terminal.opencode_command = `${auditEngine(audit) === 'grow' ? 'grow --resume' : auditEngine(audit) === 'opencode-v2' ? 'opencode2 --session' : 'opencode -s'} ${sessionId}`;
     }
-    await this.record(audit, "audit.session.bound", { provider_session_id: sessionId });
+    await this.record(audit, "audit.session.bound", { provider_session_id: sessionId,
+      ...(audit.execution?.resumed_from_session_id ? { resumed_from_session_id: audit.execution.resumed_from_session_id } : {}) });
   }
 
   async recordLog(audit, source, line, { observe = true } = {}) {
@@ -2397,7 +2444,7 @@ export class AuditRunner extends EventEmitter {
     await this.record(audit, "audit.context-window.detected", { attempt, source: entry.source, provider_session_id: sessionId });
     const child = this.processes.get(audit.id);
     if (audit.terminal?.live) {
-      await this.terminalMonitor.abort(audit.terminal, audit.paths?.workspace_root).catch(error => this.recordLog(audit, "stderr", `上下文 watchdog 无法中止隔离 OpenCode session：${error.message}`));
+      await this.monitorFor(audit).abort(audit.terminal, audit.paths?.workspace_root).catch(error => this.recordLog(audit, "stderr", `上下文 watchdog 无法中止隔离 OpenCode session：${error.message}`));
     }
     if (child) {
       const signalled = child.kill?.("SIGTERM") === true;
@@ -2493,7 +2540,7 @@ export class AuditRunner extends EventEmitter {
     await this.record(audit, "audit.timeout.detected", { attempt, source: entry.source, message: "The operation timed out" });
     const child = this.processes.get(audit.id);
     if (audit.terminal?.live) {
-      await this.terminalMonitor.abort(audit.terminal, audit.paths?.workspace_root).catch(error => this.recordLog(audit, "stderr", `超时 watchdog 无法中止隔离 OpenCode session：${error.message}`));
+      await this.monitorFor(audit).abort(audit.terminal, audit.paths?.workspace_root).catch(error => this.recordLog(audit, "stderr", `超时 watchdog 无法中止隔离 OpenCode session：${error.message}`));
     }
     if (child) {
       const signalled = child.kill?.("SIGTERM") === true;
@@ -2561,8 +2608,8 @@ export class AuditRunner extends EventEmitter {
       forced_at: audit.finished_at,
       last_error: null,
     };
-    if (audit.terminal?.supported && (audit.terminal.socket_name || audit.terminal.backend === 'opencode-process')) {
-      await this.terminalMonitor.stop(audit.terminal).catch(() => {});
+    if (audit.terminal?.supported && (audit.terminal.socket_name || ['opencode-process', 'agent-process'].includes(audit.terminal.backend))) {
+      await this.monitorFor(audit).stop(audit.terminal).catch(() => {});
       audit.terminal.live = false;
       audit.terminal.status = "closed";
       audit.terminal.message = "超时 Runner 未自行结束，隔离终端已由 watchdog 收敛。";
@@ -2668,8 +2715,8 @@ export class AuditRunner extends EventEmitter {
     audit.interrupted_at = audit.finished_at;
     audit.error = "检测到模型上下文达到上限；Runner 在宽限期内未退出，已强制收敛并准备执行 /compact。";
     audit.context_window_recovery = { ...audit.context_window_recovery, state: "waiting-to-compact", forced_at: audit.finished_at, last_error: null };
-    if (audit.terminal?.supported && (audit.terminal.socket_name || audit.terminal.backend === 'opencode-process')) {
-      await this.terminalMonitor.stop(audit.terminal).catch(() => {});
+    if (audit.terminal?.supported && (audit.terminal.socket_name || ['opencode-process', 'agent-process'].includes(audit.terminal.backend))) {
+      await this.monitorFor(audit).stop(audit.terminal).catch(() => {});
       audit.terminal.live = false;
       audit.terminal.status = "closed";
       audit.terminal.message = "上下文溢出 Runner 未自行结束，隔离终端已由 watchdog 收敛。";
@@ -2691,6 +2738,15 @@ export class AuditRunner extends EventEmitter {
   }
 
   async compactOpenCodeSession(audit) {
+    if (auditEngine(audit) !== 'opencode') {
+      // A v1 slash command must never be sent to a different engine. Existing
+      // receipts/claims are authoritative; recover with a bounded fresh prompt.
+      audit.provider_session_id = null;
+      if (audit.execution) { audit.execution.session_id = null; delete audit.execution.resumed_from_session_id; }
+      if (audit.terminal) audit.terminal.provider_session_id = null;
+      await this.record(audit, 'audit.context-window.artifact-recovery', { engine: auditEngine(audit), previous_session_id: audit.context_window_recovery?.session_id ?? null });
+      return null;
+    }
     const sessionId = providerSessionId(audit.context_window_recovery?.session_id ?? audit.provider_session_id ?? audit.terminal?.provider_session_id);
     if (!sessionId) throw new Error("provider-session-id-missing");
     const repository = this.repositoryForAudit(audit);
@@ -2699,7 +2755,10 @@ export class AuditRunner extends EventEmitter {
     if (!isAbsolute(workspaceRoot ?? "")) throw new Error("audit-workspace-root-missing");
     const proxyEnvironment = await this.verifiedPrivateProxyEnvironment(audit);
     const environment = await buildOpenCodeEnvironment(repository.config_path, { ...this.environment, ...proxyEnvironment });
-    await this.compactSessionRunner(this.command, [
+    const profile = this.agentSettings ? await this.agentSettings.resolve('opencode') : null;
+    if (profile && !profile.available) throw new Error(profile.reason || 'OpenCode v1 不可用，请检查 Agent 设置。');
+    const command = profile?.command ?? this.command;
+    await this.compactSessionRunner(command, [
       "run", "--format", "json",
       "--session", sessionId,
       "--command", "compact",
@@ -2754,14 +2813,14 @@ export class AuditRunner extends EventEmitter {
   }
 
   async finalizeTerminal(audit) {
-    if (!audit.terminal?.supported || (!audit.terminal?.socket_name && audit.terminal?.backend !== 'opencode-process')) return;
+    if (!audit.terminal?.supported || (!audit.terminal?.socket_name && !['opencode-process', 'agent-process'].includes(audit.terminal?.backend))) return;
     let captured = "";
     try {
-      captured = redactTerminalOutput(await this.terminalMonitor.capture(audit.terminal, 1000), await this.redactionsForAudit(audit));
+      captured = redactTerminalOutput(await this.monitorFor(audit).capture(audit.terminal, 1000), await this.redactionsForAudit(audit));
       if (captured) await writeFile(join(this.stateRoot, audit.id, "terminal.txt"), `${captured}\n`, { encoding: "utf8", mode: 0o600 });
     } finally {
       try {
-        await this.terminalMonitor.stop(audit.terminal);
+        await this.monitorFor(audit).stop(audit.terminal);
       } finally {
         audit.terminal.live = false;
         audit.terminal.status = captured ? "archived" : "closed";
@@ -2779,14 +2838,14 @@ export class AuditRunner extends EventEmitter {
     const sessionId = providerSessionId(audit.provider_session_id ?? terminal?.provider_session_id);
     const sessionConnection = {
       provider_session_id: sessionId,
-      opencode_command: sessionId ? `opencode -s ${sessionId}` : null,
+      opencode_command: sessionId ? `${auditEngine(audit) === 'grow' ? 'grow --resume' : auditEngine(audit) === 'opencode-v2' ? 'opencode2 --session' : 'opencode -s'} ${sessionId}` : null,
     };
     if (!terminal?.supported) {
       return { available: false, live: false, status: terminal?.status ?? "unavailable", target: null, attach_command: null, ...sessionConnection, output: "", message: terminal?.message ?? "该任务未启用 OpenCode 终端监控。" };
     }
     if (terminal.live) {
       try {
-        const output = redactTerminalOutput(await this.terminalMonitor.capture(terminal), await this.redactionsForAudit(audit));
+        const output = redactTerminalOutput(await this.monitorFor(audit).capture(terminal), await this.redactionsForAudit(audit));
         return { available: true, live: true, status: terminal.status, target: terminal.target, attach_command: terminal.attach_command, ...sessionConnection, output, message: terminal.message, columns: terminal.columns ?? null, rows: terminal.rows ?? null };
       } catch (error) {
         return { available: false, live: false, status: "disconnected", target: terminal.target, attach_command: terminal.attach_command, ...sessionConnection, output: "", message: `终端窗口暂时不可读：${redact(error.message)}` };
@@ -2805,14 +2864,14 @@ export class AuditRunner extends EventEmitter {
     await this.ready;
     const audit = this.audits.get(id);
     if (!audit) throw Object.assign(new Error("审计不存在。"), { statusCode: 404, code: "audit-not-found" });
-    if (!audit.terminal?.supported || !audit.terminal?.live || typeof this.terminalMonitor.resize !== "function") {
+    if (!audit.terminal?.supported || !audit.terminal?.live || typeof this.monitorFor(audit).resize !== "function") {
       throw Object.assign(new Error("该审计当前没有可调整的实时终端窗口。"), { statusCode: 409, code: "terminal-not-live" });
     }
     if (!Number.isInteger(columns) || columns < 40 || columns > 320 || !Number.isInteger(rows) || rows < 12 || rows > 120) {
       throw Object.assign(new Error("终端尺寸必须是 40-320 列、12-120 行范围内的整数。"), { statusCode: 422, code: "terminal-size-invalid" });
     }
     await this.enqueue(id, async () => {
-      const size = await this.terminalMonitor.resize(audit.terminal, columns, rows);
+      const size = await this.monitorFor(audit).resize(audit.terminal, columns, rows);
       audit.terminal.columns = size.columns;
       audit.terminal.rows = size.rows;
       audit.terminal.resized_at = new Date().toISOString();
@@ -2857,14 +2916,15 @@ export class AuditRunner extends EventEmitter {
       if (!this.nativeSessionController) throw Object.assign(new Error('当前会话尚未重新连接审计服务。'), { statusCode: 409, code: 'agent-session-offline' });
       return this.nativeSessionController.action(audit, action, actionDigest, expectedVersion);
     }
-    if (action === "recover" || action === "incremental") {
+    const checkpointResume = action === 'resume' && auditEngine(audit) === 'grow' && audit.status === 'paused' && audit.pause_checkpoint;
+    if (action === "recover" || action === "incremental" || checkpointResume) {
       const incremental = action === "incremental";
       if (!incremental && hasNoTaskReports(audit)) {
         throw Object.assign(new Error(NO_TASK_REPORTS_MESSAGE), { statusCode: 409, code: "task-board-no-reports" });
       }
       if (!incremental && await this.reconcileTerminalCompletion(audit, "recovery-preflight")) return publicAudit(audit);
       if (!this.enabled) throw Object.assign(new Error("运行驱动未启用，不能恢复审计。"), { statusCode: 503, code: "runner-disabled" });
-      if (!(incremental ? TERMINAL : RECOVERABLE).has(audit.status) || this.processes.has(id) || this.completions.has(id)) {
+      if ((!checkpointResume && !(incremental ? TERMINAL : RECOVERABLE).has(audit.status)) || this.processes.has(id) || this.completions.has(id)) {
         throw Object.assign(new Error(incremental ? "只有已完成、失败、中断或取消且没有残留 Runner 的任务可以增量审计。" : "只有已中断、失败或已取消且没有残留 Runner 的审计可以断点恢复。"), { statusCode: 409, code: "audit-not-recoverable" });
       }
       const repository = this.repositoryForAudit(audit);
@@ -2892,10 +2952,10 @@ export class AuditRunner extends EventEmitter {
 
       const existingSessionId = providerSessionId(audit.provider_session_id ?? audit.terminal?.provider_session_id);
       if (audit.terminal?.live) {
-        await this.terminalMonitor.abort(audit.terminal, audit.paths?.workspace_root).catch(error => this.recordLog(audit, "stderr", `旧 OpenCode session 中止确认失败，将继续关闭该任务的执行进程：${error.message}`));
+        await this.monitorFor(audit).abort(audit.terminal, audit.paths?.workspace_root).catch(error => this.recordLog(audit, "stderr", `旧 OpenCode session 中止确认失败，将继续关闭该任务的执行进程：${error.message}`));
       }
-      if (audit.terminal?.supported && (audit.terminal.socket_name || audit.terminal.backend === 'opencode-process')) {
-        await this.terminalMonitor.stop(audit.terminal);
+      if (audit.terminal?.supported && (audit.terminal.socket_name || ['opencode-process', 'agent-process'].includes(audit.terminal.backend))) {
+        await this.monitorFor(audit).stop(audit.terminal);
         audit.terminal.live = false;
         audit.terminal.status = "closed";
       }
@@ -2907,6 +2967,7 @@ export class AuditRunner extends EventEmitter {
       // Persist the reopened board together with a queued execution state.
       // A crash must not leave an idempotently accepted action marked completed.
       audit.status = "queued";
+      delete audit.pause_checkpoint;
       audit.queue = { mode: "recover", enqueued_at: new Date().toISOString(), provider_session_id: existingSessionId };
       await this.record(audit, incremental ? "audit.incremental.requested" : "audit.recovery.requested", {
         recovery_count: audit.recovery_count,
@@ -2927,6 +2988,13 @@ export class AuditRunner extends EventEmitter {
       }
       return publicAudit(audit);
     }
+    if (action === 'cancel' && audit.status === 'paused' && audit.pause_checkpoint && !this.processes.has(id)) {
+      audit.status = 'cancelled'; audit.finished_at = new Date().toISOString();
+      delete audit.pause_checkpoint;
+      audit.action_idempotency_digests = [...(audit.action_idempotency_digests ?? []), actionDigest].slice(-100);
+      await this.record(audit, 'audit.cancelled', { reason: 'cancelled-at-checkpoint' });
+      return publicAudit(audit);
+    }
     if (action === "cancel" && audit.product_campaign_id && ["queued", "preparing", "recovering"].includes(audit.status) && !this.processes.has(id)) {
       audit.status = "cancelled"; audit.finished_at = new Date().toISOString(); audit.error = null;
       audit.action_idempotency_digests = [...(audit.action_idempotency_digests ?? []), actionDigest].slice(-100);
@@ -2940,9 +3008,17 @@ export class AuditRunner extends EventEmitter {
       await this.stopRuntimeTesting(audit);
       audit.status = "pausing";
       await this.record(audit, "audit.pausing", {});
+      if (auditEngine(audit) === 'grow') {
+        await this.monitorFor(audit).stop(audit.terminal);
+        await this.completions.get(id);
+        if (this.processes.has(id)) throw new Error('Grow 会话尚未确认停止。');
+        audit.action_idempotency_digests = [...(audit.action_idempotency_digests ?? []), actionDigest].slice(-100);
+        await this.persist(audit);
+        return publicAudit(audit);
+      }
       if (!child.kill("SIGSTOP")) { this.taskBoardServices.get(id)?.resume(); throw new Error("暂停信号发送失败。"); }
       try {
-        if (audit.terminal?.live) await this.terminalMonitor.signalRun(audit.terminal, "SIGSTOP");
+        if (audit.terminal?.live) await this.monitorFor(audit).signalRun(audit.terminal, "SIGSTOP");
       } catch (error) {
         child.kill("SIGCONT");
         audit.status = "running";
@@ -2953,7 +3029,7 @@ export class AuditRunner extends EventEmitter {
       audit.status = "paused";
       await this.record(audit, "audit.paused", {});
     } else if (action === "resume" && audit.status === "paused") {
-      if (audit.terminal?.live) await this.terminalMonitor.signalRun(audit.terminal, "SIGCONT");
+      if (audit.terminal?.live) await this.monitorFor(audit).signalRun(audit.terminal, "SIGCONT");
       if (!child.kill("SIGCONT")) throw new Error("恢复信号发送失败。");
       audit.status = "running";
       this.taskBoardServices.get(id)?.resume();
@@ -2961,15 +3037,15 @@ export class AuditRunner extends EventEmitter {
     } else if (action === "cancel" && ACTIVE.has(audit.status)) {
       await this.stopTaskBoard(audit);
       await this.stopRuntimeTesting(audit);
-      if (audit.status === "paused" && audit.terminal?.backend !== 'opencode-process') {
-        if (audit.terminal?.live) await this.terminalMonitor.signalRun(audit.terminal, "SIGCONT");
+      if (audit.status === "paused" && !['opencode-process', 'agent-process'].includes(audit.terminal?.backend)) {
+        if (audit.terminal?.live) await this.monitorFor(audit).signalRun(audit.terminal, "SIGCONT");
         if (!child.kill("SIGCONT")) throw new Error("取消前恢复审计进程失败。");
       }
       audit.interruption_reason = null;
       audit.status = "cancelling";
       await this.record(audit, "audit.cancelling", {});
       if (audit.terminal?.live) {
-        await this.terminalMonitor.abort(audit.terminal, audit.paths?.workspace_root).catch(error => this.recordLog(audit, "stderr", `OpenCode session 中止确认失败：${error.message}`));
+        await this.monitorFor(audit).abort(audit.terminal, audit.paths?.workspace_root).catch(error => this.recordLog(audit, "stderr", `OpenCode session 中止确认失败：${error.message}`));
       }
       if (!child.kill("SIGTERM")) throw new Error("取消信号发送失败。");
     } else {
@@ -3014,14 +3090,14 @@ export class AuditRunner extends EventEmitter {
     for (const [id, child] of this.processes) {
       const audit = this.audits.get(id);
       if (!audit || audit.status === "cancelling") continue;
-      if (audit.status === "paused" && audit.terminal?.backend !== 'opencode-process') {
-        if (audit.terminal?.live) await this.terminalMonitor.signalRun(audit.terminal, "SIGCONT").catch(() => {});
+      if (audit.status === "paused" && !['opencode-process', 'agent-process'].includes(audit.terminal?.backend)) {
+        if (audit.terminal?.live) await this.monitorFor(audit).signalRun(audit.terminal, "SIGCONT").catch(() => {});
         child.kill("SIGCONT");
       }
       audit.interruption_reason = "workbench-shutdown";
       audit.status = "cancelling";
       await this.record(audit, "audit.cancelling", { reason: "workbench-shutdown" });
-      if (audit.terminal?.live) await this.terminalMonitor.abort(audit.terminal, audit.paths?.workspace_root).catch(() => {});
+      if (audit.terminal?.live) await this.monitorFor(audit).abort(audit.terminal, audit.paths?.workspace_root).catch(() => {});
       child.kill("SIGTERM");
     }
     while (this.completions.size) await Promise.allSettled([...this.completions.values()]);

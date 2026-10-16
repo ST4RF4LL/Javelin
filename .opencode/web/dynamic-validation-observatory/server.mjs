@@ -36,6 +36,7 @@ import { renderStructuredBoardReport } from "../../lib/task-board/report.mjs";
 import { createWorkbenchUiHandler, normalizeModernOrigin } from "./workbench-ui.mjs";
 import { runtimeBuild } from "./runtime-build.mjs";
 import { NativeSessionController } from '../../lib/audit-runtime/native-sessions.mjs';
+import { AgentSettingsStore, GrowModelCatalog, GrowModelSettingsStore, normalizeAgentEngine, normalizeGrowModel } from '../../lib/audit-runtime/agent-settings.mjs';
 
 const HERE = dirname(fileURLToPath(import.meta.url));
 const PROJECT_ROOT = resolve(HERE, "../../..");
@@ -64,6 +65,7 @@ const STATIC_FILES = new Map([
   ["/index.html", ["index.html", "text/html; charset=utf-8"]],
   ["/app.js", ["app.js", "text/javascript; charset=utf-8"]],
   ["/product-memory-ui.js", ["product-memory-ui.js", "text/javascript; charset=utf-8"]],
+  ["/agent-settings-ui.js", ["agent-settings-ui.js", "text/javascript; charset=utf-8"]],
   ["/styles.css", ["styles.css", "text/css; charset=utf-8"]],
   ["/logo_DJ.png", ["logo_DJ.png", "image/png"]],
 ]);
@@ -348,6 +350,9 @@ export function createAuditWorkbenchServer({
   modelSettingsStore: suppliedModelSettingsStore = null,
   modelCatalog: suppliedModelCatalog = null,
   modelConfigPaths = null,
+  agentSettingsPath = null,
+  agentSettingsStore: suppliedAgentSettingsStore = null,
+  growModelConfigPaths = null,
   requestStateRoot = null,
   requestHistoryStore: suppliedRequestHistoryStore = null,
   productCatalogPath = null,
@@ -377,6 +382,18 @@ export function createAuditWorkbenchServer({
   const modelSettingsStore = suppliedModelSettingsStore ?? new OpenCodeModelSettingsStore({
     path: modelSettingsPath ?? join(dirname(resolve(stateRoot)), "opencode-model-settings.json"),
   });
+  const agentEnvironment = runner.environment ?? process.env;
+  const agentSettingsStore = suppliedAgentSettingsStore ?? new AgentSettingsStore({
+    path: agentSettingsPath ?? join(dirname(resolve(stateRoot)), 'agent-settings.json'),
+    commands: { opencode: runner.command && runner.command !== 'opencode' ? runner.command : agentEnvironment.OPENCODE_BIN_PATH || agentEnvironment.OPENCODE_BIN || runner.command || 'opencode' },
+    environment: agentEnvironment,
+  });
+  runner.agentSettings = agentSettingsStore;
+  const modelResources = {
+    opencode: { catalog: modelCatalog, store: modelSettingsStore, normalize: normalizeOpenCodeModel },
+    'opencode-v2': { catalog: modelCatalog, store: new OpenCodeModelSettingsStore({ path: join(dirname(resolve(stateRoot)), 'opencode-v2-model-settings.json') }), normalize: normalizeOpenCodeModel },
+    grow: { catalog: new GrowModelCatalog(growModelConfigPaths ? { configPaths: growModelConfigPaths } : {}), store: new GrowModelSettingsStore({ path: join(dirname(resolve(stateRoot)), 'grow-model-settings.json') }), normalize: normalizeGrowModel },
+  };
   const dynamicRunner = suppliedDynamicRunner ?? new DynamicValidationRunner({
     stateRoot: dynamicStateRoot ?? join(dirname(stateRoot), "dynamic-validation-runs"),
     enabled: dynamicRunnerEnabled,
@@ -591,8 +608,9 @@ export function createAuditWorkbenchServer({
     return null;
   }
 
-  async function modelSettingsSnapshot() {
-    const [catalog, settings] = await Promise.all([modelCatalog.snapshot(), modelSettingsStore.get()]);
+  async function modelSettingsSnapshot(engine = 'opencode', includeEngine = false) {
+    const resource = modelResources[normalizeAgentEngine(engine)];
+    const [catalog, settings] = await Promise.all([resource.catalog.snapshot(), resource.store.get()]);
     const selected = settings.model ?? DEFAULT_MODEL_SELECTION;
     return {
       selected_model: selected,
@@ -603,7 +621,20 @@ export function createAuditWorkbenchServer({
       sources: catalog.sources,
       selection_available: selected === DEFAULT_MODEL_SELECTION || catalog.models.includes(selected),
       updated_at: settings.updated_at,
+      ...(includeEngine ? { engine } : {}),
     };
+  }
+
+  async function auditAgentSelection(input) {
+    const settings = await agentSettingsStore.get();
+    if (input.engine == null && settings.default_engine === null) throw Object.assign(new Error('未启用任何 Agent，请先在工作台设置中启用。'), { statusCode: 422, code: 'agent-engine-disabled' });
+    const engine = normalizeAgentEngine(input.engine ?? settings.default_engine);
+    if (settings.enabled[engine] === false) throw Object.assign(new Error('所选 Agent 未启用，请先在工作台设置中开启。'), { statusCode: 422, code: 'agent-engine-disabled' });
+    const resource = modelResources[engine];
+    const [catalog, selected] = await Promise.all([resource.catalog.snapshot(), resource.store.get()]);
+    const model = resource.normalize(Object.hasOwn(input, 'model') ? input.model : selected.model);
+    if (model && !catalog.models.includes(model)) throw Object.assign(new Error(`所选模型不在当前 ${engine === 'grow' ? 'Grow' : 'OpenCode'} 配置清单中，请重新选择使用模型。`), { statusCode: 422, code: engine === 'grow' ? 'grow-model-not-configured' : 'opencode-model-not-configured' });
+    return { engine, model };
   }
 
   async function auditsForProduct(productId) {
@@ -687,7 +718,7 @@ export function createAuditWorkbenchServer({
   // Display reads share a bounded snapshot with live Runner state overlaid.
   async function buildSnapshot() {
     const operation = (async () => {
-      await Promise.all([runner.ready, findingWorkflow.ready, queueScheduler.ready, modelSettingsStore.ready, productCatalogReady]);
+      await Promise.all([runner.ready, findingWorkflow.ready, queueScheduler.ready, ...Object.values(modelResources).map(resource => resource.store.ready), agentSettingsStore.ready, productCatalogReady]);
       await runner.reconcileTerminalCompletions("workspace-watchdog");
       const runnerAudits = await runner.listAuditsWithTodo();
       const validationByRepository = new Map();
@@ -834,9 +865,9 @@ export function createAuditWorkbenchServer({
         await productCatalogReady;
         if (await productMemoryRoute({ request, response, url, memory: productMemory, campaigns: productAudits, json, requestJson, assertSafeMutation,
           validateModel: async body => {
-            const settings = await modelSettingsStore.get(); const model = normalizeOpenCodeModel(Object.hasOwn(body, "model") ? body.model : settings.model);
-            const catalog = await modelCatalog.snapshot();
-            if (model && !catalog.models.includes(model)) throw Object.assign(new Error("所选模型不在当前配置中。"), { statusCode: 422 }); return model;
+            const selection = await auditAgentSelection(body);
+            body.engine = selection.engine;
+            return selection.model;
           } })) return;
         const findingMemoryPath = url.pathname.match(/^\/api\/v2\/products\/([^/]+)\/findings\/([^/]+)\/memory$/);
         if (request.method === "GET" && findingMemoryPath) {
@@ -972,13 +1003,11 @@ export function createAuditWorkbenchServer({
           }
           if (request.method === "POST") {
             assertSafeMutation(request);
-            const [body, settings] = await Promise.all([requestJson(request), modelSettingsStore.get()]);
-            const model = normalizeOpenCodeModel(Object.hasOwn(body, "model") ? body.model : settings.model);
-            const catalog = await modelCatalog.snapshot();
-            if (model && !catalog.models.includes(model)) throw Object.assign(new Error("所选模型不在当前 OpenCode 配置清单中，请重新选择使用模型。"), { statusCode: 422, code: "opencode-model-not-configured" });
+            const body = await requestJson(request);
+            const selection = await auditAgentSelection(body);
             const audit = await withTargetOperationLock(body.target_id, async () => {
               const frozen = await productStore.targetExecutionSnapshot(scopedProductId, body.target_id);
-              const created = await runner.createAuditFromTarget({ ...body, model, target_id: frozen.target.id, execution_spec: frozen.snapshot, execution_spec_digest: frozen.digest }, request.headers["idempotency-key"]);
+              const created = await runner.createAuditFromTarget({ ...body, ...selection, target_id: frozen.target.id, execution_spec: frozen.snapshot, execution_spec_digest: frozen.digest }, request.headers["idempotency-key"]);
               const existingLink = productStore.auditLink(created.id);
               if (!existingLink) await productStore.linkAudit({ auditId: created.id, productId: scopedProductId, targetId: frozen.target.id, snapshot: frozen.snapshot, snapshotDigest: frozen.digest });
               return created;
@@ -1094,16 +1123,27 @@ export function createAuditWorkbenchServer({
         json(response, 200, { timeout_recovery: await runner.timeoutRecoverySettings.update(await requestJson(request)) });
         return;
       }
+      if (request.method === 'GET' && url.pathname === '/api/v1/settings/agents') {
+        json(response, 200, { agents: await agentSettingsStore.snapshot({ refresh: url.searchParams.get('refresh') === '1' }) });
+        return;
+      }
+      if (request.method === 'PUT' && url.pathname === '/api/v1/settings/agents') {
+        assertSafeMutation(request);
+        await agentSettingsStore.update(await requestJson(request));
+        json(response, 200, { agents: await agentSettingsStore.snapshot() });
+        return;
+      }
       if (request.method === "GET" && url.pathname === "/api/v1/settings/model") {
-        json(response, 200, { model: await modelSettingsSnapshot() });
+        json(response, 200, { model: await modelSettingsSnapshot(url.searchParams.get('engine') ?? 'opencode', url.searchParams.has('engine')) });
         return;
       }
       if (request.method === "PUT" && url.pathname === "/api/v1/settings/model") {
         assertSafeMutation(request);
         const body = await requestJson(request);
-        const catalog = await modelCatalog.snapshot();
-        await modelSettingsStore.update(body.model, catalog.models);
-        json(response, 200, { model: await modelSettingsSnapshot() });
+        const engine = normalizeAgentEngine(body.engine ?? 'opencode');
+        const resource = modelResources[engine], catalog = await resource.catalog.snapshot();
+        await resource.store.update(body.model, catalog.models);
+        json(response, 200, { model: await modelSettingsSnapshot(engine, Object.hasOwn(body, 'engine')) });
         return;
       }
       if (request.method === "PUT" && url.pathname === "/api/v1/settings/queue") {
@@ -1163,14 +1203,10 @@ export function createAuditWorkbenchServer({
       }
       if (request.method === "POST" && url.pathname === "/api/v1/audits") {
         assertSafeMutation(request);
-        const [input, settings] = await Promise.all([requestJson(request), modelSettingsStore.get()]);
+        const input = await requestJson(request);
         await assertLegacyUndefinedTarget(input.repository_id);
-        const model = normalizeOpenCodeModel(Object.hasOwn(input, "model") ? input.model : settings.model);
-        const catalog = await modelCatalog.snapshot();
-        if (model && !catalog.models.includes(model)) {
-          throw Object.assign(new Error("所选模型不在当前 OpenCode 配置清单中，请重新选择使用模型。"), { statusCode: 422, code: "opencode-model-not-configured" });
-        }
-        const audit = await runner.createAudit({ ...input, model }, request.headers["idempotency-key"]);
+        const selection = await auditAgentSelection(input);
+        const audit = await runner.createAudit({ ...input, ...selection }, request.headers["idempotency-key"]);
         if (!productStore.auditLink(audit.id)) {
           const target = productStore.targetById(audit.repository_id);
           if (target) {

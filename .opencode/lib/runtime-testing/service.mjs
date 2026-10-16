@@ -9,13 +9,15 @@ import { ChromeRuntimeBrowser } from "./browser.mjs";
 import { PROTOCOL, check, fail, validatePacket } from "./contract.mjs";
 import { workerInput } from "./environment-prompt.mjs";
 import { EnvironmentLeaseStore } from "./environment-leases.mjs";
+import { prepareAgentLaunch } from "../audit-runtime/engines/index.mjs";
 
 const gateway = fileURLToPath(new URL("./worker-mcp.mjs", import.meta.url));
 const workerInstructions = fileURLToPath(new URL("./worker-instructions.md", import.meta.url));
 
 export class RuntimeTestingService {
-  constructor({ root, privateRoot, authorization, privateContext, command, environment, workspaceRoot, model, onChange = async () => {}, browserFactory, worker, spawnProcess = spawn }) {
+  constructor({ root, privateRoot, authorization, privateContext, command, engine = "opencode", environment, workspaceRoot, model, onChange = async () => {}, browserFactory, worker, spawnProcess = spawn }) {
     this.root = root; this.privateRoot = privateRoot; this.command = command; this.environment = environment;
+    this.engine = engine;
     this.workspaceRoot = workspaceRoot; this.model = model; this.onChange = onChange; this.token = randomUUID();
     this.queue = []; this.draining = null; this.accepting = true; this.server = null;
     this.environmentLeases = new EnvironmentLeaseStore({ stateRoot: dirname(dirname(privateRoot)) });
@@ -176,12 +178,16 @@ export class RuntimeTestingService {
     try {
       // Preparation may have outlived the lease; never launch a late worker.
       this.controller.requireActive(active.token);
+      const launch = await prepareAgentLaunch({ engine: this.engine, command: this.command,
+        environment: { ...this.environment, OPENCODE_CONFIG_CONTENT: JSON.stringify(config) }, config,
+        role: "runtime-testing-worker", cwd: this.workspaceRoot, model: this.model, files: [inputPath],
+        outputRoot: join(this.privateRoot, `${active.packet.id}.agent-runtime`),
+        prompt: "执行随本消息展开的 JSON 工作包。用户环境原文就是该 JSON 对象中 environment.prompt 的字符串值，不是另一个文件或附件。CONTACT 的 environment_ready=false 与 origins=[] 表示等待你理解原文并调用 configure_environment 登记；登记成功前禁止访问目标。通过 runtime-browser 提交结果后结束。" });
+      this.controller.requireActive(active.token);
       await new Promise((resolve, reject) => {
         // --file is variadic: keep the positional message before all options.
-        const child = this.spawnProcess(this.command, ["run", "执行随本消息展开的 JSON 工作包。用户环境原文就是该 JSON 对象中 environment.prompt 的字符串值，不是另一个文件或附件。CONTACT 的 environment_ready=false 与 origins=[] 表示等待你理解原文并调用 configure_environment 登记；登记成功前禁止访问目标。通过 runtime-browser 提交结果后结束。",
-          "--format", "json", "--agent", "runtime-testing-worker", "--dir", this.workspaceRoot,
-          ...(this.model ? ["--model", this.model] : []), "--file", inputPath],
-        { cwd: this.workspaceRoot, env: { ...this.environment, OPENCODE_CONFIG_CONTENT: JSON.stringify(config) }, stdio: "ignore", shell: false, windowsHide: true });
+        const child = this.spawnProcess(launch.command, launch.args,
+        { cwd: this.workspaceRoot, env: launch.environment, stdio: "ignore", shell: false, windowsHide: true });
         let stopping; let exited = false;
         active.stopWorker = () => {
           if (stopping || exited) return;

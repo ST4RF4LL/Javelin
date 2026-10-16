@@ -16,6 +16,7 @@ import { nextReviewBatch, submitReviewBatch } from "./review-batches.mjs";
 import { FileFactsCache, nextFileBatch, completeFileBatch, relatedTasks } from "./file-batches.mjs";
 import { vulnerabilityScope } from "./vulnerability-scope.mjs";
 import { operationTimeout, timeoutRecoveryPolicy, timeoutRetryDelay, waitForTimeoutRetry } from "../audit-runtime/operation-timeout.mjs";
+import { prepareAgentLaunch, normalizeAgentLine } from "../audit-runtime/engines/index.mjs";
 
 const guardian = fileURLToPath(new URL("./worker-host.mjs", import.meta.url));
 const instructionPath = fileURLToPath(new URL("./worker.md", import.meta.url));
@@ -38,9 +39,10 @@ export async function workerConfiguration(environment, task, startupScope = null
 }
 
 export class TaskBoardService {
-  constructor({ path, reportsRoot, privateRoot, workspaceRoot, sourceRoot, auditId, scopeDigest, environment = process.env, command = "opencode", model = null,
+  constructor({ path, reportsRoot, privateRoot, workspaceRoot, sourceRoot, auditId, scopeDigest, environment = process.env, command = "opencode", engine = "opencode", model = null,
     runtimeRequired = false, bacMode = "off", concurrency = 4, leaseMs = 30 * 60_000, onChange = async () => {}, onLog = async () => {}, onPauseRequested = async () => {}, worker = null, spawnProcess = spawn, memory = null, agentSlots = globalAgentSlots, fileManifestPath = null, getTimeoutRecoveryPolicy = null }) {
     Object.assign(this, { path, reportsRoot, privateRoot, workspaceRoot, sourceRoot, auditId, scopeDigest, environment, command, model, runtimeRequired, bacMode, leaseMs, onLog, worker, spawnProcess });
+    this.engine = engine;
     this.concurrency = Math.min(6, Math.max(1, concurrency)); this.token = randomUUID(); this.active = new Map(); this.paused = false; this.closed = false; this.lastDispatch = new Map();
     this.memory = memory; this.memoryTokens = new Map(); this.agentSlots = agentSlots;
     this.fileManifestPath = fileManifestPath;
@@ -315,15 +317,14 @@ export class TaskBoardService {
       AUDIT_MEMORY_CLI: this.memory ? join(this.workspaceRoot, ".opencode", "scripts", "audit-memory.mjs") : "",
       AUDIT_TEST_ENVIRONMENT_CONTEXT_PATH: "", AUDIT_TEST_ENVIRONMENT_CONTEXT_SHA256: "", AUDIT_QUICK_DYNAMIC_ENABLED: "false" };
     // --file is variadic: keep the positional message before all options.
-    const args = ["run", "完整读取附件中的唯一任务及 vulnerability_mining_scope，先明确本次应挖掘的漏洞类型，再按适用技能执行源码审计。写报告和回执后立即结束。",
-      "--format", "json", "--agent", agent, "--dir", this.workspaceRoot,
-      ...(previousSessionId ? ["--session", previousSessionId] : []),
-      ...(this.model ? ["--model", this.model] : []), "--title", `${job.task.title}`,
-      "--file", inputPath];
+    const launch = await prepareAgentLaunch({ engine: this.engine, command: this.command, environment, config,
+      role: agent, prompt: "完整读取附件中的唯一任务及 vulnerability_mining_scope，先明确本次应挖掘的漏洞类型，再按适用技能执行源码审计。写报告和回执后立即结束。",
+      cwd: this.workspaceRoot, sessionId: previousSessionId, model: this.model, title: job.task.title,
+      files: [inputPath], outputRoot: join(dirname(inputPath), 'agent-runtime') });
     return new Promise((resolve, reject) => {
       if (signal.aborted) return reject(new Error("任务已停止。"));
-      const child = this.spawnProcess(process.execPath, [guardian, this.command, ...args], { cwd: this.workspaceRoot, env: environment, shell: false, windowsHide: true, stdio: ["ignore", "pipe", "pipe", "ipc"] });
-      let sessionId = previousSessionId, stopping = null, sessionWrite = Promise.resolve(), sessionWriteError = null, providerTimeout = false;
+      const child = this.spawnProcess(process.execPath, [guardian, launch.command, ...launch.args], { cwd: this.workspaceRoot, env: launch.environment, shell: false, windowsHide: true, stdio: ["ignore", "pipe", "pipe", "ipc"] });
+      let sessionId = launch.resumedFromSessionId ? null : previousSessionId, stopping = null, sessionWrite = Promise.resolve(), sessionWriteError = null, providerTimeout = false;
       const stop = () => {
         if (stopping) return;
         if (child.connected) child.send({ type: "stop" }, () => {});
@@ -331,13 +332,16 @@ export class TaskBoardService {
       };
       signal.addEventListener("abort", stop, { once: true });
       const consume = (source, line) => {
+        line = normalizeAgentLine(line, launch);
+        if (line == null) return;
         try {
           const event = JSON.parse(line), id = event.sessionID ?? event.session_id ?? event.session?.id;
           if (!sessionId && typeof id === "string" && id) {
             sessionId = id;
             for (const principal of this.memoryTokens.values()) if (principal.attemptId === job.attempt.attempt_id) principal.sessionId = id;
             sessionWrite = atomicJson(join(dirname(inputPath), "session.json"), { protocol: PROTOCOL, audit_id: this.auditId,
-              task_id: job.task.task_id, attempt_id: job.attempt.attempt_id, agent_session_id: id }).catch(error => { sessionWriteError = error; });
+              task_id: job.task.task_id, attempt_id: job.attempt.attempt_id, agent_session_id: id,
+              ...(launch.resumedFromSessionId ? { resumed_from_session_id: launch.resumedFromSessionId } : {}) }).catch(error => { sessionWriteError = error; });
           }
         } catch {}
         if (operationTimeout(line)) { providerTimeout = true; stop(); }

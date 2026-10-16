@@ -4,6 +4,8 @@
 
 首次使用请先完成[初始化与安装](docs/installation.md)，生成仅保存在本机的 `.opencode/opencode.json`。
 
+Coding Agent 支持 OpenCode v1、OpenCode v2 和 Grow。工作台设置可以切换默认基座，创建任务时可以覆盖；任务板、漏洞复核和报告协议保持统一。版本差异、独立安装、原生交互入口及各基座的恢复方式见 [Coding Agent 基座](docs/agent-engines.md)。
+
 ## 通用审计任务面板
 
 新建工作台审计默认使用 `task-board.v1`。创建表单提供“高风险 Focus Area / 逐接口 API 审查”策略切换，默认选择 Focus Area。前者由威胁建模提炼高风险主题，后者要求提供 API 清单并逐项定位代码。每轮审计只生成所选粒度的任务，统一保存任务名称、领域、来源、代码引用及自然语言 prompt。
@@ -221,9 +223,9 @@ npm --prefix .opencode run start:audit-workbench:runner -- \
 
 如果使用基础脚本手工追加参数，npm 的参数分隔符 `--` 不能省略：`npm ... run start:audit-workbench -- --enable-runner`；写成 `npm ... run start:audit-workbench --enable-runner` 会被 npm 当成自身配置并吞掉。
 
-项目登记接口接收操作员明确填写的绝对目录并在服务端规范化、校验和持久化；后续创建审计时，浏览器只提交登记后的项目 ID、audit ID 和 Git ref，不能临时替换目录或拼接 shell 命令。创建界面还提供两个独立 ENABLE：“测试目标补充说明”会把自由文本追加为本任务要求与侧重点；“测试环境信息”保存 URL、专用测试账号等上下文，并明确授权所选的环境接触、中期测试与按需确认范围。新任务不再追加固定 180 秒批次；未启用、未填写、环境无效或账号不足时，全部动态环节自动 SKIPPED，静态审计继续；这不影响之后在“完整动态验证”页面补录环境、账号和操作说明并逐次授权。两份原文只保存为任务状态目录下的 `0600` 私密文件，API 仅返回开关与长度；prompt 和断点恢复按文件路径、SHA-256 绑定，不在任务 JSON、事件或日志中复制原文。服务端不会自动 checkout，默认拒绝脏工作树和未位于目标 ref 的项目。被测仓库只作为只读源码根使用，Runner 不再把它作为 OpenCode 当前目录，也不得在其中创建 `reports/`、`tmp/` 或运行缓存。每个任务在本项目 `workspace/audit-runs/<audit-id>/` 下获得执行目录，制品和临时目录分别落到本项目 `reports/repositories/<repository-id>/` 与 `tmp/repositories/<repository-id>/`；这些目录均已被 Git 忽略。运行日志、状态和有序事件写入服务端管理的 `reports/platform/audit-runs/`，SSE 用于实时刷新。tmux/psmux 模式为每个审计使用独立 `-L` namespace，并把实际的 `opencode run --format json` 固定到 `audit:tui`；工作台通过只读输出中继消费同一进程的 JSONL 和退出状态，不再启动 `opencode serve` 或调用本机 HTTP API。暂停、恢复和取消只作用于工作台持有的输出中继和该审计的精确 multiplexer/OpenCode run，不扫描或终止其他会话。终端复用器不可用时静态审计仍直接运行同一组 `opencode run` 参数，只是没有实时窗口。
+项目登记接口接收操作员明确填写的绝对目录并在服务端规范化、校验和持久化；后续创建审计时，浏览器只提交登记后的项目 ID、audit ID 和 Git ref，不能临时替换目录或拼接 shell 命令。创建界面还提供两个独立 ENABLE：“测试目标补充说明”会把自由文本追加为本任务要求与侧重点；“测试环境信息”保存 URL、专用测试账号等上下文，并明确授权所选的环境接触、中期测试与按需确认范围。新任务不再追加固定 180 秒批次；未启用、未填写、环境无效或账号不足时，全部动态环节自动 SKIPPED，静态审计继续；这不影响之后在“完整动态验证”页面补录环境、账号和操作说明并逐次授权。两份原文只保存为任务状态目录下的 `0600` 私密文件，API 仅返回开关与长度；prompt 和断点恢复按文件路径、SHA-256 绑定，不在任务 JSON、事件或日志中复制原文。服务端不会自动 checkout，默认拒绝脏工作树和未位于目标 ref 的项目。被测仓库只作为只读源码根使用，Runner 不再把它作为 OpenCode 当前目录，也不得在其中创建 `reports/`、`tmp/` 或运行缓存。每个任务在本项目 `workspace/audit-runs/<audit-id>/` 下获得执行目录，制品和临时目录分别落到本项目 `reports/repositories/<repository-id>/` 与 `tmp/repositories/<repository-id>/`；这些目录均已被 Git 忽略。运行日志、状态和有序事件写入服务端管理的 `reports/platform/audit-runs/`，SSE 用于实时刷新。后台以所选 Agent 的 JSON 输出驱动监控，交互窗口由 ttyd 按需打开。OpenCode v1/v2 通过各自的共享服务协议连接同一会话；Grow 运行中展示 JSON，暂停或结束后可打开继承历史的交互检查分支。后台恢复等待交互进程关闭，再继承已保存的指导继续任务。平台不启动 tmux/psmux，不扫描或终止其他 Agent 会话。
 
-Runner 异常退出、工作台重启或任务被取消后，任务会保留原 `audit_id`、执行工作区、落盘制品、事件历史和 OpenCode provider session id。任务详情中的“断点恢复”会先确认源码仍位于原提交，并对创建时要求干净的工作树继续执行脏状态门禁；随后只关闭该任务自己的旧 tmux socket，优先用 `--session` 续接原 OpenCode 会话，再要求 Agent 校验已有制品并从最早未完成阶段继续。旧版本没有记录 session id 的任务仍可基于同一工作区和制品恢复。每次恢复都会记录恢复次数、时间、模式和有序事件；“新建重试”则仍会创建全新的 audit id，两者语义不同。
+Runner 异常退出、工作台重启或任务被取消后，任务保留原 `audit_id`、所选 Agent 基座、执行工作区、制品和事件历史。断点恢复先校验原源码范围，再恢复同一引擎：OpenCode 优先续接原会话，Grow 使用原生 fork 继承历史并记录父子 UUID。缺少可用会话或上下文溢出时，可基于已有制品继续。恢复只关闭平台拥有的该任务进程；“新建重试”会创建新的 audit ID。
 
 若还需要从 Web 人工启动旧有的独立验证 sidecar，必须额外显式启用动态 Runner：
 

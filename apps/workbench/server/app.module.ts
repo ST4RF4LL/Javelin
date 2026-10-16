@@ -25,7 +25,8 @@ class WorkbenchController {
   }
   @Get('task-options') options() { this.runtime.assertWritable(); return this.live.options(); }
   @Get('task-products') taskProducts() { this.runtime.assertWritable(); return this.live.taskProducts(); }
-  @Get('task-models') taskModels() { this.runtime.assertWritable(); return this.live.taskModels(); }
+  @Get('task-agents') taskAgents() { this.runtime.assertWritable(); return this.live.taskAgents(); }
+  @Get('task-models') taskModels(@Query('engine') engine?: string) { this.runtime.assertWritable(); return this.live.taskModels(engine); }
   @Get('task-runner') taskRunner() { this.runtime.assertWritable(); return this.live.taskRunner(); }
   @Get('products/:productId/targets') targets(@Param('productId') productId: string) { this.runtime.assertWritable(); return this.live.targets(productId); }
   @Post('products/:productId/targets') registerTarget(@Param('productId') productId: string, @Body() body: Record<string, unknown>) { this.runtime.assertWritable(); return this.live.registerTarget(productId, body || {}); }

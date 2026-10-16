@@ -16,6 +16,7 @@ const sources = [
   '../../lib/task-board/report-integrity.mjs', '../../lib/task-board/report-correction.mjs', '../../lib/bac/contract.mjs',
   '../../scripts/audit-service.mjs', '../../lib/audit-runtime/service-process.mjs', '../../lib/audit-runtime/state-lease.mjs',
   '../../lib/audit-runtime/contract.mjs', '../../lib/audit-runtime/native-sessions.mjs',
+  '../../lib/audit-runtime/agent-settings.mjs',
   '../../lib/audit-runtime/native-client.mjs', '../../lib/audit-runtime/opencode-session-plugin.mjs',
   '../../lib/audit-runtime/session-bridge.mjs', '../../scripts/audit-session-mcp.mjs',
 ];

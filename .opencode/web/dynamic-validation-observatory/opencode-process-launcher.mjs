@@ -9,10 +9,12 @@ const log = createWriteStream(spec.diagnostic_path, { flags: 'w', mode: 0o600 })
 log.on('error', () => {});
 let result;
 try {
-  result = await startSharedRun({ ...spec, controllable: true }, { environment: process.env,
+  const run = spec.engine === 'grow' ? (await import('../../lib/audit-runtime/engines/owned-run.mjs')).startOwnedRun
+    : spec.engine === 'opencode-v2' ? (await import('../../lib/audit-runtime/engines/opencode-v2-shared.mjs')).startSharedRun : startSharedRun;
+  result = await run({ ...spec, controllable: true }, { environment: process.env,
     output(chunk) { process.stdout.write(chunk); log.write(chunk); } });
 } catch (error) {
-  const message = `OpenCode 共享会话执行失败：${error.message}`;
+  const message = `${spec.engine === 'grow' ? 'Grow 会话' : spec.engine === 'opencode-v2' ? 'OpenCode v2 共享会话' : 'OpenCode 共享会话'}执行失败：${error.message}`;
   process.stderr.write(`${message}\n`); log.write(`${message}\n`); result = { code: 1, error: message };
 }
 await writeFile(spec.exit_path, JSON.stringify(result), { mode: 0o600 });

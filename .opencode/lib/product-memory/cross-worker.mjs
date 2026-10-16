@@ -5,10 +5,11 @@ import { fileURLToPath } from 'node:url';
 import { buildOpenCodeEnvironment } from '../../web/dynamic-validation-observatory/opencode-runtime-config.mjs';
 import { atomicJson, check, hash, parse } from './contract.mjs';
 import { controlledBytes } from '../task-board/contract.mjs';
+import { prepareAgentLaunch, normalizeAgentLine } from '../audit-runtime/engines/index.mjs';
 const guardian = fileURLToPath(new URL('../task-board/worker-host.mjs', import.meta.url));
 const promptPath = fileURLToPath(new URL('./cross-worker.md', import.meta.url));
 
-export async function runCrossRepoAgent({ input, outputRoot, runner, model, signal, onLog = async () => {} }) {
+export async function runCrossRepoAgent({ input, outputRoot, runner, model, engine = 'opencode', signal, onLog = async () => {} }) {
   await mkdir(outputRoot, { recursive: true });
   const inputPath = join(outputRoot, 'input.json'), resultPath = join(outputRoot, 'result.json'), sessionPath = join(outputRoot, 'session.json');
   const prompt = await readFile(promptPath, 'utf8');
@@ -20,17 +21,22 @@ export async function runCrossRepoAgent({ input, outputRoot, runner, model, sign
       permission: { '*': 'deny', read: 'allow', glob: 'allow', grep: 'allow', list: 'allow', edit: 'allow', bash: 'allow', skill: 'allow', external_directory: 'allow', task: 'deny', question: 'deny', webfetch: 'deny', websearch: 'deny' } } } };
   await atomicJson(inputPath, { ...input, result_path: resultPath, session_path: sessionPath });
   const env = { ...inheritedEnvironment, OPENCODE_CONFIG_CONTENT: JSON.stringify(config), AUDIT_RUNTIME_CONNECTION_PATH: '', AUDIT_TEST_ENVIRONMENT_CONTEXT_PATH: '', AUDIT_MEMORY_CONNECTION_PATH: '', AUDIT_MEMORY_MODE: input.memory_mode ?? 'full', AUDIT_QUICK_DYNAMIC_ENABLED: 'false' };
-  const args = ['run', '读取附件，按 role 执行跨 Repo 静态分析或独立复核。输出 result.json 后结束。', '--format', 'json', '--agent', agent, '--dir', outputRoot, ...(model ? ['--model', model] : []), '--file', inputPath];
+  const profile = runner.agentSettings ? await runner.agentSettings.resolve(engine) : { command: runner.command, available: true };
+  check(profile.available, profile.reason ?? '所选 Agent 不可用。');
+  const launch = await prepareAgentLaunch({ engine, command: profile.command, environment: env, config,
+    role: agent, prompt: '读取附件，按 role 执行跨 Repo 静态分析或独立复核。输出 result.json 后结束。',
+    cwd: outputRoot, outputRoot: join(outputRoot, 'agent-runtime'), model, files: [inputPath] });
   const execution = await new Promise((resolve, reject) => {
     if (signal.aborted) return reject(new Error('跨 Repo 任务已停止。'));
-    const child = (runner.spawnProcess ?? spawn)(process.execPath, [guardian, runner.command, ...args], { cwd: outputRoot, env, shell: false, windowsHide: true, stdio: ['ignore', 'pipe', 'pipe', 'ipc'] });
+    const child = (runner.spawnProcess ?? spawn)(process.execPath, [guardian, launch.command, ...launch.args], { cwd: outputRoot, env: launch.environment, shell: false, windowsHide: true, stdio: ['ignore', 'pipe', 'pipe', 'ipc'] });
     let sessionId = null, persist = Promise.resolve(), stopping = null, failed = null;
     const stop = () => { if (stopping) return; if (child.connected) child.send({ type: 'stop' }, () => {}); child.kill('SIGTERM'); stopping = setTimeout(() => child.kill('SIGKILL'), 7000); stopping.unref?.(); };
     signal.addEventListener('abort', stop, { once: true });
     for (const [stream, source] of [[child.stdout, 'stdout'], [child.stderr, 'stderr']]) {
       let buffer = ''; stream?.setEncoding?.('utf8'); stream?.on('data', chunk => {
         buffer = (buffer + chunk).slice(-256 * 1024); const lines = buffer.split('\n'); buffer = lines.pop();
-        for (const line of lines) {
+        for (const raw of lines) {
+          const line = normalizeAgentLine(raw, launch); if (line == null) continue;
           const event = parse(line); const id = event?.sessionID ?? event?.session_id ?? event?.session?.id;
           if (!sessionId && typeof id === 'string' && id) { sessionId = id; persist = atomicJson(sessionPath, { agent_session_id: id, campaign_id: input.campaign_id, role: input.role }).catch(error => { failed = error; }); }
           onLog(source, line).catch(() => {});

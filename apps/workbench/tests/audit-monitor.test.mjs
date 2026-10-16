@@ -243,6 +243,34 @@ test('暂停、结束、缺失或无效终端禁用入口，恢复后等待用�
   assert.equal(f.get('monitor-open-terminal').disabled, true); assert.match(f.get('monitor-notice').textContent, /连接地址无效/); f.destroy();
 });
 
+test('OpenCode v2 连接共享 Agent 会话，终端参数保留服务代次', () => {
+  const f = fixture({ audit: sharedAudit({ engine: 'opencode-v2', execution: { engine: 'opencode-v2' } }) });
+  const button = f.get('monitor-open-terminal');
+  assert.equal(button.disabled, false); assert.match(button.title, /同一 Agent 会话/);
+  button.click();
+  assert.equal(new URL(f.popups[0].navigations[0]).searchParams.get('generation'), 'generation-1');
+  f.destroy();
+});
+
+test('Grow运行中保持JSON监控且禁止并发打开会话，暂停退出后才允许检查点交互', () => {
+  const base = { engine: 'grow', execution: { engine: 'grow', generation: 3 }, provider_session_id: '019bca51-4d74-7a11-bc5d-584c4b680417', terminal: { live: true, shared_server: false }, status: 'running', pid: 123 };
+  const f = fixture({ audit: audit(base) });
+  assert.equal(f.get('monitor-open-terminal').disabled, true);
+  assert.match(f.get('monitor-open-terminal').title, /先暂停任务/);
+  assert.equal(f.get('monitor-connection').textContent, 'JSON 事件监控');
+  f.setAudit(audit({ ...base, status: 'paused' }));
+  assert.equal(f.get('monitor-open-terminal').disabled, true, '进程退出前不能接管');
+  for (const status of ['paused', 'completed', 'failed', 'interrupted', 'cancelled']) {
+    f.setAudit(audit({ ...base, pid: null, status }));
+    assert.equal(f.get('monitor-open-terminal').disabled, false, status);
+  }
+  f.get('monitor-open-terminal').click();
+  assert.equal(new URL(f.popups[0].navigations[0]).searchParams.get('generation'), '3');
+  f.setAudit(audit({ ...base, pid: null, status: 'paused', provider_session_id: null }));
+  assert.equal(f.get('monitor-open-terminal').disabled, true);
+  f.destroy();
+});
+
 test('旧入口也能打开子窗口，旧任务保持只读；键盘导航只遍历两个事件标签', () => {
   const f = fixture({ port: '4173', audit: audit({ status: 'running' }) }); f.get('monitor-open-terminal').click();
   const url = new URL(f.popups[0].navigations[0]); assert.equal(url.pathname, '/audits/audit-test/');

@@ -40,6 +40,7 @@ export function createTaskInput(input: Record<string, unknown>) {
       allowed_actions: ['navigate', 'normal_interaction', ...(selected?.testInput === true ? ['test_input'] : []), ...(selected?.testMutation === true ? ['test_mutation'] : [])] };
   }
   return { productId, body: { name: textField(input.name, '任务名称', 160, true).trim(), target_id: targetId, audit_id: auditId,
+    ...(input.engine == null ? {} : { engine: choice(input.engine, ['opencode', 'opencode-v2', 'grow'], 'opencode') }),
     model: textField(input.model ?? 'default', '模型', 240), task_protocol: 'task-board.v1', mining_strategy: mining, api_inventory: apiInventory,
     memory_mode: choice(input.memoryMode, ['full', 'facts_only', 'off', 'blind'], 'full'), bac_analysis: choice(input.bacAnalysis, ['auto', 'off'], 'auto'),
     additional_instructions_enabled: additionalEnabled, additional_instructions: additional,

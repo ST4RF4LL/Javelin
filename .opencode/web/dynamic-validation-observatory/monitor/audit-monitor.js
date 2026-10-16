@@ -180,22 +180,28 @@ export function createAuditMonitor({ document, window, audit, renderOriginalEven
     const board = next.task_board;
     summary.textContent = board ? `已交付 ${board.reported ?? board.done ?? 0} / ${board.total ?? 0} · 运行 ${board.running ?? 0} · 待执行 ${board.pending ?? 0}` : '';
     const source = next.terminal;
+    const engine = next.engine ?? next.execution?.engine ?? 'opencode';
     const shared = source?.shared_server === true;
     const active = source?.live && next.status === 'running';
-    const key = active && shared ? `${serverUrl}|opencode:${next.id}|${source.server_generation || next.provider_session_id || ''}` : '';
+    const growCheckpoint = engine === 'grow' && ['paused', 'completed', 'failed', 'interrupted', 'cancelled'].includes(next.status)
+      && Boolean(next.provider_session_id) && !next.pid;
+    const generation = growCheckpoint ? next.execution?.generation : source?.server_generation;
+    const key = (engine !== 'grow' && active && shared) || growCheckpoint ? `${serverUrl}|${engine}:${next.id}|${generation || next.provider_session_id || ''}` : '';
     if (key !== terminalKey) terminalError = '';
     terminalKey = key; terminalUrl = '';
     if (key) {
-      try { terminalUrl = buildAuditTerminalUrl({ serverUrl, auditId: next.id, generation: shared ? source.server_generation : undefined }); }
+      try { terminalUrl = buildAuditTerminalUrl({ serverUrl, auditId: next.id, generation }); }
       catch { terminalError = '终端连接地址无效，请检查终端服务配置。'; }
     }
     openTerminal.disabled = !terminalUrl;
     openTerminal.textContent = '交互终端 ↗';
     openTerminal.title = !terminalUrl
-      ? '此任务没有运行中的终端。暂停或中断的任务请先恢复。'
-      : shared ? '在独立子窗口连接此任务的同一 OpenCode 会话；关闭窗口后任务继续运行。'
+      ? engine === 'grow' ? 'Grow 运行时由审计任务独占会话，请先暂停任务并等待进程退出，再打开交互终端。' : '此任务没有运行中的终端。暂停或中断的任务请先恢复。'
+      : growCheckpoint ? '打开继承历史的 Grow 交互分支，可检查代码并追加指导；关闭终端后在工作台恢复，后台继续执行审计。'
+      : shared ? '在独立子窗口连接此任务的同一 Agent 会话；关闭窗口后任务继续运行。'
       : '在独立子窗口查看旧任务的原始输出；此连接只读。';
-    indicator.textContent = key ? 'JSON 事件监控' : next.status === 'paused' ? '任务已暂停' : '终端已归档';
+    indicator.textContent = ['running', 'preparing', 'recovering', 'pausing', 'cancelling'].includes(next.status) ? 'JSON 事件监控'
+      : next.status === 'paused' ? '任务已暂停' : growCheckpoint ? 'Grow 会话可交互' : '终端已归档';
     updateNotice();
   }
   function syncedFooter() {

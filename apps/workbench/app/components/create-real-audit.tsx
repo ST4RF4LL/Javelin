@@ -8,7 +8,7 @@ import { Button } from './ui/button';
 import { api, ApiError } from '../lib/api';
 import { batchAuditName, prepareBatchAudits, resolveBatchTargets, submitBatchAudits, type BatchAuditItem } from '../lib/batch-audit';
 import { useWorkspace } from '../lib/workspace';
-import type { RealAuditInput } from '../../shared/contracts';
+import type { CodingEngine, RealAuditInput } from '../../shared/contracts';
 
 const initializationPolicy = { retry: false, staleTime: 30000, refetchOnWindowFocus: false, refetchOnReconnect: false, networkMode: 'always' as const };
 function InitializationError({ label, error, retry }: { label: string; error: Error; retry: () => void }) {
@@ -33,7 +33,11 @@ export function CreateRealAudit() {
   const [batchBusy, setBatchBusy] = useState(false);
   const submittingBatch = useRef(false);
   const products = useQuery({ ...initializationPolicy, queryKey: ['task-products'], queryFn: ({ signal }) => api.taskProducts(signal) });
-  const models = useQuery({ ...initializationPolicy, queryKey: ['task-models'], queryFn: ({ signal }) => api.taskModels(signal) });
+  const agents = useQuery({ ...initializationPolicy, staleTime: 0, queryKey: ['task-agents'], queryFn: ({ signal }) => api.taskAgents(signal) });
+  const enabledProfiles = agents.data?.profiles.filter(item => item.enabled !== false) ?? [];
+  const engine = draft.engine || agents.data?.default_engine || 'opencode';
+  const profile = enabledProfiles.find(item => item.id === engine);
+  const models = useQuery({ ...initializationPolicy, queryKey: ['task-models', engine], queryFn: ({ signal }) => api.taskModels(signal, engine), enabled: agents.isSuccess && !!profile });
   const runner = useQuery({ ...initializationPolicy, queryKey: ['task-runner'], queryFn: ({ signal }) => api.taskRunner(signal) });
   const productId = draft.productId || products.data?.items[0]?.id || '';
   const targets = useQuery({ ...initializationPolicy, queryKey: ['task-targets', productId], queryFn: ({ signal }) => api.targets(productId, signal), enabled: !!productId, staleTime: batchMode ? 0 : initializationPolicy.staleTime, refetchOnMount: batchMode ? 'always' : true });
@@ -61,15 +65,15 @@ export function CreateRealAudit() {
   const batchTargets = resolveBatchTargets(batchSelection?.targetIds || [], targets.data?.items || []);
   const batchReady = batchTargets.length > 0 && batchTargets.every(target => target.runnable) && !targets.isFetching && products.data?.items.some(product => product.id === productId && product.status === 'active');
   const busy = creation.isPending || registration.isPending || batchBusy;
-  const ready = products.isSuccess && models.isSuccess && modelAvailable && runner.isSuccess && runner.data.runnerEnabled && targets.isSuccess && (batchMode ? batchReady : selectedTarget?.runnable);
+  const ready = agents.isSuccess && profile?.available === true && products.isSuccess && models.isSuccess && modelAvailable && runner.isSuccess && runner.data.runnerEnabled && targets.isSuccess && (batchMode ? batchReady : selectedTarget?.runnable);
   const batchStarted = batchItems.length > 0;
   const batchCreated = batchItems.filter(item => item.status === 'created').length;
-  const initialLoading = products.isPending || models.isPending || runner.isPending || (!!productId && targets.isPending);
+  const initialLoading = products.isPending || agents.isPending || models.isFetching || runner.isPending || (!!productId && targets.isPending);
   const close = () => { if (!busy) setCreateOpen(false); };
   const submitBatch = async () => {
     if (submittingBatch.current) return;
     submittingBatch.current = true; setBatchBusy(true);
-    const items = batchStarted ? batchItems : prepareBatchAudits({ ...draft, productId, model }, batchTargets);
+    const items = batchStarted ? batchItems : prepareBatchAudits({ ...draft, productId, engine, model }, batchTargets);
     setBatchItems(items);
     try {
       const result = await submitBatchAudits(items, async (input, key) => {
@@ -92,7 +96,7 @@ export function CreateRealAudit() {
     if (batchMode) { if (ready || batchStarted) void submitBatch(); return; }
     if (uncertain && attempted.current) { creation.mutate(attempted.current); return; }
     if (!ready) return;
-    creation.mutate({ ...draft, productId, targetId, model });
+    creation.mutate({ ...draft, productId, targetId, engine, model });
   };
   return <Dialog open onOpenChange={open => { if (!open) close(); }}><DialogContent className="create-dialog real-create-dialog" onInteractOutside={event => { if (busy) event.preventDefault(); }} onEscapeKeyDown={event => { if (busy) event.preventDefault(); }}>
     <DialogHeader><div className="dialog-symbol"><ShieldCheck size={22} /></div><DialogTitle>{batchMode ? '批量创建审计任务' : retryDraft ? '新建重试任务' : '创建真实审计任务'}</DialogTitle><DialogDescription>{batchMode ? '已带入列表中勾选的项目。填写一份配置，为每个项目分别创建审计任务。' : retryDraft ? '已回填原任务配置。确认后将使用新的任务编号运行，原任务与报告保留。' : '选择产品和本机源码目录，提交后由当前平台的执行队列调度。'}</DialogDescription></DialogHeader>
@@ -103,11 +107,15 @@ export function CreateRealAudit() {
       <fieldset disabled={busy || uncertain || batchStarted} className="task-form-fields">
         {!batchMode && <label>任务名称<input required maxLength={160} autoComplete="off" placeholder="例如：订单服务 · 访问控制审计" value={draft.name} onChange={e => edit('name', e.target.value)} /></label>}
         {batchMode && <p className="field-hint">任务名称自动使用“仓库名 · 日期”，下方配置应用于所有已选项目。</p>}
+        <label>Agent 基座<select required value={agents.isSuccess && enabledProfiles.length ? engine : ''} disabled={!agents.isSuccess || !enabledProfiles.length} onChange={e => setDraft(old => ({ ...old, engine: e.target.value as CodingEngine, model: '' }))}>{!agents.isSuccess && <option value="">{agents.isPending ? '正在读取 Agent 基座…' : 'Agent 基座读取失败'}</option>}{agents.isSuccess && !enabledProfiles.length && <option value="">未启用任何 Agent</option>}{agents.isSuccess && enabledProfiles.length > 0 && !profile && <option value={engine} disabled>原任务基座未启用，请重新选择</option>}{enabledProfiles.map(item => <option key={item.id} value={item.id}>{item.label}{item.available ? '' : '（不可用）'}</option>)}</select></label>
+        {agents.error && <InitializationError label="Agent 基座" error={agents.error} retry={() => void agents.refetch()} />}
+        {agents.isSuccess && !enabledProfiles.length && <p className="task-alert" role="alert">请先在<Link to="/settings" onClick={close}>工作台设置</Link>中启用至少一个 Agent 基座。</p>}
+        {profile && <p className={profile.available ? 'field-hint' : 'task-alert'} role={profile.available ? undefined : 'alert'}>{profile.available ? `${profile.label}${profile.version ? ` · ${profile.version}` : ''}；任务创建后固定此基座，排队及恢复沿用。` : profile.reason || '此基座尚未就绪，请在工作台设置中检查可执行程序。'}</p>}
         <div className="task-form-grid"><label>所属产品<select required value={productId} disabled={batchMode || products.isPending || !!products.error} onChange={e => { setDraft(old => ({ ...old, productId: e.target.value, targetId: '' })); setAddingTarget(false); registration.reset(); }}><option value="" disabled>{products.isPending ? '正在读取产品目录…' : '选择产品'}</option>{products.data?.items.map(p => <option value={p.id} key={p.id}>{p.name}</option>)}</select></label>
-          <label>执行模型<select value={models.isSuccess ? model : ''} disabled={models.isPending || !!models.error} onChange={e => edit('model', e.target.value)}>{!models.isSuccess && <option value="">{models.isPending ? '正在读取模型配置…' : '模型配置读取失败'}</option>}{models.isSuccess && !modelAvailable && <option value={model} disabled>{model}（配置中已不可用，请重新选择）</option>}{models.data?.models.map(m => <option key={m.value} value={m.value}>{m.label}</option>)}</select></label></div>
+          <label>执行模型<select value={profile && models.isSuccess ? model : ''} disabled={!profile || models.isPending || !!models.error} onChange={e => edit('model', e.target.value)}>{!profile ? <option value="">请先启用并选择 Agent 基座</option> : <>{!models.isSuccess && <option value="">{models.isPending ? '正在读取模型配置…' : '模型配置读取失败'}</option>}{models.isSuccess && !modelAvailable && <option value={model} disabled>{model}（配置中已不可用，请重新选择）</option>}{models.data?.models.map(m => <option key={m.value} value={m.value}>{m.label}</option>)}</>}</select></label></div>
         {products.error && <InitializationError label="产品目录" error={products.error} retry={() => void products.refetch()} />}
         {products.isSuccess && !products.data.items.length && <p className="task-alert">还没有可用产品，请先在原工作台创建产品。</p>}
-        {models.error && <InitializationError label="模型配置" error={models.error} retry={() => void models.refetch()} />}
+        {profile && models.error && <InitializationError label="模型配置" error={models.error} retry={() => void models.refetch()} />}
         {batchMode ? <section className="batch-sources" aria-label="已选项目">
           <strong className="batch-source-heading">已选 {batchTargets.length} 个项目</strong>
           <div className="batch-source-list">

@@ -139,12 +139,26 @@
           </section>
 
           <section id="view-settings" class="view">
-            <div class="page-heading"><div><p class="eyebrow">WORKBENCH SETTINGS</p><h2>设置</h2><p>配置默认模型、模型超时自动恢复与定时排队策略。</p></div></div>
+            <div class="page-heading"><div><p class="eyebrow">WORKBENCH SETTINGS</p><h2>设置</h2><p>配置默认 Agent 基座、模型、超时自动恢复与定时排队策略。</p></div></div>
             <article class="panel settings-panel">
-              <div class="section-title"><div><p class="eyebrow">OPENCODE MODEL</p><h2>使用模型</h2></div><span id="model-settings-status" class="status">读取中</span></div>
+              <div class="section-title"><div><p class="eyebrow">CODING AGENT</p><h2>Agent 基座</h2></div><span id="agent-settings-status" class="status">读取中</span></div>
+              <form id="agent-settings-form" class="settings-form">
+                <label>默认 Agent 基座<select name="default_engine" required disabled><option value="opencode">OpenCode v1</option><option value="opencode-v2">OpenCode v2</option><option value="grow">Grow</option></select></label>
+                <div class="agent-command-field"><div class="agent-command-heading"><label for="command-opencode">OpenCode v1 可执行程序</label><label class="enable-switch"><input type="checkbox" role="switch" name="enabled_opencode" aria-label="启用 OpenCode v1" checked disabled><span>ENABLE</span></label></div><input id="command-opencode" name="command_opencode" maxlength="4096" placeholder="opencode" required disabled></div>
+                <div class="agent-command-field"><div class="agent-command-heading"><label for="command-opencode-v2">OpenCode v2 可执行程序</label><label class="enable-switch"><input type="checkbox" role="switch" name="enabled_opencode-v2" aria-label="启用 OpenCode v2" checked disabled><span>ENABLE</span></label></div><input id="command-opencode-v2" name="command_opencode-v2" maxlength="4096" placeholder="opencode2" required disabled></div>
+                <div class="agent-command-field"><div class="agent-command-heading"><label for="command-grow">Grow 可执行程序</label><label class="enable-switch"><input type="checkbox" role="switch" name="enabled_grow" aria-label="启用 Grow" checked disabled><span>ENABLE</span></label></div><input id="command-grow" name="command_grow" maxlength="4096" placeholder="grow" required disabled></div>
+                <p class="settings-note">关闭 ENABLE 后路径可留空，不检测或启动该基座。启用时填写 PATH 中的程序名或可执行文件绝对路径。默认基座只用于新建任务；关闭不会中止正在运行的会话，恢复已停用基座的任务前需重新启用。</p>
+                <div id="agent-settings-error" class="notice error" hidden></div>
+                <div class="dialog-actions"><button id="reload-agent-settings" class="button secondary" type="button">重新检测</button><button id="save-agent-settings" class="button primary" type="submit" disabled>保存 Agent 设置</button></div>
+              </form>
+              <dl id="agent-settings-facts" class="detail-facts"></dl>
+            </article>
+            <article class="panel settings-panel">
+              <div class="section-title"><div><p class="eyebrow">AGENT MODEL</p><h2>使用模型</h2></div><span id="model-settings-status" class="status">读取中</span></div>
               <form id="model-settings-form" class="settings-form">
+                <label>模型所属基座<select name="engine" id="model-engine-select"><option value="opencode">OpenCode v1</option><option value="opencode-v2">OpenCode v2</option><option value="grow">Grow</option></select></label>
                 <label>使用模型<select name="model" id="opencode-model-select" required></select></label>
-                <p class="settings-note">模型清单读取自 <code>.opencode/opencode.json(c)</code>、<code>~/.config/opencode.json(c)</code>（兼容路径）及 OpenCode 标准全局配置 <code>~/.config/opencode/opencode.json(c)</code>；支持 UTF-8 BOM、注释和尾逗号。此设置仅作为新建任务弹窗的初始选择；任务提交后保存自己的模型，排队和断点恢复沿用该选择。重试时可在创建弹窗中修改。指定模型以 <code>opencode run --model provider/model</code> 启动；已运行任务不受影响。“默认”不传递 <code>--model</code>。</p>
+                <p class="settings-note">OpenCode v1/v2 共用平台的 OpenCode 模型配置，分别保存默认选择；Grow 读取本机 Grow 配置。切换基座后会更新模型清单。模型随任务保存，排队及恢复沿用该任务选择；“默认”使用所选 Agent 自身的默认模型。</p>
                 <div id="model-settings-error" class="notice error" hidden></div>
                 <div class="dialog-actions"><button id="save-model-settings" class="button secondary" type="submit">保存模型设置</button></div>
               </form>
@@ -188,8 +202,10 @@
       <form id="audit-form" method="dialog">
         <div class="dialog-heading"><div><p class="eyebrow">NEW AUDIT</p><h2>创建仓库级安全审计</h2></div><button type="button" class="icon-button" data-close-dialog>×</button></div>
         <label>任务名称<input name="name" maxlength="160" placeholder="例如：支付服务发布前安全审计" required></label>
+        <label>Agent 基座<select name="engine" id="audit-engine-select" required></select></label>
+        <p id="audit-engine-status" class="context-note"></p>
         <label>使用模型<select name="model" id="audit-model-select" required></select></label>
-        <p class="context-note">模型随任务保存，排队和断点恢复沿用此选择；重试可重新选择。“默认”由 OpenCode 配置决定。</p>
+        <p class="context-note">基座和模型随任务保存，排队和断点恢复沿用此选择；重试可重新选择。“默认”由所选 Agent 配置决定。</p>
         <label>历史经验<select name="memory_mode"><option value="full">参考历史事实、人工理由与产品经验</option><option value="facts_only">仅参考接口、资产与结构事实</option><option value="off">不读取历史记忆</option><option value="blind">盲审：隔离历史经验与知识种子</option></select></label>
         <label>测试对象<select name="target_id" id="repository-select" required></select></label>
         <label>越权专项分析<select name="bac_analysis"><option value="auto">启用：比较预期权限与实际访问路径</option><option value="off">关闭专项差分，保留常规权限审计</option></select></label>

@@ -63,7 +63,7 @@ export class ProductAuditService {
     }
     const spec = { protocol: 'product-audit.v1', repos, roots: tree.roots.map(r => ({ id: r.id, generation: r.generation, version: r.version })),
       scope_gaps: tree.roots.filter(r => r.status !== 'READY').map(r => ({ root_id: r.id, reason: '目录发现尚未完整，报告只覆盖已选择的 Repo。' })),
-      model: input.model ?? null, memory_mode: ['full', 'facts_only', 'off', 'blind'].includes(input.memory_mode) ? input.memory_mode : 'full',
+      engine: input.engine ?? 'opencode', model: input.model ?? null, memory_mode: ['full', 'facts_only', 'off', 'blind'].includes(input.memory_mode) ? input.memory_mode : 'full',
       repo_concurrency: Math.min(4, Math.max(1, Number(input.repo_concurrency ?? 2))), max_followup_rounds: Math.min(2, Math.max(0, Number(input.max_followup_rounds ?? 2))), max_followup_jobs: 20,
       analysis_timeout_ms: 10 * 60000, max_analysis_rounds: 3, additional_instructions: text(input.additional_instructions ?? '', '审计说明', 8000, true),
       repo_options: input.repo_options ?? {}, read_watermark: this.store.watermark(productId), created_at: now() };
@@ -94,7 +94,7 @@ export class ProductAuditService {
           ...(repo.todo_ids ?? []).map(id => `定向补审待办 ${id}：${this.store.todo(campaign.product_id, id).question}。完成后经 audit-memory todo-answer 关联当前证据。`) ].filter(Boolean).join('\n');
         const options = repo.repo_options ?? {};
         await this.createAudit({ target_id: repo.target_id, execution_spec: repo.target_snapshot, execution_spec_digest: repo.target_digest,
-          audit_id: auditId, name: `${campaign.name} · ${repo.name}${job.kind === 'FOLLOWUP' ? ' · 定向补审' : ''}`, model: campaign.spec.model, task_protocol: 'task-board.v1', product_campaign_id: campaign.id,
+          audit_id: auditId, name: `${campaign.name} · ${repo.name}${job.kind === 'FOLLOWUP' ? ' · 定向补审' : ''}`, engine: campaign.spec.engine ?? 'opencode', model: campaign.spec.model, task_protocol: 'task-board.v1', product_campaign_id: campaign.id,
           memory_mode: campaign.spec.memory_mode, mining_strategy: options.mining_strategy ?? 'focus_area', api_inventory: options.api_inventory ?? '', bac_analysis: options.bac_analysis ?? 'auto',
           additional_instructions_enabled: true, additional_instructions: instructions, test_environment_enabled: false, test_environment_context: '' }, `product-job:${job.id}`);
       }
@@ -203,7 +203,7 @@ export class ProductAuditService {
       const input = { ...base, ...extras, role }; input.input_digest = hash(input);
       const outputRoot = join(this.stateRoot, campaign.id, job.id, role.toLowerCase());
       await mkdir(outputRoot, { recursive: true }); let loggedBytes = 0;
-      const result = await this.worker({ input, outputRoot, runner: this.runner, model: campaign.spec.model, signal: AbortSignal.any([signal, AbortSignal.timeout(campaign.spec.analysis_timeout_ms)]), onLog: async (source, line) => { if (loggedBytes >= 1024 * 1024) return; const chunk = `[${source}] ${line.slice(0, 16000)}\n`; loggedBytes += Buffer.byteLength(chunk); await appendFile(join(outputRoot, 'execution.log'), chunk, { mode: 0o600 }); } });
+      const result = await this.worker({ input, outputRoot, runner: this.runner, engine: campaign.spec.engine ?? 'opencode', model: campaign.spec.model, signal: AbortSignal.any([signal, AbortSignal.timeout(campaign.spec.analysis_timeout_ms)]), onLog: async (source, line) => { if (loggedBytes >= 1024 * 1024) return; const chunk = `[${source}] ${line.slice(0, 16000)}\n`; loggedBytes += Buffer.byteLength(chunk); await appendFile(join(outputRoot, 'execution.log'), chunk, { mode: 0o600 }); } });
       check(result.result?.campaign_id === campaign.id && result.result?.input_digest === input.input_digest && result.result?.role === role && result.session_id && result.result.agent_session_id === result.session_id, '跨 Repo 结果绑定不一致。'); return result;
     };
     const analysis = await invoke('ANALYZE'); await this.validateAnalysis(campaign, analysis.result);

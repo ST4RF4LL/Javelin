@@ -13,13 +13,16 @@ const alive = child => child.exitCode == null && child.signalCode == null;
 // Owns a plain hidden Node supervisor, with OpenCode serve/run as its children.
 // ttyd only creates an attach client when the user opens the terminal page.
 export class OpenCodeProcessMonitor {
-  constructor({ stateRoot, command = 'opencode', environment = process.env, platform = osPlatform(), architecture = arch(),
+  constructor({ stateRoot, command = 'opencode', engine = 'opencode', environment = process.env, platform = osPlatform(), architecture = arch(),
     execute = promisify(execFile), resolveCommand, spawnProcess = spawn } = {}) {
-    Object.assign(this, { stateRoot, command, environment, platform, architecture, execute, resolveCommand, spawnProcess });
+    Object.assign(this, { stateRoot, command, engine, environment, platform, architecture, execute, resolveCommand, spawnProcess });
     this.runs = new Map(); this.specs = new Map(); this.probeResult = null;
   }
   async probe() {
     if (this.probeResult) return this.probeResult;
+    if (this.engine !== 'opencode') return this.probeResult = { available: true, shared_server: this.engine === 'opencode-v2',
+      backend: 'agent-process', opencode_command: this.command,
+      message: this.engine === 'grow' ? 'Grow JSON 监控已就绪；暂停或结束后可打开交互终端。' : 'OpenCode v2 共享会话已就绪。' };
     const candidates = await resolvedOpenCodeExecutables(this);
     for (const command of candidates) {
       try {
@@ -34,21 +37,25 @@ export class OpenCodeProcessMonitor {
   }
   directory(terminal) {
     const directory = resolve(terminal?.state_directory || '');
-    if (terminal?.backend !== 'opencode-process' || dirname(directory) !== resolve(this.stateRoot)) throw new Error('任务执行目录不匹配。');
+    if (!['opencode-process', 'agent-process'].includes(terminal?.backend) || dirname(directory) !== resolve(this.stateRoot)) throw new Error('任务执行目录不匹配。');
     return directory;
   }
   async start({ audit, environment, executionDirectory, repository, providerSessionId = null, args }) {
-    if (!/^[a-z0-9][a-z0-9._-]{2,127}$/i.test(audit.id) || !Array.isArray(args) || args[0] !== 'run') throw new Error('审计执行参数无效。');
+    if (!/^[a-z0-9][a-z0-9._-]{2,127}$/i.test(audit.id) || !Array.isArray(args) || (this.engine === 'opencode' && args[0] !== 'run')) throw new Error('审计执行参数无效。');
     const directory = join(this.stateRoot, audit.id), cwd = executionDirectory || repository.path;
     await mkdir(directory, { recursive: true });
-    const terminal = { backend: 'opencode-process', transport: 'opencode-run+shared-server', supported: true, shared_server: true,
+    const terminal = { backend: this.engine === 'opencode' ? 'opencode-process' : 'agent-process', engine: this.engine,
+      transport: this.engine === 'grow' ? 'grow-run' : `${this.engine}-run+shared-server`, supported: true, shared_server: this.engine !== 'grow',
       live: true, status: 'starting', state_directory: directory, provider_session_id: providerSessionId,
       output_path: join(directory, 'opencode-run.jsonl'), exit_path: join(directory, 'opencode-run-exit.json'),
-      message: 'OpenCode 正在启动共享会话；JSON 事件自动更新，交互终端由 ttyd 按需打开。' };
+      message: this.engine === 'grow' ? 'Grow 正在执行；JSON 事件自动更新，暂停或结束后可在 ttyd 恢复会话。' : 'Agent 正在启动共享会话；JSON 事件自动更新，交互终端由 ttyd 按需打开。' };
     await Promise.all([rm(terminal.output_path, { force: true }), rm(terminal.exit_path, { force: true })]);
     const path = join(directory, 'opencode-process-run.json');
-    await writeFile(path, JSON.stringify({ command: this.command, args, cwd, state_directory: directory, audit_id: audit.id,
+    await writeFile(path, JSON.stringify({ engine: this.engine, command: this.command, args, cwd, state_directory: directory, audit_id: audit.id,
       diagnostic_path: terminal.output_path, exit_path: terminal.exit_path }), { mode: 0o600 });
+    if (this.engine === 'grow') await writeFile(join(directory, 'agent-terminal.json'), JSON.stringify({ engine: this.engine,
+      audit_id: audit.id, generation: audit.execution.generation, command: this.command, cwd,
+      environment: { GROW_HOME: environment.GROW_HOME } }), { mode: 0o600 });
     this.specs.set(directory, { path, cwd, environment });
     return terminal;
   }
@@ -100,7 +107,7 @@ export class OpenCodeProcessMonitor {
   }
   // Archived legacy tasks are read from disk. Never probe or launch psmux/tmux.
   async capture(terminal, lines = 400) {
-    const path = terminal?.backend === 'opencode-process' ? join(this.directory(terminal), 'opencode-run.jsonl') : terminal?.output_path;
+    const path = ['opencode-process', 'agent-process'].includes(terminal?.backend) ? join(this.directory(terminal), 'opencode-run.jsonl') : terminal?.output_path;
     if (!path) return '';
     return (await readFile(path, 'utf8').catch(error => { if (error.code === 'ENOENT') return ''; throw error; })).split(/\r?\n/).slice(-lines).join('\n');
   }
@@ -109,9 +116,9 @@ export class OpenCodeProcessMonitor {
     if (!run || !['SIGSTOP', 'SIGCONT'].includes(signal)) throw new Error('任务控制会话不可用。');
     await run.send(signal === 'SIGSTOP' ? 'pause' : 'resume');
   }
-  async abort(terminal) { if (terminal?.backend === 'opencode-process') this.runs.get(this.directory(terminal))?.stop(); }
+  async abort(terminal) { if (['opencode-process', 'agent-process'].includes(terminal?.backend)) this.runs.get(this.directory(terminal))?.stop(); }
   async stop(terminal) {
-    if (terminal?.backend !== 'opencode-process') return;
+    if (!['opencode-process', 'agent-process'].includes(terminal?.backend)) return;
     const directory = this.directory(terminal); this.specs.delete(directory);
     const run = this.runs.get(directory); if (!run || !alive(run.child)) return;
     const closed = new Promise(resolve => run.child.once('close', resolve)); run.stop(); await closed;

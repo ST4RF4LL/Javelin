@@ -25,7 +25,7 @@ test('默认关闭旧入口；新界面业务文档和静态模块不依赖原�
   assert.equal(page.statusCode, 200); assert.match(page.headers['content-type'], /text\/html/);
   assert.equal(page.body, await readFile(new URL('../../../.opencode/web/dynamic-validation-observatory/public/index.html', import.meta.url), 'utf8'));
   for (const view of ['dashboard', 'projects', 'audits', 'findings', 'reports', 'validation', 'runtime', 'settings']) assert.ok(page.body.includes(`id="view-${view}"`));
-  for (const path of ['/app.js', '/product-memory-ui.js', '/styles.css', '/logo_DJ.png']) {
+  for (const path of ['/app.js', '/product-memory-ui.js', '/agent-settings-ui.js', '/styles.css', '/logo_DJ.png']) {
     const response = await app.inject(path); assert.equal(response.statusCode, 200, path); assert.ok(response.rawPayload.length > 0);
   }
   assert.equal((await app.inject('/workbench')).headers.location, '/');

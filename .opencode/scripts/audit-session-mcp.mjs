@@ -6,7 +6,7 @@ import { AgentSessionBridge } from '../lib/audit-runtime/session-bridge.mjs';
 
 const bridge = new AgentSessionBridge();
 const server = new McpServer({ name: 'audit-current-session', version: '1.0.0' });
-const identity = { engine: z.enum(['opencode', 'codex', 'grow']), session_id: z.string().min(3).max(240).describe('从宿主 Agent 获取的真实当前会话 ID，禁止自行编造') };
+const identity = { engine: z.enum(['opencode', 'opencode-v2', 'codex', 'grow']), session_id: z.string().min(3).max(240).describe('从宿主 Agent 获取的真实当前会话 ID，禁止自行编造') };
 const key = input => `${input.engine}:${input.session_id}`;
 const reply = async operation => {
   try { const value = await operation(); return { content: [{ type: 'text', text: typeof value === 'string' ? value : JSON.stringify(value) }] }; }

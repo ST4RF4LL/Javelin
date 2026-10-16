@@ -110,7 +110,7 @@ export class NativeSessionController {
         if (event && typeof event.message === 'string') {
           await this.runner.recordLog(audit, 'stdout', event.message.slice(0, 16 * 1024));
           const timeout = operationTimeout(event.message);
-          if (timeout?.session_id === audit.execution.session_id && audit.execution.engine === 'opencode') {
+          if (timeout?.session_id === audit.execution.session_id && ['opencode', 'opencode-v2'].includes(audit.execution.engine)) {
             const entry = this.runner.markOperationTimeoutObserved(audit, 'native-session', event.message);
             if (entry) await this.runner.handleOperationTimeout(audit, entry);
           }

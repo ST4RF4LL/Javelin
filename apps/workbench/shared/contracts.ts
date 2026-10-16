@@ -1,10 +1,14 @@
 export type Source = 'demo' | 'live';
+export type CodingEngine = 'opencode' | 'opencode-v2' | 'grow';
+export interface AgentProfile { id: CodingEngine; label: string; command: string; enabled?: boolean; available: boolean; version?: string | null; reason?: string; capabilities?: Record<string, unknown> }
+export interface AgentSettings { default_engine: CodingEngine | null; enabled?: Record<CodingEngine, boolean>; commands: Record<CodingEngine, string>; profiles: AgentProfile[]; updated_at?: string }
 export const WORKBENCH_API_VERSION = 3;
 export interface WorkbenchRuntime { mode: 'preview' | 'integrated'; defaultSource: Source; demoEnabled: boolean; liveReadOnly: boolean; legacyUrl: string | null; featureVersion?: number }
 export type AuditStatus = 'running' | 'paused' | 'queued' | 'completed' | 'failed' | 'interrupted' | 'cancelled' | 'preparing' | 'recovering' | 'pausing' | 'cancelling' | 'artifact_only';
 export interface Stage { id: string; label: string; status: 'done' | 'active' | 'pending' | 'gap' }
 export interface LogEntry { sequence: number; time: string; level: string; agent: string; message: string }
 export interface Audit {
+  engine?: CodingEngine;
   productId?: string; targetId?: string; allowedActions?: AuditAction[]; canRetry?: boolean; executionIncomplete?: boolean; error?: string; logsError?: string; runtimeTestingStatus?: string;
   id: string; name: string; repository: string; product: string; branch: string; commit: string;
   status: AuditStatus; progress: number; stage: string; findings: number; updatedAt: string;
@@ -26,8 +30,9 @@ export interface TaskProduct { id: string; name: string; status: string }
 export interface TaskTarget { id: string; name: string; path: string; runnable: boolean; reason: string }
 export interface BatchAuditSelection { productId: string; targetIds: string[] }
 export interface TaskOptions { runnerEnabled: boolean; products: TaskProduct[]; models: { value: string; label: string }[]; selectedModel: string }
-export interface TaskModels { models: { value: string; label: string }[]; selectedModel: string }
+export interface TaskModels { models: { value: string; label: string }[]; selectedModel: string; engine?: CodingEngine }
 export interface RealAuditInput {
+  engine?: CodingEngine;
   productId: string; targetId: string; auditId: string; name: string; model: string;
   miningStrategy: 'focus_area' | 'api' | 'file_sweep'; apiInventory: string; memoryMode: string; bacAnalysis: string;
   additionalInstructionsEnabled: boolean; additionalInstructions: string;

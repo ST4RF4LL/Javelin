@@ -1,6 +1,6 @@
 import { Injectable, ServiceUnavailableException, BadRequestException, HttpException } from '@nestjs/common';
 import { Observable } from 'rxjs';
-import type { Audit, AuditPage, Snapshot, FindingPage, Report, ReportContent, AuditAction, TaskOptions, TaskTarget, TaskModels, RealAuditDraft } from '../shared/contracts.js';
+import type { Audit, AuditPage, Snapshot, FindingPage, Report, ReportContent, AuditAction, TaskOptions, TaskTarget, TaskModels, RealAuditDraft, AgentSettings, CodingEngine } from '../shared/contracts.js';
 import { createUpstreamTransport } from './upstream-transport.js';
 import { readLocalTaskModels } from './local-models.js';
 import { createTaskInput, identifier, idempotencyKey, textField } from './task-contract.js';
@@ -12,6 +12,7 @@ export function normalizeAudit(a: Row): Audit {
   const actions: Record<string, AuditAction[]> = { running: ['pause', 'cancel'], paused: ['resume', 'cancel'], queued: ['dispatch'], failed: ['recover'], interrupted: ['recover'], cancelled: ['recover'] };
   if (a.execution_incomplete) for (const status of ['failed', 'interrupted', 'cancelled']) actions[status] = [];
   return { id: String(a.id), name: a.name || a.id, repository: a.repository_name || a.repository_id || '未关联项目',
+    engine: a.engine || a.execution?.engine || 'opencode',
     product: a.provenance?.product_name || a.product_name || '未关联产品', branch: a.branch || a.git_ref || a.ref || '—', commit: a.commit || '—',
     productId: a.provenance?.audit_product_id || a.provenance?.product_id || a.product_id, targetId: a.provenance?.target_id || a.target_id || a.repository_id, allowedActions: a.managed === false || a.provenance?.audit_managed === false || a.source === 'artifact' ? [] : (actions[a.status] || []), error: typeof a.error === 'string' ? a.error : undefined,
     runtimeTestingStatus: a.runtime_testing_state?.status || (a.runtime_testing ? '等待调度' : a.task_context?.dynamic_validation_enabled ? '旧版动态验证已启用' : 'SKIPPED'),
@@ -104,11 +105,18 @@ export class LiveService {
     const products = await this.catalogue('/api/v2/products', '产品目录');
     return { items: products.map(p => ({ id: p.id, name: p.name, status: p.status })) };
   }
-  async taskModels(): Promise<TaskModels> {
-    if (this.modelSource === 'local') return this.localModels();
-    const model = await this.read('/api/v1/settings/model', { timeoutMs: 5000, label: '模型配置' });
+  async taskAgents(): Promise<AgentSettings> {
+    const result = await this.read('/api/v1/settings/agents', { timeoutMs: 15000, label: 'Agent 基座' });
+    if (!result.agents || !Array.isArray(result.agents.profiles) || !result.agents.profiles.length) throw new ServiceUnavailableException('后台未返回 Agent 基座选项，请重新读取。');
+    return result.agents;
+  }
+  async taskModels(engine?: string): Promise<TaskModels> {
+    if (engine !== undefined && !['opencode', 'opencode-v2', 'grow'].includes(engine)) throw new BadRequestException('Agent 基座无效。');
+    // The local compatibility reader only knows OpenCode v1 configuration.
+    if (this.modelSource === 'local' && (engine === undefined || engine === 'opencode')) return this.localModels();
+    const model = await this.read(`/api/v1/settings/model${engine ? `?engine=${encodeURIComponent(engine)}` : ''}`, { timeoutMs: 5000, label: '模型配置' });
     if (!Array.isArray(model.model?.options) || !model.model.options.length) throw new ServiceUnavailableException('原平台未返回可用的模型选项，请重试模型配置。');
-    return { models: model.model.options, selectedModel: model.model.selected_model || 'default' };
+    return { models: model.model.options, selectedModel: model.model.selected_model || 'default', ...(engine ? { engine: engine as CodingEngine } : {}) };
   }
   async taskRunner() {
     const health = await this.read('/api/v1/runtime/health', { timeoutMs: 5000, label: '执行器状态' });
@@ -144,6 +152,7 @@ export class LiveService {
     const privateDraft = audit.status === 'artifact_only' ? {} : await this.write(`/api/v2/products/${encodeURIComponent(productId)}/audits/${encodeURIComponent(id)}/retry-draft`, {});
     const runtime = audit.runtime_testing;
     return { productId, targetId, name: `${String(audit.name || id).replace(/（重试）$/u, '').slice(0, 156)}（重试）`,
+      engine: privateDraft.engine || audit.engine || audit.execution?.engine || 'opencode',
       model: audit.model || 'default', memoryMode: privateDraft.memory_mode || audit.memory_mode || 'full', bacAnalysis: audit.bac_analysis?.mode || 'auto',
       miningStrategy: privateDraft.mining_strategy || audit.mining_strategy || (privateDraft.api_inventory?.trim() ? 'api' : 'focus_area'), apiInventory: privateDraft.api_inventory || '',
       additionalInstructionsEnabled: privateDraft.additional_instructions_enabled === true, additionalInstructions: privateDraft.additional_instructions || '',
