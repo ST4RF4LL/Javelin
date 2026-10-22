@@ -4,6 +4,7 @@ import { join, resolve } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { setTimeout as delay } from 'node:timers/promises';
 import { localServiceFetch, serviceRequestErrorCode } from './local-service-transport.mjs';
+import { assertAuditRuntimeDependencies } from './runtime-dependencies.mjs';
 
 export const SERVICE_PROTOCOL = 'audit-runtime-service.v1';
 export const DEFAULT_SERVICE_ORIGIN = 'http://127.0.0.1:4183';
@@ -41,6 +42,7 @@ export async function ensureAuditService({ origin = DEFAULT_SERVICE_ORIGIN, mode
   if (url.protocol !== 'http:' || url.hostname !== '127.0.0.1' || !url.port || url.username || url.password || url.pathname !== '/' || url.search || url.hash) throw new Error('自动启动审计服务只支持本机 HTTP origin。');
   let child, failure;
   if (!current) {
+    assertAuditRuntimeDependencies();
     await mkdir(serviceRoot, { recursive: true, mode: 0o700 });
     const log = await open(join(serviceRoot, 'service.log'), 'a', 0o600);
     try {

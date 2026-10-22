@@ -3,10 +3,10 @@ import assert from 'node:assert/strict';
 import http from 'node:http';
 import { execFile } from 'node:child_process';
 import { promisify } from 'node:util';
-import { mkdtemp, rm } from 'node:fs/promises';
+import { copyFile, mkdir, mkdtemp, readFile, rm, stat, writeFile } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
-import { fileURLToPath } from 'node:url';
+import { fileURLToPath, pathToFileURL } from 'node:url';
 import { localServiceFetch } from '../lib/audit-runtime/local-service-transport.mjs';
 import { serviceHealth, ensureAuditService, SERVICE_PROTOCOL } from '../lib/audit-runtime/service-process.mjs';
 import { createNativeClient } from '../lib/audit-runtime/native-client.mjs';
@@ -100,4 +100,44 @@ test('直连接口拒绝跳转、非本机地址、超限响应，并覆盖响�
   await assert.rejects(localServiceFetch(local.origin + '/wait', { signal: AbortSignal.timeout(50) }), { code: 'ABORT_ERR' });
   await assert.rejects(localServiceFetch('http://192.0.2.1:4183/'), /127\.0\.0\.1/);
   await assert.rejects(localServiceFetch('http://user:secret@127.0.0.1:4183/'), /无凭据/);
+});
+
+test('缺少后端依赖时启动立即报出安装命令、不创建后台；补齐后可启动，已有服务仍可复用', async t => {
+  const root = await directory(t), backend = join(root, '.opencode'), runtime = join(backend, 'lib/audit-runtime');
+  await mkdir(runtime, { recursive: true });
+  await copyFile(new URL('../package.json', import.meta.url), join(backend, 'package.json'));
+  for (const name of ['service-process.mjs', 'local-service-transport.mjs', 'runtime-dependencies.mjs']) {
+    await copyFile(new URL(`../lib/audit-runtime/${name}`, import.meta.url), join(runtime, name));
+  }
+  const { dependencies } = JSON.parse(await readFile(join(backend, 'package.json'), 'utf8'));
+  const installFixture = async name => {
+    const path = join(backend, 'node_modules', name);
+    await mkdir(path, { recursive: true });
+    // Import-only packages must be checked without evaluating package code.
+    await writeFile(join(path, 'package.json'), JSON.stringify({ name, exports: { '.': { import: './index.mjs' } } }));
+    await writeFile(join(path, 'index.mjs'), 'throw new Error("预检不能执行依赖代码");');
+  };
+  for (const name of Object.keys(dependencies).filter(name => name !== 'smol-toml')) await installFixture(name);
+  const serviceRoot = join(root, 'service');
+  async function run(reuse) {
+    const code = `import {ensureAuditService} from ${JSON.stringify(pathToFileURL(join(runtime, 'service-process.mjs')).href)};
+      let reads=0, launches=0;
+      try {
+        const result=await ensureAuditService({serviceRoot:${JSON.stringify(serviceRoot)},
+          fetcher:async()=>{if (++reads===1 && !${reuse}) throw Object.assign(new Error(),{code:'ECONNREFUSED'}); return new Response(${JSON.stringify(JSON.stringify(ready))});},
+          spawnProcess(){launches++;return {on(){},unref(){}};}});
+        console.log(JSON.stringify({started:result.started, launches}));
+      } catch(error) { console.log(JSON.stringify({code:error.code, missing:error.missing, message:error.message, launches})); }`;
+    const { stdout } = await promisify(execFile)(process.execPath, ['--input-type=module', '-e', code], { cwd: root, timeout: 5000 });
+    return JSON.parse(stdout);
+  }
+  const missing = await run(false);
+  assert.equal(missing.code, 'AUDIT_RUNTIME_DEPENDENCIES_MISSING');
+  assert.deepEqual(missing.missing, ['smol-toml']);
+  assert.match(missing.message, /npm --prefix \.opencode ci --include=optional/);
+  assert.equal(missing.launches, 0);
+  await assert.rejects(stat(serviceRoot), { code: 'ENOENT' });
+  assert.deepEqual(await run(true), { started: false, launches: 0 });
+  await installFixture('smol-toml');
+  assert.deepEqual(await run(false), { started: true, launches: 1 });
 });

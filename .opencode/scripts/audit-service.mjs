@@ -7,8 +7,10 @@ import { fileURLToPath } from 'node:url';
 import { atomicJson } from '../lib/task-board/contract.mjs';
 import { SERVICE_PROTOCOL, DEFAULT_SERVICE_ORIGIN, defaultServiceRoot, readServiceConnection, ensureAuditService } from '../lib/audit-runtime/service-process.mjs';
 import { localServiceFetch, serviceRequestErrorCode } from '../lib/audit-runtime/local-service-transport.mjs';
+import { assertAuditRuntimeDependencies } from '../lib/audit-runtime/runtime-dependencies.mjs';
 
 export async function startAuditService({ port = 4183, stateRoot, serviceRoot = defaultServiceRoot, modernOrigin = 'http://127.0.0.1:4181', backendOptions = {} } = {}) {
+  assertAuditRuntimeDependencies();
   const token = randomBytes(32).toString('hex'), generation = randomUUID();
   let backend, ready = false, stopping = false;
   // Claim the port before constructing any stateful runner or database service.

@@ -64,15 +64,18 @@ Windows 手动验证已确认 `ttyd → powershell.exe → opencode` 能显示 T
 在仓库根目录执行，直接运行于宿主机。以下命令适用于 Windows PowerShell、macOS 和 Linux，构建需要 Node.js 22.22.3 或更高版本：
 
 ```sh
-# 首次安装或拉取依赖变更后，同步构建依赖及当前系统的原生组件
+# 首次安装或拉取依赖变更后，分别同步后端依赖和工作台构建依赖
+npm --prefix .opencode ci --include=optional
 npm --prefix apps/workbench ci --include=dev --include=optional
 npm --prefix apps/workbench run build
 
-# 当前工作区已构建，可直接执行这一条
+# 两处依赖已安装且当前工作区已构建，可直接执行这一条
 npm --prefix apps/workbench run start:platform
 ```
 
-`build` 不会自动安装依赖。监控构建需要 `devDependencies` 中的 `esbuild`，React Router、TypeScript 和 Vite 也属于构建依赖；显式 `--include=dev` 可避免生产环境安装设置遗漏它们。`--include=optional` 保留当前系统需要的原生组件。出现 `Cannot find package 'esbuild'` 时，先执行上面的 `ci` 命令，成功后再构建；无需全局安装 esbuild，也不要从 macOS/Linux 复制 `node_modules` 到 Windows。只在仓库根目录或 `.opencode` 安装依赖不会同步 `apps/workbench` 的依赖。
+`.opencode` 与 `apps/workbench` 是两个独立的 npm 项目，必须分别安装依赖；`build` 不会自动安装依赖。`smol-toml`、`markdown-it`、`ssh2` 等属于 `.opencode` 后端依赖。出现 `Cannot find package 'smol-toml'` 时，在仓库根目录执行 `npm --prefix .opencode ci --include=optional`，成功后重新启动。平台和独立服务会在创建后台进程前检查后端直接依赖，缺包时列出包名与这条修复命令，不自动联网安装。
+
+监控构建需要 `devDependencies` 中的 `esbuild`，React Router、TypeScript 和 Vite 也属于构建依赖；显式 `--include=dev` 可避免生产环境安装设置遗漏它们。`--include=optional` 保留当前系统需要的原生组件。出现 `Cannot find package 'esbuild'` 时，执行 `npm --prefix apps/workbench ci --include=dev --include=optional`，成功后再构建。依赖应在部署机器上安装；无需全局安装这些包，也不要跨操作系统复制 `node_modules`。
 
 需要让其他设备访问时，指定监听地址：
 

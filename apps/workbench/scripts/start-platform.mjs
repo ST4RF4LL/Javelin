@@ -4,6 +4,7 @@ import { existsSync } from 'node:fs';
 import { runtimeBuild } from '../../../.opencode/web/dynamic-validation-observatory/runtime-build.mjs';
 import { ensureWorkbenchTerminalMonitor, terminalMonitorConfiguration } from './start-terminal-monitor.mjs';
 import { DEFAULT_SERVICE_ORIGIN, ensureAuditService } from '../../../.opencode/lib/audit-runtime/service-process.mjs';
+import { assertAuditRuntimeDependencies } from '../../../.opencode/lib/audit-runtime/runtime-dependencies.mjs';
 
 const root = fileURLToPath(new URL('../../../', import.meta.url));
 const apiEntry = new URL('../build/api/server/main.js', import.meta.url);
@@ -51,6 +52,7 @@ async function main() {
   if (['127.0.0.1', 'localhost', '[::1]'].includes(upstream.hostname) && upstream.port === '4173') throw new Error('4173 是原界面保留入口，不能作为新版后台。请移除 WORKBENCH_UPSTREAM 的旧值后重新启动。');
   const existing = await probeBackend(upstream.origin);
   if (!existing && upstream.origin !== DEFAULT_SERVICE_ORIGIN) throw new Error('指定的审计服务未运行，请先启动该服务。');
+  if (!existing) assertAuditRuntimeDependencies();
   process.env.WORKBENCH_MODE = 'integrated'; process.env.WORKBENCH_ENABLE_TASKS = '1';
   process.env.WORKBENCH_UPSTREAM = upstream.origin;
   process.env.WORKBENCH_LEGACY_ENABLED = legacy ? '1' : '0';
