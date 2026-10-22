@@ -152,6 +152,10 @@ export class ProductStore {
         role TEXT NOT NULL DEFAULT '', description TEXT NOT NULL DEFAULT '', position INTEGER NOT NULL, created_at TEXT NOT NULL, updated_at TEXT NOT NULL,
         UNIQUE(target_id, name), UNIQUE(target_id, path)
       ) STRICT;
+      CREATE TABLE IF NOT EXISTS runtime_audit_links (
+        audit_id TEXT PRIMARY KEY, product_id_at_creation TEXT NOT NULL REFERENCES products(id), product_name_at_creation TEXT NOT NULL,
+        snapshot_json TEXT NOT NULL, snapshot_digest TEXT NOT NULL, created_at TEXT NOT NULL
+      ) STRICT;
       CREATE TABLE IF NOT EXISTS audit_target_links (
         audit_id TEXT PRIMARY KEY, target_id TEXT NOT NULL REFERENCES audit_targets(id), product_id_at_creation TEXT NOT NULL,
         product_name_at_creation TEXT NOT NULL, snapshot_json TEXT NOT NULL, snapshot_digest TEXT NOT NULL, created_at TEXT NOT NULL
@@ -507,8 +511,21 @@ export class ProductStore {
       return { audit_id: auditId, target_id: targetId, product_id_at_creation: product.id, product_name_at_creation: product.name, snapshot_digest: digest };
     });
   }
+  async linkRuntimeAudit({ auditId, productId, snapshot, snapshotDigest: expected }) {
+    return this.transaction(async () => {
+      const product = this.assertProduct(productId, { writable: true });
+      const calculated = snapshotDigest(snapshot);
+      if (expected !== calculated || snapshot.kind !== "runtime-environment" || snapshot.product_id !== product.id) throw error("动态环境范围快照无效。", 422, "runtime-snapshot-invalid");
+      this.db.prepare("INSERT INTO runtime_audit_links VALUES(?,?,?,?,?,?)").run(auditId, product.id, product.name, JSON.stringify(snapshot), calculated, now());
+      this.event(product.id, "audit.linked", "audit", auditId, { audit_mode: "dynamic" });
+      return this.auditLink(auditId);
+    });
+  }
+  auditProductId(link) {
+    return link?.target_id ? this.targetById(link.target_id)?.product_id : link?.product_id_at_creation;
+  }
   auditLink(auditId) {
-    const row = this.db.prepare("SELECT * FROM audit_target_links WHERE audit_id=?").get(auditId);
+    const row = this.db.prepare("SELECT * FROM audit_target_links WHERE audit_id=?").get(auditId) ?? this.db.prepare("SELECT *, NULL AS target_id FROM runtime_audit_links WHERE audit_id=?").get(auditId);
     if (!row) return null;
     const { snapshot_json: _snapshot, ...value } = row;
     return { ...value, snapshot: json(row.snapshot_json, {}), snapshot_digest: row.snapshot_digest };
@@ -518,6 +535,10 @@ export class ProductStore {
       const link = this.auditLink(auditId);
       if (!link) return false;
       if (link.target_id !== targetId) throw error("审计与对象绑定不一致。", 409, "audit-target-mismatch");
+      if (!link.target_id) {
+        this.db.prepare("DELETE FROM runtime_audit_links WHERE audit_id=?").run(auditId);
+        this.event(link.product_id_at_creation, "audit.deleted", "audit", auditId, { audit_mode: "dynamic" }); return true;
+      }
       const target = this.targetById(targetId);
       this.db.prepare("DELETE FROM audit_target_links WHERE audit_id=?").run(auditId);
       this.event(target.product_id, "audit.deleted", "audit", auditId, { target_id: targetId });
@@ -526,7 +547,7 @@ export class ProductStore {
   }
   async auditLinksForProduct(productId) {
     await this.ready; this.assertProduct(productId);
-    return new Map(this.db.prepare("SELECT l.audit_id,l.target_id,l.product_id_at_creation,l.product_name_at_creation,l.snapshot_digest FROM audit_target_links l JOIN audit_targets t ON t.id=l.target_id WHERE t.product_id=?").all(productId)
+    return new Map(this.db.prepare("SELECT l.audit_id,l.target_id,l.product_id_at_creation,l.product_name_at_creation,l.snapshot_digest FROM audit_target_links l JOIN audit_targets t ON t.id=l.target_id WHERE t.product_id=? UNION ALL SELECT audit_id,NULL AS target_id,product_id_at_creation,product_name_at_creation,snapshot_digest FROM runtime_audit_links WHERE product_id_at_creation=?").all(productId, productId)
       .map(row => [row.audit_id, row]));
   }
   async listProductEvents(productId, after = 0, limit = 200) {

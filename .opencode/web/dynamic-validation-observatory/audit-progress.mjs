@@ -3,6 +3,19 @@
 export function applyAuditProgress(audit) {
   const board = audit.task_board ?? (audit.todo?.protocol === "task-board.v1" ? audit.todo : null);
   if (!board) return audit;
+  if (audit.audit_mode === "dynamic") {
+    const runtime = audit.runtime_testing_state;
+    const finalized = board.next_action === "DONE" || audit.todo_completion?.complete === true || audit.status === "completed";
+    const graph = runtime?.exploration;
+    const closed = ["CLOSED", "BLOCKED", "QUARANTINED", "SKIPPED"].includes(runtime?.status);
+    const steps = [["contact", "环境接触", !!runtime?.baseline_packet], ["explore", "动态探索", graph?.status === "COMPLETED" || closed], ["cleanup", "证据与清理封存", closed], ["validation", "独立三方复核", board.validation?.status === "REVIEWED"], ["report", "报告封存", finalized]];
+    let active = false;
+    const stages = steps.map(([id, label, done]) => { const state = done ? "completed" : !active && audit.status === "running" ? "active" : "pending"; if (!done) active = true; return { id, label, state }; });
+    const completed = (runtime?.packets ?? []).filter(packet => packet.execution_status === "COMPLETED").length;
+    return { ...audit, task_board: board, stages, stage: audit.status === "queued" ? "等待调度" : finalized ? "动态报告已封存" : stages.find(row => row.state === "active")?.label ?? "动态测试",
+      progress: Math.round(steps.filter(step => step[2]).length * 100 / steps.length), progress_source: "runtime-testing",
+      progress_text: `动态工作包完成 ${completed}/${runtime?.packets?.length ?? 0} · 探索 ${graph?.rounds ?? 0} 轮${closed ? " · 证据已封存" : ""}` };
+  }
   const sealed = board.publication === "SEALED";
   const mined = board.mining_complete === true;
   const reviewed = board.validation?.status === "REVIEWED";

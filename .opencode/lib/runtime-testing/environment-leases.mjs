@@ -4,15 +4,18 @@ import { join, resolve } from "node:path";
 import { DatabaseSync } from "node:sqlite";
 import { atomicJson } from "./controller.mjs";
 
+import { environmentUntouched, environmentOrigins } from "./ssh-environment.mjs";
+
 const queues = new Map();
 const terminal = new Set(["completed", "cancelled", "failed", "interrupted", "artifact_only"]);
 const clean = new Set(["NOT_REQUIRED", "SUCCEEDED"]);
 const hash = value => createHash("sha256").update(value).digest("hex");
 const error = (code, message, statusCode = 409) => Object.assign(new Error(message), { code, statusCode });
+function canonicalOrigin(origin) { const url = new URL(origin); return url.protocol === "ssh:" ? `ssh://${url.hostname}:${url.port || 22}` : url.origin; }
 export function environmentLeaseKey(origin) {
   const url = new URL(origin);
   return ["localhost", "127.0.0.1", "[::1]"].includes(url.hostname)
-    ? `${url.protocol}//loopback:${url.port || (url.protocol === "https:" ? 443 : 80)}` : `origin:${url.origin}`;
+    ? `${url.protocol}//loopback:${url.port || (url.protocol === "ssh:" ? 22 : url.protocol === "https:" ? 443 : 80)}` : `origin:${canonicalOrigin(origin)}`;
 }
 export const environmentLeaseId = origin => hash(environmentLeaseKey(origin));
 const alive = pid => {
@@ -61,12 +64,12 @@ export class EnvironmentLeaseStore {
     let origin = lease.origin;
     if (!origin && runtimeRoot) {
       const grant = (await jsonFile(join(runtimeRoot, "authorization.json")))?.value;
-      origin = grant?.origins?.find(value => environmentLeaseId(value) === id);
+      origin = environmentOrigins(grant ?? {}).find(value => environmentLeaseId(value) === id);
     }
     const ownerLive = lease.status === "active" && alive(lease.pid);
     const auditActive = audit && !terminal.has(audit.status);
     const canRelease = Boolean(audit && terminal.has(audit.status) && !ownerLive);
-    const safe = Boolean(state && !state.active_packet && (state.browser_allocated === false || clean.has(state.cleanup_status)) && state.reason !== "BROWSER_CLOSE_FAILED");
+    const safe = Boolean(state && !state.active_packet && (environmentUntouched(state) || clean.has(state.cleanup_status)) && !["BROWSER_CLOSE_FAILED", "EXECUTOR_CLOSE_FAILED", "SSH_REMOTE_STATE_UNKNOWN"].includes(state.reason));
     return { id, revision: record.revision, origin: origin ?? "地址未记录", audit_id: lease.audit_id ?? null,
       audit_name: audit?.name ?? lease.audit_id ?? "原任务不可用", audit_status: audit?.status ?? "unknown",
       acquired_at: lease.acquired_at ?? record.created_at, status: ownerLive || auditActive ? "active" : "needs_review",
@@ -111,7 +114,7 @@ export class EnvironmentLeaseStore {
           const existing = await this.inspect(id);
           if (existing?.can_auto_release) await this.remove(id, existing, "automatic", "原任务已结束，清理记录允许自动回收。");
           else if (existing) throw Object.assign(error(existing.status === "active" ? "ENVIRONMENT_ALREADY_LEASED" : "ENVIRONMENT_LEASE_REQUIRES_REVIEW", existing.message), { environment_lease: existing });
-          const record = { protocol: "runtime-environment-lease.v2", audit_id: auditId, owner, origin: new URL(origin).origin,
+          const record = { protocol: "runtime-environment-lease.v2", audit_id: auditId, owner, origin: canonicalOrigin(origin),
             runtime_root: resolve(runtimeRoot), pid: process.pid, status: "active", acquired_at: new Date().toISOString() };
           await writeFile(this.path(id), `${JSON.stringify(record, null, 2)}\n`, { flag: "wx", mode: 0o600 });
           leases.push({ id, owner });
@@ -133,7 +136,7 @@ export class EnvironmentLeaseStore {
       for (const lease of leases) {
         const current = await jsonFile(this.path(lease.id));
         if (current?.value.owner !== lease.owner) continue;
-        const safe = state?.browser_allocated === false || clean.has(state?.cleanup_status) && state?.reason !== "BROWSER_CLOSE_FAILED";
+        const safe = Boolean(state && (environmentUntouched(state) || clean.has(state.cleanup_status)) && !["BROWSER_CLOSE_FAILED", "EXECUTOR_CLOSE_FAILED", "SSH_REMOTE_STATE_UNKNOWN"].includes(state.reason));
         if (safe) await this.removeOwned(lease);
         else await atomicJson(this.path(lease.id), { ...current.value, pid: null, status: "needs_review",
           closed_at: new Date().toISOString(), cleanup_status: state?.cleanup_status ?? "UNKNOWN", reason: state?.reason ?? "ENVIRONMENT_STATE_UNKNOWN" });

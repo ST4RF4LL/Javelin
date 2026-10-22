@@ -17,6 +17,9 @@ function save(blob: Blob, filename: string) {
   setTimeout(() => URL.revokeObjectURL(url), 1000);
 }
 function ReportReader({ report, source, close }: { report: Report; source: Source; close: () => void }) {
+  const { runtime, openRetry } = useWorkspace();
+  const validation = useMutation({ mutationFn: () => api.reportValidationDraft(report.id), retry: false, gcTime: 0,
+    onSuccess: draft => { close(); openRetry(draft); validation.reset(); } });
   const [raw, setRaw] = useState(false);
   const query = useQuery({ queryKey: ['report', source, report.id], queryFn: ({ signal }) => api.report(report.id, signal), enabled: source === 'live', retry: false, staleTime: 60000, refetchOnWindowFocus: false });
   const demoBody = `# ${report.name}\n\n> 演示报告：仅用于新版工作台预览，不代表真实审计结果。\n\n审计对象：${report.repository}\n\n任务编号：${report.auditId}\n\n此文件演示报告交付流程。`;
@@ -35,6 +38,8 @@ function ReportReader({ report, source, close }: { report: Report; source: Sourc
       {raw ? <pre className="report-raw" tabIndex={0}>{body}</pre> : <iframe className="report-frame" title={`${report.name}正文`} sandbox="" referrerPolicy="no-referrer" srcDoc={document} />}
     </>}
     {download.error && <p className="report-download-error" role="alert">{download.error.message}</p>}
+    {source === 'live' && !runtime.liveReadOnly && <div className="report-reader-toolbar"><Button variant="outline" disabled={validation.isPending || query.isPending} onClick={() => validation.mutate()}><ShieldCheck size={15} />{validation.isPending ? '正在校验报告…' : '基于报告验证'}</Button><span className="small-muted">填写授权环境后逐项验证，独立保存结果。</span></div>}
+    {validation.error && <p className="report-download-error" role="alert">{validation.error.message}</p>}
     <div className="dialog-footer">{report.auditId && <Button asChild variant="outline"><Link to={`/audits/${encodeURIComponent(report.auditId)}`} onClick={close}>关联任务</Link></Button>}<Button onClick={() => download.mutate()} disabled={download.isPending}><Download size={15} />{download.isPending ? '正在下载…' : source === 'demo' ? '下载演示报告' : '下载封存原文'}</Button></div>
   </>;
 }

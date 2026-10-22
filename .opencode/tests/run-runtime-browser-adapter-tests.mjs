@@ -88,8 +88,10 @@ test("官方navigate失败消息转成错误；成功消息和页面内容不误
     const f = fakeBrowser(t, async () => ({ isError: false, content: [], structuredContent: { message } }));
     assert.equal((await f.browser.call("navigate_page", { identity_id: "account-1", pageId: 9, url: origin }, f.plan)).isError, true);
   }
-  const f = fakeBrowser(t, async () => ({ isError: false, content: [{ type: "text", text: "Unable to navigate in the selected page: literal page content" }], structuredContent: { message: "Successfully navigated to the authorized page." } }));
+  const f = fakeBrowser(t, async () => ({ isError: false, content: [{ type: "text", text: "Unable to navigate in the selected page: literal page content" }], structuredContent: { message: "Successfully navigated to the authorized page.", pages: [{ id: 9, url: origin, selected: true }] } }));
   assert.equal((await f.browser.call("navigate_page", { identity_id: "account-1", pageId: 9, url: origin }, f.plan)).isError, false);
+  const missing = fakeBrowser(t, async () => ({ content: [], structuredContent: { message: "Successfully navigated." } }));
+  assert.equal((await missing.browser.call("navigate_page", { identity_id: "account-1", pageId: 9, url: origin }, missing.plan)).error.code, 'BROWSER_STRUCTURED_OUTPUT_MISSING');
 });
 
 test("真实Controller不把失败导航算CONTACT基线，向Agent返回脱敏typed页面/HTTP并持久化错误", async t => {

@@ -22,7 +22,7 @@ export async function readBoard(path) {
   return board;
 }
 
-export async function createBoard({ path, auditId, apiList = "", scopeDigest = null, miningStrategy = null, bacMode = null }) {
+export async function createBoard({ path, auditId, apiList = "", scopeDigest = null, miningStrategy = null, bacMode = null, auditMode = null }) {
   const apiSources = normalizeApiList(apiList);
   if (miningStrategy != null) selectMiningStrategy(miningStrategy, apiList);
   try {
@@ -33,9 +33,10 @@ export async function createBoard({ path, auditId, apiList = "", scopeDigest = n
     return existing;
   } catch (error) { if (error.code !== "ENOENT") throw error; }
   const board = { protocol: PROTOCOL, audit_id: auditId, revision: 0, scope_digest: scopeDigest, created_at: timestamp(), updated_at: timestamp(),
+    ...(auditMode ? { audit_mode: auditMode } : {}),
     ...(miningStrategy ? { mining_strategy: miningStrategy } : {}),
     ...(bacMode != null ? { bac_analysis: { ...bacSelection(bacMode), task_plan_contract: TASK_PLAN } } : {}),
-    publication: { state: "OPEN", empty_reason: null }, api_sources: apiSources, tasks: [], attempts: [], validation: { status: "NOT_STARTED" } };
+    publication: { state: auditMode === "dynamic" ? "SEALED" : "OPEN", empty_reason: null }, api_sources: apiSources, tasks: [], attempts: [], validation: { status: "NOT_STARTED" } };
   await atomicJson(path, board);
   return board;
 }
@@ -212,6 +213,12 @@ export class TaskBoardStore {
       task.status = receipt.outcome; task.reason = receipt.outcome === "GAP" ? receipt.reason.trim() : null; task.completed_at = timestamp();
       if (receipt.outcome === "GAP" && task.incremental?.previous_report) task.report = structuredClone(task.incremental.previous_report);
       Object.assign(board.attempts.find(row => row.attempt_id === attemptId), { status: receipt.outcome, completed_at: task.completed_at });
+      if (receipt.outcome === 'REPORTED' && task.report) {
+        board.outbox ??= [];
+        board.outbox.push({ event_id: `accepted-${hash(`${this.auditId}:${taskId}:${attemptId}:${reportDigest}`).slice(0, 32)}`,
+          type: 'static.report.accepted', audit_id: this.auditId, sequence: board.outbox.length + 1, task_id: taskId, attempt_id: attemptId,
+          payload_ref: task.report.path, payload_sha256: reportDigest, scope_digest: board.scope_digest });
+      }
       return { received: true, report: task.report };
     });
   }

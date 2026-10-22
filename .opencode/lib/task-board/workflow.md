@@ -1,5 +1,18 @@
 # 通用任务面板 task-board.v1
 
+## 独立动态与联合模式（runtime-testing.v2）
+
+新任务显式选择 `audit_mode=static|dynamic|joint`。未声明模式的历史任务沿用原契约。`dynamic` 不要求源码、API 清单或静态 Finding；任务板初始 SEALED 且没有源码任务。不要对平台目录进行 Recon，不虚构 Focus Area 或文件覆盖率。`joint` 按原静态策略并行推进，后台负责动态探索。
+
+v2 的 CONTACT 由控制器自动启动。DynamicPlanner 只读脱敏事实并提交有界意图；实际浏览器调用仅由受控 Worker 完成。静态报告接收事件会生成不可变 FindingRevision，动态实验使用真实 RuntimeSurface 或静态任务引用；禁止主 Agent 手工 enqueue v2 包。只通过 `node "$AUDIT_RUNTIME_CLI" status` 监控；每次等待不超过 30 秒，避免高频轮询。环境未启用或文本为空时为 SKIPPED，不启动 Planner、Worker 或浏览器。
+
+静态交付完成（独立动态不需要该步骤）并且 exploration.status=COMPLETED/BLOCKED 时调用 `node "$AUDIT_RUNTIME_CLI" close`。返回 `runtime-work-still-active`、`runtime-planning-still-active` 或源码补充尚未交付时继续等待，不自行 cancel 绕过。联合模式在收尾触发最多一轮、六项的 source-followup.v1 源码定位与补充审计，独立任务板不会重开原板或改原覆盖分母；执行失败按具体缺口收敛。所有运行操作、事件消费水位、源码补充报告固定后才进入 review-input。
+
+沿用本文“报告复核”规范与 review-batches。复核输入可能只有 RUNTIME_ONLY 候选，`tasks=[]` 时质量复核 assessments=[]；仍需检查封存运行证据、探索缺口和清理记录。候选不为空仍必须经过独立真实会话的正方、反方、Moderator；SUPPORTED 不是最终结论。输入包含 source_followup 时逐项审查补充报告，保持 UNKNOWN 部署/源码映射，不能仅凭路径相似认定同版本。
+
+运行失败、暂停、预算耗尽或能力不足不等于不存在漏洞。未知副作用不自动重放；恢复原任务继续读取封存证据和复核，需要重新访问目标时使用新建重试明确授权。全部交付用中文，最终通过 review/finalize 生成报告，不调用旧 quick runner 或旧终稿构建器。动态模式的 RUNTIME_ONLY 交付不表示已做源码审计。
+
+
 增量审计时，后台只重开未完成项，并保留成功交付。先读 status；SEALED 不重新规划，OPEN 只补完未发布／未浏览范围。所有补做结果仍经过同一独立复核和 finalize。质量复核输入中的 `task.incremental` 指向原报告、上一轮缺口与复核说明，`incremental_changes` 记录旧 finding 的修改或撤回；须核对变化依据和保留的有效发现，不能把本轮补做等同于缺口已经关闭。新报告包含历史版本路径，原封存文件不得修改。增量审计仅复用既有运行证据，不自行启动动态测试。
 
 仅当 AUDIT_TASK_PROTOCOL=task-board.v1 时适用。历史任务执行原契约。本协议替代旧 Focus Area 全范围分区、coverage-plan/audit-todo 工作包、三视角分文件交付及旧最终报告门禁。源码只读、私有环境保护、动态授权与主机运行边界继续适用。

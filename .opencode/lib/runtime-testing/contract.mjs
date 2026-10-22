@@ -2,6 +2,8 @@ import { createHash } from "node:crypto";
 import { redactJsonText } from "../json-text-redaction.mjs";
 
 export const PROTOCOL = "runtime-testing.v1";
+export const EXPLORATION_PROTOCOL = "runtime-testing.v2";
+export const runtimeProtocol = value => [PROTOCOL, EXPLORATION_PROTOCOL].includes(value);
 export const PHASES = ["CONTACT", "EXPLORE", "CONFIRM", "CLEANUP"];
 export const MODES = ["CONTACT_ONLY", "INTEGRATED_TESTING", "TARGETED_CONFIRMATION"];
 export const ACTIONS = ["navigate", "normal_interaction", "test_input", "test_mutation"];
@@ -35,24 +37,24 @@ export function httpUrl(value) {
 export function selection(input = {}) {
   const value = input.runtime_testing;
   if (value == null) return null;
-  check(value.protocol === PROTOCOL && MODES.includes(value.mode), "runtime-selection-invalid", "动态参与范围无效。");
+  check(runtimeProtocol(value.protocol) && MODES.includes(value.mode), "runtime-selection-invalid", "动态参与范围无效。");
   const minutes = value.budget_minutes ?? 60;
   check(Number.isInteger(minutes) && minutes >= 10 && minutes <= 240, "runtime-budget-invalid", "动态总预算必须为 10–240 分钟。");
   const actions = value.allowed_actions ?? ["navigate"];
   check(Array.isArray(actions) && actions.includes("navigate") && new Set(actions).size === actions.length && actions.every(action => ACTIONS.includes(action)), "runtime-actions-invalid");
   check(["auto", "anonymous", "shared", "distinct"].includes(value.identity_mode ?? "auto"), "runtime-identity-mode-invalid");
-  return { protocol: PROTOCOL, mode: value.mode, budget_minutes: minutes, allowed_actions: actions,
+  return { protocol: value.protocol, mode: value.mode, budget_minutes: minutes, allowed_actions: actions,
     identity_mode: value.identity_mode ?? "auto", explicit_authorization: value.explicit_authorization === true };
 }
 
 export function authorize({ auditId, selected, enabled, context = "", sourceBinding = null, scopeDigest = null }) {
-  const base = { protocol: PROTOCOL, audit_id: auditId, source_binding: sourceBinding, scope_digest: scopeDigest,
+  const base = { protocol: selected?.protocol ?? PROTOCOL, audit_id: auditId, source_binding: sourceBinding, scope_digest: scopeDigest,
     mode: selected?.mode ?? "CONTACT_ONLY", budget_ms: (selected?.budget_minutes ?? 60) * 60_000,
     cleanup_reserve_ms: Math.min(600_000, Math.floor((selected?.budget_minutes ?? 60) * 60_000 / 6)),
     allowed_actions: selected?.allowed_actions ?? [], identities: [], origins: [], environment_revision: null };
   const skipped = reason => ({ public: seal({ ...base, status: "SKIPPED", reason }), private: null });
   if (typeof context !== "string" || !context.trim()) return skipped("ENVIRONMENT_NOT_PROVIDED");
-  if (selected?.protocol !== PROTOCOL || enabled !== true || selected.explicit_authorization !== true) return skipped("DYNAMIC_NOT_AUTHORIZED");
+  if (!runtimeProtocol(selected?.protocol) || enabled !== true || selected.explicit_authorization !== true) return skipped("DYNAMIC_NOT_AUTHORIZED");
   const contextDigest = createHash("sha256").update(context).digest("hex");
   return { public: seal({ ...base, status: "AUTHORIZED", reason: null, environment_input: "AGENT_PROMPT",
     environment_ready: false, identity_preference: selected.identity_mode ?? "auto",
@@ -63,7 +65,7 @@ export function authorize({ auditId, selected, enabled, context = "", sourceBind
 
 export function validatePacket(packet, authorization) {
   if (authorization.environment_ready === false) check(packet?.phase === "CONTACT", "runtime-environment-not-prepared");
-  check(packet?.protocol === PROTOCOL && ID.test(packet.id ?? "") && packet.id.length <= 96 && PHASES.includes(packet.phase), "packet-invalid");
+  check(runtimeProtocol(packet?.protocol) && packet.protocol === authorization.protocol && ID.test(packet.id ?? "") && packet.id.length <= 96 && PHASES.includes(packet.phase), "packet-invalid");
   check(packet.authorization_digest === authorization.artifact_digest && packet.environment_revision === authorization.environment_revision, "packet-authorization-binding-invalid");
   check(packet.audit_id === authorization.audit_id, "packet-audit-mismatch");
   check(Array.isArray(packet.identity_ids) && packet.identity_ids.length > 0 && new Set(packet.identity_ids).size === packet.identity_ids.length
@@ -76,8 +78,16 @@ export function validatePacket(packet, authorization) {
   check(text(packet.question) && text(packet.expected_behavior) && Array.isArray(packet.steps) && packet.steps.length > 0 && packet.steps.every(text), "packet-test-plan-required");
   check(Array.isArray(packet.counterchecks) && packet.counterchecks.every(text), "packet-counterchecks-invalid");
   if (["EXPLORE", "CONFIRM"].includes(packet.phase)) {
-    check(ID.test(packet.hypothesis_id ?? "") && text(packet.focus_area_id) && SHA.test(packet.scope_digest ?? ""), "packet-focus-binding-required");
-    check(packet.scope_digest === authorization.scope_digest, "packet-frozen-scope-mismatch");
+    check(ID.test(packet.hypothesis_id ?? ""), "packet-hypothesis-required");
+    if (packet.protocol === EXPLORATION_PROTOCOL) {
+      const scope = packet.scope_ref;
+      check(scope && ["STATIC_TASK", "STATIC_FOCUS", "RUNTIME_SURFACE", "FINAL_REPORT_FINDING"].includes(scope.kind) && ID.test(scope.id ?? "") && SHA.test(scope.digest ?? ""), "packet-scope-reference-required");
+      if (scope.kind !== "RUNTIME_SURFACE") check(SHA.test(packet.scope_digest ?? "") && packet.scope_digest === authorization.scope_digest, "packet-frozen-scope-mismatch");
+      else check(packet.environment_revision === authorization.environment_revision, "packet-surface-environment-mismatch");
+    } else {
+      check(text(packet.focus_area_id) && SHA.test(packet.scope_digest ?? ""), "packet-focus-binding-required");
+      check(packet.scope_digest === authorization.scope_digest, "packet-frozen-scope-mismatch");
+    }
     check(packet.counterchecks.length > 0, "packet-countercheck-required");
   }
   if (packet.phase === "CONFIRM") check(text(packet.finding_id) && SHA.test(packet.finding_object_digest ?? "") && text(packet.vulnerability_type_id), "confirmation-finding-required");

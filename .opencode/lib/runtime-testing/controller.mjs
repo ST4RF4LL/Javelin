@@ -2,8 +2,10 @@ import { randomUUID, createHash } from "node:crypto";
 import { mkdir, readFile, writeFile, rename, lstat, realpath } from "node:fs/promises";
 import { join, relative, resolve, isAbsolute } from "node:path";
 import { performance } from "node:perf_hooks";
-import { PROTOCOL, PHASES, seal, digest, check, text, httpUrl, validatePacket, validateSubmission, redact, redactStructured, fail } from "./contract.mjs";
+import { PROTOCOL, EXPLORATION_PROTOCOL, PHASES, seal, digest, check, text, httpUrl, validatePacket, validateSubmission, redact, redactStructured, fail } from "./contract.mjs";
 import { environmentTools, resolveEnvironment } from "./environment-prompt.mjs";
+
+import { environmentAllocated } from "./ssh-environment.mjs";
 
 export async function atomicJson(path, value) {
   const temporary = `${path}.${randomUUID()}.tmp`;
@@ -55,7 +57,7 @@ export class RuntimeTestingController {
       }
       check(prior.authorization_digest === this.authorization.artifact_digest, "runtime-authorization-changed-new-run-required");
       this.state = prior;
-      if (prior.active_packet || prior.browser_allocated && !["CLOSED", "SKIPPED", "QUARANTINED"].includes(prior.status)) {
+      if (prior.active_packet || environmentAllocated(prior) && !["CLOSED", "SKIPPED", "QUARANTINED"].includes(prior.status)) {
         this.state.status = "QUARANTINED"; this.state.reason = "PROCESS_RECOVERY_ENVIRONMENT_UNKNOWN";
         this.state.active_packet = null; this.state.cleanup_status = "UNKNOWN";
         for (const packet of this.state.packets.filter(packet => packet.execution_status === "RUNNING")) {
@@ -75,12 +77,13 @@ export class RuntimeTestingController {
       }
     } catch (error) {
       if (error.code !== "ENOENT" || recoveredState) throw error;
-      this.state = { protocol: PROTOCOL, audit_id: this.authorization.audit_id, authorization_digest: this.authorization.artifact_digest,
+      this.state = { protocol: this.authorization.protocol, audit_id: this.authorization.audit_id, authorization_digest: this.authorization.artifact_digest,
         environment_revision: this.authorization.environment_revision, status: this.authorization.status === "SKIPPED" ? "SKIPPED" : "AUTHORIZED",
         reason: this.authorization.reason, environment_ready: this.authorization.environment_ready ?? true,
         started_at: new Date().toISOString(), elapsed_ms: 0, cleanup_elapsed_ms: 0,
         budget_ms: this.authorization.budget_ms, cleanup_reserve_ms: this.authorization.cleanup_reserve_ms,
-        browser_allocated: false, active_packet: null, baseline_packet: null, cleanup_status: "NOT_REQUIRED", packets: [], queued_packets: [], evidence: [],
+        browser_allocated: false, ssh_allocated: false, active_packet: null, baseline_packet: null, cleanup_status: "NOT_REQUIRED", packets: [], queued_packets: [], evidence: [],
+        ...(this.authorization.protocol === EXPLORATION_PROTOCOL ? { scopes: [], finding_revisions: [], outbox: [] } : {}),
         stages: Object.fromEntries(PHASES.map(phase => [phase, this.authorization.status === "SKIPPED" ? "SKIPPED" : "NOT_SCHEDULED"])) };
     }
     await atomicJson(join(this.root, "authorization.json"), this.authorization); await this.save();
@@ -103,7 +106,7 @@ export class RuntimeTestingController {
   async evidence(name, value, active) {
     const safe = redact(value, this.privateContext);
     // Text stays text after redaction: never reparse a potentially altered JSON string.
-    const record = seal({ protocol: PROTOCOL, audit_id: this.authorization.audit_id, content: safe,
+    const record = seal({ protocol: this.authorization.protocol, audit_id: this.authorization.audit_id, content: safe,
       structured_content: redactStructured(value, this.privateContext), recorded_at: new Date().toISOString() });
     const path = `evidence/${name}.json`;
     await atomicJson(join(this.root, path), record);
@@ -121,6 +124,11 @@ export class RuntimeTestingController {
       check(!this.closed && !["CLOSED", "QUARANTINED", "BLOCKED"].includes(this.state.status), "runtime-environment-unavailable");
       check(!this.active, "runtime-environment-busy");
       validatePacket(packet, this.authorization);
+      if (packet.protocol === EXPLORATION_PROTOCOL && ["EXPLORE", "CONFIRM"].includes(packet.phase)) {
+        check(this.state.scopes?.some(scope => digest(scope) === packet.scope_ref.digest && scope.id === packet.scope_ref.id && scope.kind === packet.scope_ref.kind), "runtime-scope-not-registered");
+        if (packet.phase === "CONFIRM") check(this.state.finding_revisions?.some(revision => revision.id === packet.finding_revision_id
+          && revision.scope_id === packet.scope_ref.id && revision.finding_id === packet.finding_id && revision.finding_object_digest === packet.finding_object_digest), "runtime-finding-revision-not-registered");
+      }
       check(!this.state.packets.some(row => row.id === packet.id), "runtime-packet-already-executed");
       if (["EXPLORE", "CONFIRM"].includes(packet.phase)) check(this.state.baseline_packet, "runtime-baseline-required");
       const attempts = this.state.packets.filter(row => row.hypothesis_id && row.hypothesis_id === packet.hypothesis_id);
@@ -143,6 +151,7 @@ export class RuntimeTestingController {
         finding_id: packet.finding_id ?? null, finding_object_digest: packet.finding_object_digest ?? null,
         vulnerability_type_id: packet.vulnerability_type_id ?? null,
         focus_area_id: packet.focus_area_id ?? null, scope_digest: packet.scope_digest ?? null,
+        ...(packet.scope_ref ? { scope_ref: structuredClone(packet.scope_ref), finding_revision_id: packet.finding_revision_id ?? null } : {}),
         input_digest: digest(packet), execution_status: "RUNNING", started_at: new Date().toISOString(),
         budget_ms: duration, outcome: "INCONCLUSIVE", cleanup_status: "UNKNOWN", evidence_ids: [] };
       this.state.packets.push(row); this.state.active_packet = packet.id; this.state.status = "IN_USE"; this.state.stages[packet.phase] = "RUNNING";
@@ -170,20 +179,20 @@ export class RuntimeTestingController {
       error = active.preparationError ?? error;
       const terminationReason = error.code ?? "RUNTIME_EXECUTION_FAILED";
       if (["runtime-no-submission", "RUNTIME_WORKER_FAILED"].includes(error.code)) {
-        const rejected = active.row.last_submission_error?.code ?? active.browserError;
+        const rejected = active.row.last_submission_error?.code ?? active.browserError ?? active.executionError;
         if (rejected) error = fail(rejected);
       }
       if (this.active === active) active.stopWorker?.();
       const leaseBlocked = ["ENVIRONMENT_ALREADY_LEASED", "ENVIRONMENT_LEASE_REQUIRES_REVIEW"].includes(error.code);
       const diagnostic = {
-        "contact-identities-not-observed": "平台未能从浏览器结果确认授权身份的访问记录，环境接触结果提交被拒绝。",
+        "contact-identities-not-observed": "平台未能从执行结果确认授权身份的访问或 SSH 登录记录，环境接触结果提交被拒绝。",
         "xss-identities-not-observed": "浏览器证据未覆盖要求的独立身份，验证结果提交被拒绝。",
         BROWSER_STRUCTURED_OUTPUT_MISSING: "浏览器未返回结构化页面记录，平台无法确认环境接触结果。",
       }[error.code];
       result = { execution_status: leaseBlocked ? "BLOCKED" : error.code === "runtime-packet-timed-out" ? "TIMED_OUT" : "FAILED", outcome: "INCONCLUSIVE",
         ...(leaseBlocked ? { environment_lease: error.environment_lease ?? null } : {}),
         termination_reason: terminationReason,
-        cleanup_status: this.state.browser_allocated ? "UNKNOWN" : "NOT_REQUIRED", summary: leaseBlocked ? "申请测试环境被阻止，本次尚未访问目标；请在运行环境页查看占用来源。"
+        cleanup_status: environmentAllocated(this.state) ? "UNKNOWN" : "NOT_REQUIRED", summary: leaseBlocked ? "申请测试环境被阻止，本次尚未访问目标；请在运行环境页查看占用来源。"
           : diagnostic ?? (active.row.last_submission_error ? `运行结果提交未通过平台校验（${error.code}），工作包未完成。` : "运行测试未完成，已停止环境复用。"),
         observations: [], evidence_ids: [...active.actionIds], changes: [], gaps: [`运行测试未完成：${String(error.code ?? "RUNTIME_EXECUTION_FAILED")}。`], reason: error.code ?? "RUNTIME_EXECUTION_FAILED" };
     } finally { this.clearTimer(timer); }
@@ -201,7 +210,8 @@ export class RuntimeTestingController {
     check(!active.environmentPreparing, "runtime-environment-preparation-in-progress");
     if (this.authorization.environment_ready === false) return environmentTools.filter(tool => tool.name === "configure_environment");
     if (!this.browser) {
-      this.state.browser_allocated = true; await this.save();
+      this.state.browser_allocated ||= active.packet.identity_ids.some(id => this.authorization.identities.some(identity => identity.id === id && (identity.transport ?? "web") === "web"));
+      await this.save();
       this.requireActive(token);
       this.browserPromise ??= Promise.resolve().then(() => {
         this.requireActive(token);
@@ -221,7 +231,7 @@ export class RuntimeTestingController {
   async configureEnvironment(token, input) {
     return this.exclusive(async () => {
       const active = this.requireActive(token);
-      check(active.packet.phase === "CONTACT" && !this.state.browser_allocated && active.actionIds.size === 0 && this.state.packets.length === 1,
+      check(active.packet.phase === "CONTACT" && !environmentAllocated(this.state) && active.actionIds.size === 0 && this.state.packets.length === 1,
         "runtime-environment-configuration-closed");
       const prepared = resolveEnvironment(this.authorization, input);
       // Register secrets before any failure could become a public diagnostic.
@@ -246,7 +256,7 @@ export class RuntimeTestingController {
         await this.save();
         this.requireActive(token);
         return { environment_ready: true, authorization_digest: prepared.public.artifact_digest,
-          origins: prepared.public.origins, identities: prepared.public.identities, test_data_scope: prepared.public.test_data_scope,
+          origins: prepared.public.origins, ...(prepared.public.ssh_targets ? { ssh_targets: prepared.public.ssh_targets } : {}), identities: prepared.public.identities, test_data_scope: prepared.public.test_data_scope,
           packet: active.packet };
       } catch (error) {
         await release?.();
@@ -278,26 +288,40 @@ export class RuntimeTestingController {
       }
       await this.tools(token);
       this.requireActive(token);
-      const id = `${active.packet.id}.action-${++active.actionSequence}`;
+      let id = `${active.packet.id}.action-${++active.actionSequence}`;
+      let startedEvidenceId;
+      if (name === "ssh_exec") {
+        const started = await this.evidence(id, { tool: name, identity_id: args.identity_id, arguments: args,
+          status: "STARTED", summary: "已提交 SSH 命令请求，尚未观察到执行结果。" }, active);
+        active.actionIds.add(started.id); startedEvidenceId = started.id; await this.save(); this.requireActive(token);
+        id = `${active.packet.id}.action-${++active.actionSequence}`;
+      }
       let result;
       try {
+        if (name.startsWith("ssh_")) { this.state.ssh_allocated = true; await this.save(); this.requireActive(token); }
         result = await this.browser.call(name, args, active.packet);
       } catch (error) {
         this.requireActive(token);
-        const code = error.code ?? "BROWSER_TOOL_FAILED";
+        const code = error.code ?? "RUNTIME_TOOL_FAILED";
+        if (name.startsWith("ssh_")) active.executionError = code;
         const binding = await this.evidence(id, { tool: name, identity_id: args.identity_id, arguments: args,
-          status: "FAILED", code, summary: "浏览器工具调用失败。",
-          result: { isError: true, error: { code, message: String(error.message ?? "浏览器工具未返回错误说明。") } } }, active);
+          status: "FAILED", code, summary: "执行工具调用失败。",
+          result: { isError: true, error: { code, message: String(error.message ?? "执行工具未返回错误说明。") } } }, active);
         active.actionIds.add(binding.id); await this.save(); throw error;
       }
       this.requireActive(token);
       const binding = await this.evidence(id, { tool: name, identity_id: args.identity_id, arguments: args, result }, active);
       if (result?.isError && result.error?.code === "BROWSER_STRUCTURED_OUTPUT_MISSING") active.browserError = result.error.code;
-      if (observedAuthorizedNavigation(name, args, result, this.authorization)) active.identitiesUsed.add(args.identity_id);
+      if (observedAuthorizedNavigation(name, args, result, this.authorization)) { active.identitiesUsed.add(args.identity_id); (active.webIdentitiesUsed ??= new Set()).add(args.identity_id); }
+      const connection = result?.structuredContent?.ssh_connection;
+      if (name === "ssh_connect" && !result?.isError && connection?.authenticated === true && connection.identity_id === args.identity_id
+        && this.authorization.ssh_targets?.some(target => target.id === args.target_id && target.id === connection.target_id && target.identity_id === args.identity_id && target.origin === connection.origin)) active.identitiesUsed.add(args.identity_id);
+      const sshStatus = result?.structuredContent?.ssh_execution?.status;
+      if (["TIMED_OUT", "CANCELLED", "DISCONNECTED", "FAILED"].includes(sshStatus)) active.remoteStateUnknown = true;
       active.actionIds.add(binding.id); await this.save();
       // Keep the legacy text while exposing MCP page/request IDs and typed data
       // without reparsing text that redaction may have made non-JSON.
-      return { evidence_id: binding.id, result: redact(result, this.privateContext),
+      return { evidence_id: binding.id, ...(startedEvidenceId ? { started_evidence_id: startedEvidenceId } : {}), result: redact(result, this.privateContext),
         structured_result: redactStructured(result, this.privateContext), isError: result?.isError === true };
     } finally { release(); }
   }
@@ -307,12 +331,14 @@ export class RuntimeTestingController {
     check(!active.environmentPreparing, "runtime-environment-preparation-in-progress");
     try {
       validateSubmission(value, active.packet, active.actionIds);
+      if (active.remoteStateUnknown) check(["FAILED", "UNKNOWN"].includes(value.cleanup_status), "runtime-ssh-remote-state-unknown");
       if (active.packet.phase === "CONTACT" && value.execution_status === "COMPLETED") {
         check(this.authorization.environment_ready !== false, "runtime-environment-not-prepared");
         check(active.packet.identity_ids.every(id => active.identitiesUsed.has(id)), "contact-identities-not-observed");
       }
       if (value.outcome === "SUPPORTED" && active.packet.vulnerability_type_id === "JW-INJECT-06") {
-        check(active.packet.identity_ids.every(id => active.identitiesUsed.has(id)), "xss-identities-not-observed");
+        const webIds = active.packet.identity_ids.filter(id => this.authorization.identities.some(identity => identity.id === id && (identity.transport ?? "web") === "web"));
+        check(webIds.length >= 2 && webIds.every(id => active.webIdentitiesUsed?.has(id)), "xss-identities-not-observed");
       }
     } catch (error) {
       // Persist only the contract's fixed code, never rejected private input.
@@ -338,7 +364,7 @@ export class RuntimeTestingController {
         changes: result.changes.map(change => ({ marker: redact(change.marker, this.privateContext), resource: redact(change.resource, this.privateContext), cleanup_status: change.cleanup_status })),
         proof: result.proof ? Object.fromEntries(Object.entries(result.proof).map(([key, value]) => [key,
           key === "method" && value === "REAL_APPLICATION_INPUT" ? value : redact(value, this.privateContext)])) : null };
-      const output = seal({ ...safe, protocol: PROTOCOL, audit_id: this.authorization.audit_id, packet_id: active.packet.id,
+      const output = seal({ ...safe, protocol: this.authorization.protocol, audit_id: this.authorization.audit_id, packet_id: active.packet.id,
         input_digest: active.row.input_digest, authorization_digest: this.authorization.artifact_digest,
         environment_revision: this.authorization.environment_revision, elapsed_ms: elapsed, evidence_validity: "UNVERIFIED" });
       const path = `packets/${active.packet.id}.result.json`; await atomicJson(join(this.root, path), output);
@@ -350,7 +376,7 @@ export class RuntimeTestingController {
       this.state.stages[active.packet.phase] = safe.execution_status; this.state.active_packet = null;
       this.state.cleanup_status = safe.cleanup_status;
       if (safe.environment_lease) this.state.environment_lease = safe.environment_lease;
-      if (safe.execution_status === "BLOCKED" && !this.state.browser_allocated) {
+      if (safe.execution_status === "BLOCKED" && !environmentAllocated(this.state)) {
         this.state.status = "BLOCKED"; this.state.reason = safe.reason ?? "ENVIRONMENT_CONTACT_INCOMPLETE";
       } else if (["FAILED", "UNKNOWN"].includes(safe.cleanup_status) || ["FAILED", "TIMED_OUT", "CANCELLED"].includes(safe.execution_status)) {
         this.state.status = "QUARANTINED"; this.state.reason = safe.reason ?? "ENVIRONMENT_STATE_UNKNOWN";
@@ -361,6 +387,11 @@ export class RuntimeTestingController {
         if (active.packet.phase === "CONTACT") this.state.baseline_packet = active.packet.id;
       }
       this.active = null;
+      if (this.authorization.protocol === EXPLORATION_PROTOCOL) {
+        this.state.outbox ??= [];
+        this.state.outbox.push({ event_id: `runtime-${active.packet.id}`, type: "runtime.packet.completed", audit_id: this.authorization.audit_id,
+          sequence: this.state.outbox.length + 1, packet_id: active.packet.id, payload_ref: path, payload_digest: output.artifact_digest });
+      }
       if (["QUARANTINED", "BLOCKED"].includes(this.state.status)) await this.releaseBrowser();
       await this.save();
     });
@@ -395,8 +426,8 @@ export class RuntimeTestingController {
   async releaseBrowser() {
     if (this.browser) {
       const browser = this.browser; this.browser = null;
-      try { await browser.close(); } catch {
-        this.state.cleanup_status = "UNKNOWN"; this.state.status = "QUARANTINED"; this.state.reason = "BROWSER_CLOSE_FAILED";
+      try { await browser.close(); } catch (error) {
+        this.state.cleanup_status = "UNKNOWN"; this.state.status = "QUARANTINED"; this.state.reason = error.code === "runtime-ssh-remote-state-unknown" ? "SSH_REMOTE_STATE_UNKNOWN" : this.state.ssh_allocated ? "EXECUTOR_CLOSE_FAILED" : "BROWSER_CLOSE_FAILED";
       }
     }
   }
@@ -409,12 +440,13 @@ export class RuntimeTestingController {
       check(digest(result) === row.result_digest && result.artifact_digest === row.result_digest, "runtime-result-changed");
       packets.push({ ...row, result });
     }
-    const value = seal({ protocol: PROTOCOL, artifact_type: "runtime-testing-evidence-set", audit_id: this.authorization.audit_id,
+    const value = seal({ protocol: this.authorization.protocol, artifact_type: "runtime-testing-evidence-set", audit_id: this.authorization.audit_id,
       authorization_digest: this.authorization.artifact_digest, environment_revision: this.authorization.environment_revision,
       status: this.state.status, reason: this.state.reason, cleanup_status: this.state.cleanup_status,
       ...(this.state.runtime_host ? { runtime_host: this.state.runtime_host } : {}),
       elapsed_ms: this.state.elapsed_ms, cleanup_elapsed_ms: this.state.cleanup_elapsed_ms, stages: this.state.stages,
-      packets, evidence_bindings: this.state.evidence });
+      packets, evidence_bindings: this.state.evidence,
+      ...(this.authorization.protocol === EXPLORATION_PROTOCOL ? { scopes: this.state.scopes ?? [], finding_revisions: this.state.finding_revisions ?? [], outbox: this.state.outbox ?? [] } : {}) });
     await atomicJson(join(this.root, "evidence-set.json"), value); return value;
   }
 }

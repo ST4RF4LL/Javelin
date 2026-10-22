@@ -1,6 +1,6 @@
 # 贯穿式运行测试执行契约
 
-仅当平台注入 `AUDIT_RUNTIME_PROTOCOL=runtime-testing.v1` 时采用本文。未设置的历史任务继续原 quick v1/v2 协议，旧 opt-in 不扩展为新授权。新协议的控制器、环境租约、工具代理、预算计时和报告版本路由都是本次新增能力。
+本文描述 `AUDIT_RUNTIME_PROTOCOL=runtime-testing.v1` 的历史 Web 执行契约。新版 `runtime-testing.v2` 支持 Web 与 SSH，按完整私有环境原文选择通道；仅有 SSH 时不得要求 HTTP(S) URL 或 Chrome。新版流程和报告定向验证见 [运行测试工作流](../../../docs/runtime-testing-workflow.md)。未设置的历史任务继续原 quick v1/v2 协议，旧 opt-in 不扩展为新授权。新协议的控制器、环境租约、工具代理、预算计时和报告版本路由都是本次新增能力。
 
 ## 执行顺序
 

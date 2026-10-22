@@ -14,9 +14,12 @@ const reply = async operation => {
 };
 server.registerTool('audit_register', {
   description: '用户要求开始源码审计时，登记当前原生 Agent 会话并继续在该会话执行。后台提供任务板、制品和 Web 进度；此工具不启动另一个主 Agent。',
-  inputSchema: { ...identity, directory: z.string().describe('当前 Agent 工作目录的绝对路径'), source_root: z.string(), name: z.string().optional(),
+  inputSchema: { ...identity, directory: z.string().describe('当前 Agent 工作目录的绝对路径'), source_root: z.string().optional(), audit_mode: z.enum(['static', 'dynamic', 'joint']).optional(), name: z.string().optional(),
     product_id: z.string().optional(), target_id: z.string().optional(), mining_strategy: z.enum(['focus_area', 'api', 'file_sweep']).optional(), api_inventory: z.string().optional(),
     memory_mode: z.enum(['full', 'facts_only', 'off', 'blind']).optional(), additional_instructions: z.string().optional(),
+    runtime_testing: z.object({ protocol: z.enum(['runtime-testing.v1', 'runtime-testing.v2']), mode: z.enum(['CONTACT_ONLY', 'INTEGRATED_TESTING', 'TARGETED_CONFIRMATION']),
+      budget_minutes: z.number().int().min(10).max(240), identity_mode: z.enum(['auto', 'anonymous', 'shared', 'distinct']),
+      allowed_actions: z.array(z.enum(['navigate', 'normal_interaction', 'test_input', 'test_mutation'])), explicit_authorization: z.boolean() }).optional(),
     test_environment_enabled: z.boolean().optional().describe('仅用户明确开启授权动态验证时为 true'), test_environment_context: z.string().optional() },
 }, input => reply(() => bridge.register(input)));
 server.registerTool('audit_command', {

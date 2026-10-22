@@ -5,29 +5,38 @@ import { join, dirname } from "node:path";
 import { fileURLToPath } from "node:url";
 import { spawn } from "node:child_process";
 import { RuntimeTestingController, atomicJson } from "./controller.mjs";
-import { ChromeRuntimeBrowser } from "./browser.mjs";
-import { PROTOCOL, check, fail, validatePacket } from "./contract.mjs";
+import { RuntimeExecutor } from "./executor.mjs";
+import { environmentAllocated, environmentOrigins } from "./ssh-environment.mjs";
+import { PROTOCOL, EXPLORATION_PROTOCOL, check, fail, validatePacket } from "./contract.mjs";
 import { workerInput } from "./environment-prompt.mjs";
 import { EnvironmentLeaseStore } from "./environment-leases.mjs";
 import { prepareAgentLaunch } from "../audit-runtime/engines/index.mjs";
+
+import { RuntimeExplorationService } from "../runtime-exploration/service.mjs";
+import { ReportValidationService } from "./report-validation.mjs";
+import { acquireAgentSlot } from "../runtime-exploration/agent.mjs";
+import { globalAgentSlots } from "../agent-slots.mjs";
 
 const gateway = fileURLToPath(new URL("./worker-mcp.mjs", import.meta.url));
 const workerInstructions = fileURLToPath(new URL("./worker-instructions.md", import.meta.url));
 
 export class RuntimeTestingService {
-  constructor({ root, privateRoot, authorization, privateContext, command, engine = "opencode", environment, workspaceRoot, model, onChange = async () => {}, browserFactory, worker, spawnProcess = spawn }) {
+  constructor({ root, privateRoot, authorization, privateContext, command, engine = "opencode", environment, workspaceRoot, model, onChange = async () => {}, browserFactory, sshFactory, worker, planner, sourceReport, staticStore = () => null, beforeClose = async () => {}, agentSlots = globalAgentSlots, spawnProcess = spawn }) {
     this.root = root; this.privateRoot = privateRoot; this.command = command; this.environment = environment;
     this.engine = engine;
     this.workspaceRoot = workspaceRoot; this.model = model; this.onChange = onChange; this.token = randomUUID();
     this.queue = []; this.draining = null; this.accepting = true; this.server = null;
     this.environmentLeases = new EnvironmentLeaseStore({ stateRoot: dirname(dirname(privateRoot)) });
     this.leases = []; this.leaseOwner = randomUUID();
-    this.spawnProcess = spawnProcess;
+    this.spawnProcess = spawnProcess; this.agentSlots = agentSlots; this.beforeClose = beforeClose; this.slotAbort = new AbortController();
     this.controller = new RuntimeTestingController({ root, authorization, privateContext,
       prepareEnvironment: grant => this.acquireEnvironment(grant),
       persistEnvironment: async context => { await mkdir(this.privateRoot, { recursive: true }); await atomicJson(join(this.privateRoot, "environment.json"), context); },
-      browserFactory: browserFactory ?? (async grant => new ChromeRuntimeBrowser(grant)),
+      browserFactory: (grant, context) => new RuntimeExecutor(grant, context, { browserFactory, sshFactory }),
       worker: async args => { await this.changed(); return worker ? worker(args) : this.worker(args); } });
+    if (authorization.protocol === EXPLORATION_PROTOCOL) this.exploration = sourceReport
+      ? new ReportValidationService({ runtime: this, sourceReport, onChange: async () => this.changed(false) })
+      : new RuntimeExplorationService({ runtime: this, staticStore, planner, onChange: async () => this.changed(false) });
   }
   async start() {
     try { return await this.startOnce(); } catch (error) {
@@ -59,17 +68,18 @@ export class RuntimeTestingService {
     const maximumElapsed = Math.max(this.controller.authorization.budget_ms * 4, 3_600_000);
     this.expiryTimer = setTimeout(() => {
       if (this.controller.closed) return;
-      this.controller.state.status = this.controller.state.browser_allocated ? "QUARANTINED" : "BLOCKED";
+      this.controller.state.status = environmentAllocated(this.controller.state) ? "QUARANTINED" : "BLOCKED";
       this.controller.state.reason = "MAX_ELAPSED_EXCEEDED";
-      if (this.controller.state.browser_allocated) this.controller.state.cleanup_status = "UNKNOWN";
+      if (environmentAllocated(this.controller.state)) this.controller.state.cleanup_status = "UNKNOWN";
       this.shutdown().catch(() => {});
     }, Math.max(1, maximumElapsed - (Date.now() - Date.parse(this.controller.state.started_at))));
     this.expiryTimer.unref?.();
     await this.changed(); return this;
   }
   async acquireEnvironment(authorization) {
-    check(authorization.origins.length > 0 && this.leases.length === 0, "runtime-environment-lease-invalid");
-    const leases = await this.environmentLeases.acquire({ origins: authorization.origins, auditId: authorization.audit_id,
+    const origins = environmentOrigins(authorization);
+    check(origins.length > 0 && this.leases.length === 0, "runtime-environment-lease-invalid");
+    const leases = await this.environmentLeases.acquire({ origins, auditId: authorization.audit_id,
       runtimeRoot: this.root, owner: this.leaseOwner });
     this.leases = leases;
     return async () => { await this.environmentLeases.abandon(leases); if (this.leases === leases) this.leases = []; };
@@ -78,9 +88,10 @@ export class RuntimeTestingService {
     if (!this.controller.closed || !this.leases.length) return;
     await this.environmentLeases.finish(this.leases, this.controller.state); this.leases = [];
   }
-  async changed() {
+  async changed(notify = true) {
     await this.settleEnvironment();
-    await this.onChange({ ...this.controller.snapshot(), queued_packets: this.queue.map(packet => ({ id: packet.id, phase: packet.phase })) });
+    await this.onChange({ ...this.controller.snapshot(), ...(this.exploration ? { exploration: this.exploration.publicSnapshot() } : {}), queued_packets: this.queue.map(packet => ({ id: packet.id, phase: packet.phase })) });
+    if (notify) this.exploration?.notify();
   }
   async handle(request, response) {
     try {
@@ -99,15 +110,14 @@ export class RuntimeTestingService {
         await this.changed();
       } else {
         check(token === this.token, "runtime-controller-auth-required");
-        if (request.url === "/status") result = { ...this.controller.snapshot(), queued_packets: this.queue.map(packet => ({ id: packet.id, phase: packet.phase })) };
-        else if (request.url === "/enqueue") result = await this.enqueue(body);
+        if (request.url === "/status") {
+          result = { ...this.controller.snapshot(), ...(this.exploration ? { exploration: this.exploration.progress() } : {}), queued_packets: this.queue.map(packet => ({ id: packet.id, phase: packet.phase })) };
+          if (this.exploration) for (const key of ['scopes', 'finding_revisions', 'outbox', 'evidence']) delete result[key];
+        }
+        else if (request.url === "/enqueue") { check(this.controller.authorization.protocol !== EXPLORATION_PROTOCOL, "runtime-v2-controller-managed"); result = await this.enqueue(body); }
         else if (request.url === "/close") {
-          const unavailable = ["QUARANTINED", "BLOCKED"].includes(this.controller.state.status);
-          check(unavailable || !this.draining && this.queue.length === 0, "runtime-work-still-active");
-          if (unavailable) this.cancelQueued("ENVIRONMENT_UNAVAILABLE");
-          clearTimeout(this.expiryTimer);
-          this.accepting = false; result = await this.controller.close(); await this.changed();
-        } else if (request.url === "/cancel") { clearTimeout(this.expiryTimer); this.accepting = false; this.cancelQueued("USER_CANCELLED"); result = await this.controller.cancel(); await this.changed(); }
+          result = await this.close();
+        } else if (request.url === "/cancel") { clearTimeout(this.expiryTimer); this.accepting = false; this.slotAbort.abort(); await this.exploration?.stop(); this.cancelQueued("USER_CANCELLED"); result = await this.controller.cancel(); await this.exploration?.refreshFindings?.(true); await this.changed(); }
         else check(false, "runtime-route-unknown");
       }
       response.writeHead(200, { "Content-Type": "application/json", "Cache-Control": "no-store" }); response.end(JSON.stringify(result));
@@ -127,7 +137,7 @@ export class RuntimeTestingService {
       this.controller.state.status = "QUARANTINED"; this.controller.state.reason = "RUNTIME_QUEUE_FAILED";
       this.controller.state.cleanup_status = "UNKNOWN";
       await this.shutdown().catch(shutdownError => { this.shutdownError = shutdownError; });
-    }).finally(() => { this.draining = null; });
+    }).finally(() => { this.draining = null; if (this.accepting) this.exploration?.notify(); });
     return { status: "QUEUED", packet_id: packet.id };
   }
   async drain() {
@@ -135,7 +145,12 @@ export class RuntimeTestingService {
       const packet = this.queue.shift();
       this.inFlightPacket = packet;
       this.controller.state.queued_packets = structuredClone(this.queue);
-      try { await this.controller.run(packet); } catch (error) {
+      let release;
+      try {
+        release = await acquireAgentSlot(`runtime:${this.controller.authorization.audit_id}:${packet.id}`, this.slotAbort.signal, this.agentSlots);
+        if (!this.accepting) return;
+        await this.controller.run(packet);
+      } catch (error) {
         if (this.controller.closed) return;
         // A failed write after admission is an execution/storage failure, not
         // another skipped packet with the same id.
@@ -144,7 +159,7 @@ export class RuntimeTestingService {
           finding_id: packet.finding_id ?? null, finding_object_digest: packet.finding_object_digest ?? null, scope_digest: packet.scope_digest ?? null,
           execution_status: "SKIPPED", outcome: "INCONCLUSIVE", cleanup_status: "NOT_REQUIRED", reason: error.code ?? "PACKET_NOT_EXECUTED" });
         await this.controller.save();
-      } finally { this.inFlightPacket = null; }
+      } finally { this.inFlightPacket = null; release?.(); }
       if (!this.accepting) return;
       if (["BLOCKED", "QUARANTINED"].includes(this.controller.state.status)) {
         this.accepting = false; clearTimeout(this.expiryTimer);
@@ -157,11 +172,12 @@ export class RuntimeTestingService {
   async contact() {
     if (this.controller.state.status !== "AUTHORIZED") return;
     const grant = this.controller.authorization;
-    return this.enqueue({ protocol: PROTOCOL, id: "contact-1", phase: "CONTACT", audit_id: grant.audit_id,
+    return this.enqueue({ protocol: grant.protocol, id: "contact-1", phase: "CONTACT", audit_id: grant.audit_id,
       authorization_digest: grant.artifact_digest, environment_revision: grant.environment_revision,
       identity_ids: grant.identities.map(identity => identity.id), actions: grant.allowed_actions.filter(action => ["navigate", "normal_interaction"].includes(action)),
-      budget_seconds: 600, question: "测试环境是否可访问，授权身份和正常操作基线是否可用？", expected_behavior: "每个授权身份在隔离会话中访问对应测试范围。",
-      steps: ["先完整理解私有环境 prompt，登记目标、隔离身份和敏感值；无法确定必要信息时说明缺口。", "通过真实应用路径确认页面、身份和正常响应；不得进行漏洞输入。"], counterchecks: [] });
+      budget_seconds: this.exploration instanceof ReportValidationService ? 120 : 600,
+      question: this.exploration instanceof ReportValidationService ? "仅完成授权环境登记和必要登录，不枚举业务功能；后续按最终报告逐项验证。" : "测试环境是否可访问，授权身份和正常操作基线是否可用？", expected_behavior: "每个授权身份在隔离会话中访问对应测试范围。",
+      steps: ["先完整理解私有环境 prompt，登记目标、隔离身份和敏感值；无法确定必要信息时说明缺口。", "按登记的 Web 或 SSH 通道确认身份和正常响应；SSH 先完成连接认证，必要时运行授权范围内的正常基线命令；不得进行漏洞输入。"], counterchecks: [] });
   }
   async worker({ active, privateContext }) {
     const inherited = JSON.parse(this.environment.OPENCODE_CONFIG_CONTENT ?? "{}");
@@ -174,7 +190,10 @@ export class RuntimeTestingService {
       permission: { "*": "deny", "runtime-browser_*": "allow" } } } };
     // Secrets are on a private attachment, never in argv or public report artifacts.
     const inputPath = join(this.privateRoot, `${active.packet.id}.worker.json`);
-    await atomicJson(inputPath, workerInput(active.packet, this.controller.authorization, privateContext));
+    await atomicJson(inputPath, workerInput(active.packet, this.controller.authorization, privateContext, {
+      scope: this.controller.state.scopes?.find(row => row.id === active.packet.scope_ref?.id),
+      revision: this.exploration?.state.finding_revisions.find(row => row.id === active.packet.finding_revision_id),
+    }));
     try {
       // Preparation may have outlived the lease; never launch a late worker.
       this.controller.requireActive(active.token);
@@ -203,6 +222,20 @@ export class RuntimeTestingService {
       });
     } finally { await rm(inputPath, { force: true }); }
   }
+  async close() {
+    const unavailable = ["QUARANTINED", "BLOCKED", "SKIPPED", "CLOSED"].includes(this.controller.state.status);
+    if (!unavailable && this.exploration) {
+      this.exploration.notify();
+      await this.exploration.running;
+      check(!this.exploration.running && ["COMPLETED", "BLOCKED"].includes(this.exploration.state.status), "runtime-planning-still-active");
+    }
+    check(unavailable || !this.draining && !this.queue.length, "runtime-work-still-active");
+    await this.beforeClose();
+    if (unavailable) this.cancelQueued("ENVIRONMENT_UNAVAILABLE");
+    await this.exploration?.stop();
+    this.accepting = false; this.slotAbort.abort(); clearTimeout(this.expiryTimer);
+    const result = await this.controller.close(); await this.changed(false); return result;
+  }
   async shutdown() {
     this.shutdownPromise ??= this.shutdownOnce();
     return this.shutdownPromise;
@@ -219,10 +252,10 @@ export class RuntimeTestingService {
   }
   async shutdownOnce() {
     clearTimeout(this.expiryTimer);
-    this.accepting = false;
+    this.accepting = false; this.slotAbort.abort(); await this.exploration?.stop();
     this.cancelQueued(this.controller.state.reason === "MAX_ELAPSED_EXCEEDED" ? "MAX_ELAPSED_EXCEEDED" : "AUDIT_ENDED");
     try {
-      await this.controller.cancel(); await this.changed();
+      await this.controller.cancel(); await this.exploration?.refreshFindings?.(true); await this.changed();
     } finally {
       // Observability or artifact I/O failures must not leave a listening API.
       if (this.server) { this.server.closeAllConnections(); await new Promise(resolve => this.server.close(resolve)); this.server = null; }

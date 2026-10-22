@@ -9,7 +9,7 @@ import { BAC_EVIDENCE_STRUCTURE_ERROR } from "../bac/contract.mjs";
 import { assembleBatchBundle, prepareReviewBatches, validateBatchBundle } from "./review-batches.mjs";
 
 const nonempty = value => typeof value === "string" && value.trim();
-const reviewState = board => ({ scope_digest: board.scope_digest, api_sources_digest: digest(board.api_sources), publication: board.publication, tasks: board.tasks.map(task => ({ task_id: task.task_id, spec_digest: task.spec_digest, status: task.status, report: task.report, reason: task.reason })), ...(board.mining_strategy ? { mining_strategy: board.mining_strategy } : {}),
+const reviewState = board => ({ ...(board.audit_mode ? { audit_mode: board.audit_mode } : {}), ...(board.source_followup ? { source_followup: board.source_followup } : {}), scope_digest: board.scope_digest, api_sources_digest: digest(board.api_sources), publication: board.publication, tasks: board.tasks.map(task => ({ task_id: task.task_id, spec_digest: task.spec_digest, status: task.status, report: task.report, reason: task.reason })), ...(board.mining_strategy ? { mining_strategy: board.mining_strategy } : {}),
   ...(board.incremental_rounds?.length ? { incremental_rounds: board.incremental_rounds } : {}),
   ...(board.file_sweep ? { file_sweep_digest: digest(board.file_sweep) } : {}),
   ...(board.report_corrections?.length ? { report_corrections: board.report_corrections } : {}),
@@ -28,11 +28,13 @@ async function invalidBacEvidence(summary, root, candidates, board, inputTasks, 
     tasks.set(unit.task_id, unit.reason);
   }
   if (!tasks.size) return { tasks, blockedCandidates };
-  exactIds(inputTasks, board.tasks.map(task => task.task_id), "task_id");
+  const followup = board.source_followup ? await boundJson(root, board.source_followup) : null;
+  const allTasks = [...board.tasks, ...(followup?.board.tasks ?? [])];
+  exactIds(inputTasks, allTasks.map(task => task.task_id), "task_id");
   // Rebuild the whole candidate set so a copied finding cannot escape by changing
   // its task/ID/scope, or by deleting a removable display marker from the input.
   const expected = [];
-  for (const task of board.tasks) if (task.report) {
+  for (const task of allTasks) if (task.report) {
     let report;
     try { report = await boundJson(root, task.report); } catch (error) { if (error instanceof SyntaxError) continue; throw error; }
     for (const [index, finding] of (Array.isArray(report?.findings) ? report.findings : []).entries()) {
@@ -54,7 +56,10 @@ export async function prepareReview(store, { runtimeRequired = false, bacMode = 
   check(store.summary().mining_complete, "任务发布或挖掘尚未结束，不能进入报告复核。");
   const board = store.snapshot(), tasks = [], candidates = [];
   if (board.bac_analysis) check(board.bac_analysis.mode === bacMode, "复核专项选择与任务创建时不一致。");
-  for (const task of board.tasks) {
+  const followup = board.source_followup ? await boundJson(store.reportsRoot, board.source_followup) : null;
+  if (followup) check(followup.protocol === "source-followup.v1" && followup.audit_id === board.audit_id && followup.scope_digest === board.scope_digest
+    && digest(followup.board) === board.source_followup.board_digest && summarize(followup.board).mining_complete, "源码补充轮次尚未封存或绑定错误。");
+  for (const task of [...board.tasks, ...(followup?.board.tasks ?? [])]) {
     let report = null, parseGap = null;
     if (task.report) {
       const bytes = await controlledBytes(store.reportsRoot, task.report.path);
@@ -76,7 +81,13 @@ export async function prepareReview(store, { runtimeRequired = false, bacMode = 
     const evidence = await verifyRuntimeEvidenceFiles(join(store.reportsRoot, path));
     const authorization = JSON.parse(await readFile(join(store.reportsRoot, "runtime-testing", board.audit_id, "authorization.json"), "utf8"));
     check(evidence.audit_id === board.audit_id && authorization.scope_digest === board.scope_digest, "运行证据与本次审计范围不匹配。");
-    runtime = { ...binding(path, bytes), evidence };
+    if (evidence.protocol === "runtime-testing.v2") {
+      const graphPath = `runtime-testing/${board.audit_id}/exploration.json`;
+      const graphBytes = await controlledBytes(store.reportsRoot, graphPath);
+      const graph = JSON.parse(graphBytes.toString("utf8"));
+      check(graph.audit_id === board.audit_id && graph.environment_revision === evidence.environment_revision, "动态探索图与当前环境不匹配。");
+      runtime = { ...binding(path, bytes), exploration: binding(graphPath, graphBytes), graph, evidence };
+    } else runtime = { ...binding(path, bytes), evidence };
     for (const candidate of runtimeCandidates(evidence, candidates.map(row => row.finding))) candidates.push({
       candidate_id: candidate.finding_id, task_id: null, claim_scope: "RUNTIME_ONLY", source_mapping: "UNKNOWN", finding: candidate });
   }
@@ -96,6 +107,7 @@ export async function prepareReview(store, { runtimeRequired = false, bacMode = 
     ...(fileDiscovery ? { file_discovery: fileDiscovery } : {}),
     ...(board.mining_strategy ? { mining_strategy: board.mining_strategy } : {}),
     ...(bacSummary ? { bac_summary: bacSummary } : {}),
+    ...(board.audit_mode ? { audit_mode: board.audit_mode } : {}), ...(board.source_followup ? { source_followup: board.source_followup } : {}),
     board_digest: digest(reviewState(board)), bac_mode: bacMode, tasks, candidates, runtime };
   const bytes = Buffer.from(`${JSON.stringify(input, null, 2)}\n`);
   const path = `validation/task-board.${board.audit_id}.input.${hash(bytes)}.json`;
@@ -129,6 +141,11 @@ export async function validateReviewBundle(board, root, bundle) {
   check(input.audit_id === board.audit_id && input.board_digest === digest(reviewState(board)), "复核输入与当前任务面板不一致。");
   check((input.mining_strategy ?? null) === (board.mining_strategy ?? null), "复核输入未绑定本次漏洞挖掘策略。");
   if (board.bac_analysis) check(input.bac_mode === board.bac_analysis.mode, "复核输入的专项选择发生变化。");
+  if (board.source_followup) {
+    check(digest(input.source_followup) === digest(board.source_followup), "源码补充输入发生变化。");
+    const followup = await boundJson(root, board.source_followup);
+    check(digest(followup.board) === board.source_followup.board_digest, "源码补充报告发生变化。");
+  }
   const bacSummary = await summarizeTaskBac(board, root);
   if (taskBacEnabled(board)) check(digest(input.bac_summary) === digest(bacSummary), "专项汇总与当前任务制品不一致。");
   const invalidBac = await invalidBacEvidence(bacSummary, root, input.candidates, board, input.tasks, input.runtime);
@@ -138,6 +155,7 @@ export async function validateReviewBundle(board, root, bundle) {
   if (input.runtime) {
     const bytes = await controlledBytes(root, input.runtime.path); check(hash(bytes) === input.runtime.sha256, "运行证据发生变化。");
     await verifyRuntimeEvidenceFiles(join(root, input.runtime.path));
+    if (input.runtime.exploration) check(digest(await boundJson(root, input.runtime.exploration)) === digest(input.runtime.graph), "动态探索图已改变。");
   }
   const quality = await boundJson(root, bundle.quality);
   const sessions = new Set();
@@ -254,9 +272,10 @@ function finalModel(board, { input, quality, roles }) {
     else (review.verdict === "TRUE_POSITIVE" ? findings : excluded).push(row);
   }
   const residualGaps = [
+    ...(input.runtime?.graph?.gaps ?? []),
     ...(board.file_sweep?.files ?? []).filter(file => file.status === "GAP").map(file => `文件浏览 ${file.path}：${file.reason}`),
     ...(quality.file_discovery?.status === "GAP" ? [`逐文件威胁发现：${quality.file_discovery.reason}`, ...quality.file_discovery.gaps] : []),
-    ...(board.publication.empty_reason && !board.file_sweep ? [board.publication.empty_reason] : []),
+    ...(board.publication.empty_reason && !board.file_sweep && board.audit_mode !== "dynamic" ? [board.publication.empty_reason] : []),
     ...input.tasks.flatMap(task => [task.reason, task.parse_gap, task.bac_gap, ...task.reported_gaps.map(gap => typeof gap === "string" ? gap : JSON.stringify(gap))].filter(Boolean).map(reason => `${task.title}：${reason}`)),
     ...quality.assessments.filter(row => row.status !== "REVIEWED").map(row => `${row.task_id}：${row.reason}`),
     ...quality.assessments.flatMap(row => row.gaps.map(gap => `${row.task_id}：${gap}`)),
@@ -270,13 +289,17 @@ function finalModel(board, { input, quality, roles }) {
   const { revision, next_action, ...summary } = summarize(board);
   // Sealed v1/v2 artifacts must still reproduce their original model and bytes.
   const reportVersion = board.final_report ? board.final_report.report_version ?? 1 : 3;
-  return { protocol: PROTOCOL, artifact_type: "task-board-final-report", audit_id: board.audit_id, scope_digest: board.scope_digest,
+  return { protocol: PROTOCOL, ...(board.audit_mode ? { audit_mode: board.audit_mode } : {}), ...(input.source_followup ? { source_followup: input.source_followup } : {}), artifact_type: "task-board-final-report", audit_id: board.audit_id, scope_digest: board.scope_digest,
     ...(reportVersion >= 2 ? { report_version: reportVersion, delivery_outcome: deliveryOutcome(summary) } : {}),
     board_digest: input.board_digest, inputs: { intake: board.validation.input, ...board.validation.bundle }, summary, tasks: input.tasks,
     assessments: quality.assessments, findings, excluded_findings: excluded, runtime_findings: runtimeFindings,
     ...(input.file_discovery ? { file_discovery: { ...input.file_discovery, review: quality.file_discovery } } : {}),
     ...(board.report_corrections?.length ? { report_corrections: board.report_corrections } : {}),
     ...(board.incremental_rounds?.length ? { incremental_rounds: board.incremental_rounds } : {}),
+    ...(input.runtime?.exploration ? { runtime_exploration: { ...input.runtime.exploration, summary: input.runtime.graph.summary, rounds: input.runtime.graph.rounds, intent_count: input.runtime.graph.intents.length, scope_count: input.runtime.graph.scopes.length } } : {}),
+    ...(input.runtime?.graph?.report_validation ? { report_validation: { ...input.runtime.graph.report_validation,
+      findings: input.runtime.graph.report_validation.findings.map(row => ({ ...row,
+        review: runtimeFindings.find(finding => finding.packet_id === row.packet_id)?.review ?? null })) } } : {}),
     runtime: input.runtime?.evidence ?? null, bac_analysis: quality.bac_analysis ? { ...quality.bac_analysis,
       ...(input.bac_summary ? { summary: input.bac_summary } : {}) } : null, residual_gaps: [...new Set(residualGaps)] };
 }
@@ -290,14 +313,14 @@ export async function finalizeBoard(store) {
     if (board.final_report) {
       check((await controlledBytes(store.reportsRoot, reportPath)).toString("utf8") === renderBoardReport(model)
         && digest(JSON.parse((await controlledBytes(store.reportsRoot, modelPath)).toString("utf8"))) === digest(model), "已封存报告发生变化，不能静默覆盖。");
-      return { report_path: reportPath, delivery_outcome: deliveryOutcome(model.summary), findings: model.findings.length, gaps: model.residual_gaps.length };
+      return { report_path: reportPath, delivery_outcome: deliveryOutcome(model.summary), findings: model.findings.length + (model.runtime_exploration ? model.runtime_findings.filter(row => row.review.verdict === "TRUE_POSITIVE").length : 0), gaps: model.residual_gaps.length };
     }
     await atomicJson(join(store.reportsRoot, modelPath), model);
     const markdown = renderBoardReport(model);
     await writeFile(join(store.reportsRoot, reportPath), markdown, { mode: 0o600 });
-    await atomicJson(join(store.reportsRoot, "correlation", `task-board.${board.audit_id}.json`), { protocol: PROTOCOL, audit_id: board.audit_id, canonical_findings: [...model.findings, ...model.excluded_findings] });
+    await atomicJson(join(store.reportsRoot, "correlation", `task-board.${board.audit_id}.json`), { protocol: PROTOCOL, audit_id: board.audit_id, canonical_findings: [...model.findings, ...model.excluded_findings, ...model.runtime_findings] });
     board.final_report = { path: reportPath, sha256: hash(markdown), model: modelPath, model_sha256: hash(`${JSON.stringify(model, null, 2)}\n`), report_version: model.report_version };
-    return { report_path: reportPath, delivery_outcome: deliveryOutcome(model.summary), findings: model.findings.length, gaps: model.residual_gaps.length };
+    return { report_path: reportPath, delivery_outcome: deliveryOutcome(model.summary), findings: model.findings.length + (model.runtime_exploration ? model.runtime_findings.filter(row => row.review.verdict === "TRUE_POSITIVE").length : 0), gaps: model.residual_gaps.length };
   });
 }
 
@@ -315,7 +338,7 @@ export async function verifyBoardCompletion({ audit, reportsRoot }) {
       const ref = board.final_report, modelBytes = await controlledBytes(reportsRoot, ref.model), reportBytes = await controlledBytes(reportsRoot, ref.path);
       const model = JSON.parse(modelBytes.toString("utf8"));
       check(hash(modelBytes) === ref.model_sha256 && hash(reportBytes) === ref.sha256 && reportBytes.toString("utf8") === renderBoardReport(model), "最终报告或模型发生变化。");
-      check(model.audit_id === audit.id && model.scope_digest === audit.source_baseline?.scope_digest && model.board_digest === checked.input.board_digest
+      check(model.audit_id === audit.id && model.scope_digest === (audit.source_baseline?.scope_digest ?? audit.runtime_scope_digest) && model.board_digest === checked.input.board_digest
         && digest(model) === digest(finalModel(board, checked)), "最终报告与任务及复核绑定不一致。");
     } catch (error) { errors.push(error.message); }
   }

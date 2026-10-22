@@ -40,6 +40,10 @@ export async function correctReport(store, { task_id: taskId, expected_sha256: e
     correction.id = `correction-${digest(correction).slice(0, 32)}`;
     (board.report_corrections ??= []).push(correction);
     task.report = replacement;
+    board.outbox ??= [];
+    board.outbox.push({ event_id: `accepted-${hash(`${board.audit_id}:${taskId}:${task.attempt_id}:${replacement.sha256}`).slice(0, 32)}`,
+      type: "static.report.accepted", audit_id: board.audit_id, sequence: board.outbox.length + 1, task_id: taskId, attempt_id: task.attempt_id,
+      payload_ref: replacement.path, payload_sha256: replacement.sha256, scope_digest: board.scope_digest });
     board.validation = { status: "NOT_STARTED" };
     return { corrected: true, correction, next_action: "VALIDATE" };
   });

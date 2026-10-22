@@ -204,7 +204,7 @@ export class TaskBoardService {
       source_root: this.sourceRoot, scope_digest: this.scopeDigest, output_root: workRoot, report_path: join(workRoot, "report.json"), receipt_path: join(workRoot, "receipt.json"),
       report_check_cli: join(this.workspaceRoot, ".opencode", "scripts", "task-report-check.mjs"),
       memory_context: memoryContext, memory_cli: this.memory ? join(this.workspaceRoot, ".opencode", "scripts", "audit-memory.mjs") : null,
-      reports_root: this.reportsRoot, session_path: join(workRoot, "session.json"), ...bacContext, ...agentMiningContext, bac_mode: this.bacMode, runtime_protocol: this.runtimeRequired ? "runtime-testing.v1" : null };
+      reports_root: this.reportsRoot, session_path: join(workRoot, "session.json"), ...bacContext, ...agentMiningContext, bac_mode: this.bacMode, runtime_protocol: this.runtimeRequired ? this.environment.AUDIT_RUNTIME_PROTOCOL || "runtime-testing.v1" : null };
     const inputPath = join(workRoot, "input.json"); await atomicJson(inputPath, input);
     let timedOut = false, receiptSnapshot = null, capturing = null, captureStopped = false;
     const deadline = performance.now() + this.leaseMs;

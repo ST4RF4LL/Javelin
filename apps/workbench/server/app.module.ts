@@ -13,6 +13,7 @@ class WorkbenchController {
   @Get('snapshot') snapshot(@Query('source') source: string) { return this.service(source).snapshot(); }
   @Get('findings') findings(@Query() query: Record<string, string>) { return this.service(query.source).findings(query.audit_id, query); }
   @Get('reports/:id') report(@Param('id') id: string, @Query('source') source: string) { this.requireLive(source); return this.live.report(id); }
+  @Post('reports/:id/validation-draft') reportValidationDraft(@Param('id') id: string) { this.runtime.assertWritable(); return this.live.reportValidationDraft(id); }
   @Get('reports/:id/download') async reportDownload(@Param('id') id: string, @Query('source') source: string) {
     this.requireLive(source); const result = await this.live.downloadReport(id);
     return new StreamableFile(result.bytes, { type: 'text/markdown; charset=utf-8', disposition: `attachment; filename="${result.filename}"` });

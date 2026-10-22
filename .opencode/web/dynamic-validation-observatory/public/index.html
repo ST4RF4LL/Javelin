@@ -200,7 +200,9 @@
     </dialog>
     <dialog id="audit-dialog">
       <form id="audit-form" method="dialog">
-        <div class="dialog-heading"><div><p class="eyebrow">NEW AUDIT</p><h2>创建仓库级安全审计</h2></div><button type="button" class="icon-button" data-close-dialog>×</button></div>
+        <div class="dialog-heading"><div><p class="eyebrow">NEW AUDIT</p><h2>创建安全审计任务</h2></div><button type="button" class="icon-button" data-close-dialog>×</button></div>
+        <label>审计模式<select name="audit_mode"><option value="static">静态审计</option><option value="dynamic">独立动态测试</option><option value="joint">静态＋动态联合审计</option></select></label>
+        <p id="audit-mode-description" class="context-note">静态审计分析源码；独立动态测试不要求源码；联合审计并行执行并交接线索。</p>
         <label>任务名称<input name="name" maxlength="160" placeholder="例如：支付服务发布前安全审计" required></label>
         <label>Agent 基座<select name="engine" id="audit-engine-select" required></select></label>
         <p id="audit-engine-status" class="context-note"></p>
@@ -223,7 +225,7 @@
           <p class="context-note">每个清单条目都会先定位相关代码，再派发审查。切换策略时保留当前输入，提交时仅使用所选策略。</p>
         </div>
         <div class="form-row"><label>audit_id<input name="audit_id" pattern="[A-Za-z0-9][A-Za-z0-9._\x2d]{2,127}" placeholder="audit-2026-001" required></label><label>版本备注<input name="ref" value="当前目录快照" maxlength="200"></label></div>
-        <p class="context-note">目录不要求 Git。任务实际启动前会生成范围清单与逐文件摘要；多范围对象会保存，但在跨范围关联流水线启用前不能启动。</p>
+        <p id="audit-source-description" class="context-note">目录不要求 Git。任务实际启动前会生成范围清单与逐文件摘要；多范围对象会保存，但在跨范围关联流水线启用前不能启动。</p>
         <div class="audit-contexts">
           <section class="audit-context-option" data-context-option>
             <div class="audit-context-heading">
@@ -237,11 +239,11 @@
               <div><strong>测试环境信息</strong><small>由你确认这是已授权的测试环境，支持 IP 或域名，不区分公网、内网。环境说明会作为私有 prompt 完整交给动态测试 Agent，直接用自然语言描述地址、账号、登录方式和测试范围即可。</small></div>
               <label class="enable-switch"><input name="test_environment_enabled" type="checkbox" aria-controls="test-environment-context"><span>ENABLE</span></label>
             </div>
-            <label class="context-textarea" for="test-environment-context">环境上下文<textarea id="test-environment-context" name="test_environment_context" maxlength="24000" autocomplete="off" spellcheck="false" placeholder="例如：测试环境在 http://test.example:8080。使用提供的管理员账号登录前端，账号密码为 测试用户名/测试密码。只操作测试记录，结束后通过应用页面删除测试数据。" disabled></textarea></label>
+            <label class="context-textarea" for="test-environment-context">环境上下文<textarea id="test-environment-context" name="test_environment_context" maxlength="24000" autocomplete="off" spellcheck="false" placeholder="描述授权的 Web 或 SSH 目标、账号及口令/私钥等登录方式、允许操作的服务或目录与测试数据范围。无需填写固定格式。" disabled></textarea></label>
             <div class="form-row"><label>动态参与方式<select name="runtime_mode"><option value="INTEGRATED_TESTING">环境接触 + 中期探索 + 按需确认</option><option value="CONTACT_ONLY">仅环境接触</option><option value="TARGETED_CONFIRMATION">环境接触 + 定向确认</option></select></label><label>总预算（分钟，含清理预留）<input name="runtime_budget" type="number" value="60" min="10" max="240"></label></div>
             <label>测试身份偏好<select name="runtime_identity"><option value="auto">由 Agent 根据环境说明判断</option><option value="anonymous">匿名访问（不需要登录）</option><option value="shared">一个授权测试账号</option><option value="distinct">多个隔离测试账号</option></select></label>
             <label class="check"><input name="runtime_test_input" type="checkbox"><span>允许使用无害标记测试应用输入</span></label>
-            <label class="check"><input name="runtime_test_mutation" type="checkbox"><span>允许在环境说明指定的测试数据范围内创建并清理测试记录（请说明范围和清理方式）</span></label>
+            <label class="check"><input name="runtime_test_mutation" type="checkbox" disabled><span>自主探索暂不开放数据修改／删除操作</span></label>
             <p class="context-note">启用环境开关即确认目标为你有权测试的环境，并授权所选参与方式与动作。你填写的整段内容会作为私有 prompt 完整交给 Agent，不要求固定账号字段、分行格式或 JSON。Agent 先理解环境，再进行必要登录和测试；确实缺少信息时说明具体缺口，静态审计继续。未启用或未填写时自动跳过；浏览器只访问从原文确认的授权目标。新建重试会回填原说明供你修改；环境原文和凭据不在任务列表、日志或报告中回显。动态支持证据仍进入独立三方复核。</p>
           </section>
         </div>

@@ -55,5 +55,6 @@ export const api = {
   registerTarget: (productId: string, input: { name: string; path: string }) => request<TaskTarget>(`products/${encodeURIComponent(productId)}/targets`, 'live', { method: 'POST', body: JSON.stringify(input) }),
   createReal: (input: RealAuditInput, key: string) => request<Audit>('audits', 'live', { method: 'POST', headers: { 'Idempotency-Key': key }, body: JSON.stringify(input) }),
   retryDraft: (id: string) => request<RealAuditDraft>(`audits/${encodeURIComponent(id)}/retry-draft`, 'live', { method: 'POST', body: '{}' }),
+  reportValidationDraft: (id: string) => request<RealAuditDraft>(`reports/${encodeURIComponent(id)}/validation-draft`, 'live', { method: 'POST', body: '{}' }),
   action: (source: Source, id: string, action: string, version: number, key: string) => request<Audit>(`audits/${encodeURIComponent(id)}/actions`, source, { method: 'POST', headers: { 'Idempotency-Key': key }, body: JSON.stringify({ action, version }) }),
 };

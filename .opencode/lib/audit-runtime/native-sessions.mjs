@@ -58,7 +58,7 @@ export class NativeSessionController {
       } else {
         const idempotency_key = `native:${createHash('sha256').update(`${session.engine}:${session.session_id}:${input.registration_id}`).digest('hex')}`;
         const created = await this.createAudit({ ...input, idempotency_key,
-          runtime_testing: input.runtime_testing ?? { protocol: 'runtime-testing.v1', mode: 'CONTACT_ONLY', budget_minutes: 60,
+          runtime_testing: input.runtime_testing ?? { protocol: ['dynamic', 'joint'].includes(input.audit_mode) ? 'runtime-testing.v2' : 'runtime-testing.v1', mode: ['dynamic', 'joint'].includes(input.audit_mode) ? 'INTEGRATED_TESTING' : 'CONTACT_ONLY', budget_minutes: 60,
             identity_mode: 'auto', allowed_actions: ['navigate', 'normal_interaction'], explicit_authorization: input.test_environment_enabled === true },
         }, session);
         audit = this.runner.audits.get(created.id);

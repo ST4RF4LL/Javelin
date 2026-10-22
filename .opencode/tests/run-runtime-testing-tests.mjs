@@ -227,7 +227,7 @@ test("环境原文原样进入私有 prompt，不用地址、账号或 JSON 格�
   }
   assert.notEqual(promptGrant({ context: "说明甲" }).public.context_digest, promptGrant({ context: "说明乙" }).public.context_digest);
   assert.equal(selection({ runtime_testing: { protocol: PROTOCOL, mode: "CONTACT_ONLY" } }).identity_mode, "auto");
-  assert.deepEqual(environmentTools.map(tool => tool.name), ["register_sensitive_values", "configure_environment", "browser_tools", "browser_call"]);
+  assert.deepEqual(environmentTools.map(tool => tool.name), ["register_sensitive_values", "configure_environment", "browser_tools", "browser_call", "execution_tools", "execution_call"]);
 });
 
 function interpretedEnvironment(extra = {}) {

@@ -921,8 +921,8 @@ function renderAuditDetail() {
   const logs = state.auditMonitor.element;
   const runtimePanel = renderRuntimeTesting(audit);
   const bacPanel = renderBacAnalysis(audit);
-  const taskBoardPanel = audit.task_board ? renderTaskBoard(audit) : null;
-  const fileCoverageSummary = onFileCoverage ? renderFileCoverageSummary(audit) : null;
+  const taskBoardPanel = audit.task_board && audit.audit_mode !== "dynamic" ? renderTaskBoard(audit) : null;
+  const fileCoverageSummary = onFileCoverage && audit.audit_mode !== "dynamic" ? renderFileCoverageSummary(audit) : null;
   const configuration = element("details", "audit-configuration"); configuration.open = configurationOpen;
   configuration.append(element("summary", "", "任务配置与制品信息"), facts);
   const sources = sourceContext(audit, { includeReports: true }); sources.id = "audit-sources";
@@ -1108,19 +1108,21 @@ function renderRuntimeTesting(audit) {
     REQUIRED_MUTATION_SCOPE_MISSING: "旧任务未识别到测试数据范围或清理说明",
     ENVIRONMENT_CONTACT_INCOMPLETE: "环境接触未完成，具体原因见下方 Agent 的结果和缺口说明",
     "runtime-no-submission": "动态测试进程已结束，但平台未收到通过校验的结果",
-    "contact-identities-not-observed": "平台未能确认授权身份的浏览器访问记录，结果提交被拒绝",
+    "contact-identities-not-observed": "平台未能确认授权身份的 Web 访问或 SSH 登录记录，结果提交被拒绝",
     "xss-identities-not-observed": "验证证据未覆盖要求的独立身份，结果提交被拒绝",
     BROWSER_STRUCTURED_OUTPUT_MISSING: "浏览器结构化输出缺失，平台无法确认访问结果",
-    ENVIRONMENT_ALREADY_LEASED: "环境正被其他任务使用", ENVIRONMENT_LEASE_REQUIRES_REVIEW: "环境租约需要人工核对", PROCESS_RECOVERY_ENVIRONMENT_UNKNOWN: "恢复后环境状态不明", ENVIRONMENT_STATE_UNKNOWN: "环境状态不明", BROWSER_CLOSE_FAILED: "测试浏览器关闭失败",
+    ENVIRONMENT_ALREADY_LEASED: "环境正被其他任务使用", ENVIRONMENT_LEASE_REQUIRES_REVIEW: "环境租约需要人工核对", PROCESS_RECOVERY_ENVIRONMENT_UNKNOWN: "恢复后环境状态不明", ENVIRONMENT_STATE_UNKNOWN: "环境状态不明", BROWSER_CLOSE_FAILED: "测试浏览器关闭失败", EXECUTOR_CLOSE_FAILED: "执行连接关闭失败", SSH_REMOTE_STATE_UNKNOWN: "SSH 远端进程状态未知，请核对本次命令与测试数据",
+    "runtime-ssh-connection-failed": "SSH 连接或认证失败，请查看动作详情", "runtime-ssh-host-key-mismatch": "SSH 主机指纹与登记值不符",
+    "runtime-ssh-key-file-unavailable": "无法读取明确指定的 SSH 私钥文件",
   };
   const legacyHostRejection = value?.reason === "runtime-host-unsupported" && value.browser_allocated === false;
-  panel.append(element("h3", "", "贯穿式运行测试"), element("p", "", value ? `${legacyHostRejection ? "启动受阻" : states[value.status] ?? value.status}${value.reason ? ` · ${reasons[value.reason] ?? value.reason}` : ""}` : "等待任务启动；环境未提供时自动跳过。"));
+  panel.append(element("h3", "", audit.runtime_testing.protocol === "runtime-testing.v2" ? "动态探索与验证" : "贯穿式运行测试"), element("p", "", value ? `${legacyHostRejection ? "启动受阻" : states[value.status] ?? value.status}${value.reason ? ` · ${reasons[value.reason] ?? value.reason}` : ""}` : "等待任务启动；环境未提供时自动跳过。"));
   if (!value) return panel;
   if (["ENVIRONMENT_ALREADY_LEASED", "ENVIRONMENT_LEASE_REQUIRES_REVIEW"].includes(value.reason)) {
     const blocked = element("div", "notice");
     const lease = value.environment_lease;
     blocked.append(element("p", "", lease ? `占用来源：${lease.audit_name}（${lease.audit_id}） · ${lease.origin}` : "旧任务的环境占用阻止了本次启动。"));
-    if (value.browser_allocated === false) blocked.append(element("p", "", "本次动态测试尚未打开浏览器，也未访问目标。请查看环境占用，核对原任务后解除，再新建重试。"));
+    if (value.browser_allocated === false && !value.ssh_allocated) blocked.append(element("p", "", "本次动态测试尚未通过 Web 或 SSH 访问目标。请查看环境占用，核对原任务后解除，再新建重试。"));
     const manage = element("button", "button secondary", "查看环境占用");
     manage.addEventListener("click", () => { $("audit-drawer").close(); setView("runtime"); });
     blocked.append(manage); panel.append(blocked);
@@ -1138,6 +1140,24 @@ function renderRuntimeTesting(audit) {
     const item = element("li", phaseState === "COMPLETED" ? "completed" : phaseState === "RUNNING" ? "active" : ["FAILED", "TIMED_OUT"].includes(phaseState) ? "failed" : "");
     const indicator = element("i"); indicator.setAttribute("aria-hidden", "true");
     item.append(indicator, element("span", "", label), element("small", "", stage)); list.append(item);
+  }
+  const graph = value.exploration;
+  if (graph) {
+    const graphStates = { WAITING_CONTACT: "等待环境接触", PLANNING: "规划实验", EXECUTING: "执行实验", COMPLETED: "本轮探索完成", BLOCKED: "存在缺口", STOPPED: "已停止", SKIPPED: "已跳过" };
+    panel.append(element("h4", "", `自主探索 · ${graphStates[graph.status] ?? graph.status}`),
+      element("p", "", `已观察入口 ${graph.scopes?.filter(row => row.kind === "RUNTIME_SURFACE").length ?? 0} · 规划 ${graph.rounds ?? 0} 轮 · 实验 ${graph.intents?.length ?? 0} 项 · 静态候选版本 ${graph.finding_revision_count ?? graph.finding_revisions?.length ?? 0}`), element("p", "context-note", graph.summary ?? ""));
+    for (const intent of graph.intents ?? []) {
+      const detail = element("details", "agent-event-details");
+      detail.append(element("summary", "", `${intent.question} · ${states[intent.status] ?? intent.status} · ${intent.outcome ?? "待观察"}`),
+        element("p", "", `范围：${intent.scope_ref.kind} / ${intent.scope_ref.id}`), element("p", "", `预期：${intent.expected_behavior}`),
+        element("p", "", `反证检查：${intent.counterchecks.join("；")}`), element("p", "", `依据：${intent.evidence_ids.join("；")}`));
+      panel.append(detail);
+    }
+    if (audit.source_followup_state) panel.append(element("p", "", `独立源码补充：已交付 ${audit.source_followup_state.reported}/${audit.source_followup_state.total}，缺口 ${audit.source_followup_state.gap}；不改变初始覆盖率。`));
+    const gaps = [...new Set(graph.gaps ?? [])];
+    if (gaps.length) { const detail = element("details"); detail.append(element("summary", "", `探索缺口 ${gaps.length} 项`)); for (const gap of gaps) detail.append(element("p", "notice", gap)); panel.append(detail); }
+    const evidenceButton = element("button", "button secondary", "查看动作、请求响应与导出"); evidenceButton.type = "button";
+    evidenceButton.addEventListener("click", () => { $("audit-drawer").close(); state.sourceFilters.validation = { product_id: "", audit_id: audit.id, report_id: "" }; setView("validation"); load().catch(showError); }); panel.append(evidenceButton);
   }
   const cleanup = { NOT_REQUIRED: "无需清理", SUCCEEDED: "已完成", FAILED: "失败", UNKNOWN: "尚未确认" };
   panel.append(list, element("p", "", `已用 ${Math.ceil((value.elapsed_ms + value.cleanup_elapsed_ms) / 1000)} 秒；总预算 ${audit.runtime_testing.budget_minutes} 分钟；清理状态：${cleanup[value.cleanup_status] ?? value.cleanup_status}。`));
@@ -2013,7 +2033,7 @@ function renderValidationActivity() {
   const actions = all.reduce((sum, item) => sum + (item.actions?.length ?? 0), 0);
   const ids = new Set(all.flatMap(item => item.exchange_ids ?? []));
   $("validation-activity-metrics").replaceChildren(
-    metric("验证记录", all.length, "按漏洞与任务归集"), metric("已记录动作", actions, "浏览器操作与 HTTP 捕获"),
+    metric("验证记录", all.length, "按漏洞与任务归集"), metric("已记录动作", actions, "Web / SSH 操作与 HTTP 捕获"),
     metric("HTTP 请求", ids.size, "可查看请求与响应"), metric("受阻 / 失败", filterValidationActivity(all, { scope: "blocked" }).length, "保留原因与证据缺口"),
   );
   const error = $("validation-activity-error"); error.hidden = !state.validationActivityError;
@@ -2844,7 +2864,17 @@ async function submitValidation(event) {
 }
 
 function syncAuditContextControls(form) {
-  const apiStrategy = form.elements.mining_strategy.value === "api";
+  const dynamicOnly = form.elements.audit_mode.value === "dynamic", staticOnly = form.elements.audit_mode.value === "static";
+  form.elements.target_id.required = !dynamicOnly; form.elements.target_id.disabled = dynamicOnly;
+  const targeted = form.elements.runtime_mode.querySelector('option[value="TARGETED_CONFIRMATION"]');
+  targeted.disabled = dynamicOnly;
+  if (dynamicOnly && form.elements.runtime_mode.value === "TARGETED_CONFIRMATION") form.elements.runtime_mode.value = "INTEGRATED_TESTING";
+  $("audit-source-description").hidden = dynamicOnly;
+  for (const name of ["target_id", "memory_mode", "bac_analysis", "ref"]) form.elements[name].closest("label").hidden = dynamicOnly;
+  form.querySelector(".mining-strategy").hidden = dynamicOnly;
+  form.elements.test_environment_enabled.closest("[data-context-option]").hidden = staticOnly;
+  $("audit-mode-description").textContent = dynamicOnly ? "仅需授权测试环境：观察 Web / SSH 实际操作、规划有界实验、独立三方复核；不要求源码或静态漏洞。" : staticOnly ? "分析冻结源码并存档报告。动态测试记为跳过。" : "源码审计与独立动态探索并行，自动交接静态候选与运行证据，汇合后统一复核。";
+  const apiStrategy = !dynamicOnly && form.elements.mining_strategy.value === "api";
   const apiInventory = form.elements.api_inventory;
   $("api-inventory-panel").hidden = !apiStrategy;
   apiInventory.disabled = !apiStrategy;
@@ -2860,8 +2890,8 @@ function syncAuditContextControls(form) {
     const checkbox = form.elements[enabledName];
     const textarea = form.elements[textareaName];
     const enabled = checkbox.checked;
-    textarea.disabled = !enabled;
-    textarea.required = enabled && textareaName !== "test_environment_context";
+    textarea.disabled = !enabled || textareaName === "test_environment_context" && staticOnly;
+    textarea.required = enabled && textareaName !== "test_environment_context" || textareaName === "test_environment_context" && dynamicOnly;
     textarea.closest("[data-context-option]")?.classList.toggle("enabled", enabled);
   }
 }
@@ -2894,7 +2924,9 @@ async function openAuditDialog(repositoryId = null, templateAudit = null) {
     const scope = target.source_scopes?.[0];
     const option = element("option", "", `${target.name} · ${scope?.path ?? "未配置范围"}`); option.value = target.id; return option;
   }));
-  if (!product || product.status !== "active" || !select.options.length) { toast("当前产品没有可启动的单目录测试对象，请先新建对象并检查目录。" ); setView("projects"); return; }
+  if (!product || product.status !== "active") { toast("当前产品不可创建任务，请选择未归档的产品。" ); setView("projects"); return; }
+  form.elements.audit_mode.value = templateAudit?.audit_mode ?? (templateAudit?.runtime_testing ? "joint" : "static");
+  if (!select.options.length && !templateAudit) form.elements.audit_mode.value = "dynamic";
   if (repositoryId) select.value = repositoryId;
   form.elements.name.value = templateAudit?.name ? `${templateAudit.name.replace(/（重试）$/u, "")}（重试）` : "";
   form.elements.audit_id.value = `audit-${new Date().toISOString().slice(0, 10).replaceAll("-", "")}-${Math.random().toString(36).slice(2, 7)}`;
@@ -3134,9 +3166,13 @@ async function submitAudit(event) {
   if (form.dataset.modelsReady !== "true" || !state.agentSettings?.profiles.some(profile => profile.id === form.elements.engine.value && profile.available)) return;
   const data = new FormData(form);
   const additionalInstructionsEnabled = form.elements.additional_instructions_enabled.checked;
-  const testEnvironmentEnabled = form.elements.test_environment_enabled.checked;
-  const input = {
-    name: data.get("name"), target_id: data.get("target_id"), audit_id: data.get("audit_id"),
+  const auditMode = form.elements.audit_mode.value;
+  const testEnvironmentEnabled = auditMode !== "static" && form.elements.test_environment_enabled.checked;
+  if (auditMode === "dynamic" && (!testEnvironmentEnabled || !form.elements.test_environment_context.value.trim())) {
+    $("audit-form-error").textContent = "独立动态测试需要勾选授权开关并填写环境说明。"; $("audit-form-error").hidden = false; return;
+  }
+  const input = { audit_mode: auditMode, task_protocol: "task-board.v1",
+    name: data.get("name"), target_id: auditMode === "dynamic" ? null : data.get("target_id"), audit_id: data.get("audit_id"),
     engine: data.get("engine"), model: data.get("model"),
     bac_analysis: data.get("bac_analysis") ?? "auto",
     memory_mode: data.get("memory_mode") ?? "full",
@@ -3147,7 +3183,7 @@ async function submitAudit(event) {
     test_environment_enabled: testEnvironmentEnabled,
     test_environment_context: testEnvironmentEnabled ? form.elements.test_environment_context.value : "",
     runtime_testing: {
-      protocol: "runtime-testing.v1", mode: form.elements.runtime_mode.value,
+      protocol: "runtime-testing.v2", mode: form.elements.runtime_mode.value,
       budget_minutes: Number(form.elements.runtime_budget.value), identity_mode: form.elements.runtime_identity.value,
       explicit_authorization: testEnvironmentEnabled,
       allowed_actions: ["navigate", "normal_interaction", ...(form.elements.runtime_test_input.checked ? ["test_input"] : []), ...(form.elements.runtime_test_mutation.checked ? ["test_mutation"] : [])],
@@ -3449,6 +3485,7 @@ $("finding-query").addEventListener("input", () => {
   window.clearTimeout(state.findingSearchTimer);
   state.findingSearchTimer = window.setTimeout(() => loadFindingsPage(1).catch(showError), 300);
 });
+$("audit-form").elements.audit_mode.addEventListener("change", () => { syncAuditContextControls($("audit-form")); $("audit-form-error").hidden = true; });
 $("audit-form").addEventListener("submit", submitAudit);
 $("audit-engine-select").addEventListener("change", () => loadAuditModels());
 $("audit-model-select").addEventListener("change", () => {

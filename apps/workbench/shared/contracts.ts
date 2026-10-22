@@ -32,6 +32,9 @@ export interface BatchAuditSelection { productId: string; targetIds: string[] }
 export interface TaskOptions { runnerEnabled: boolean; products: TaskProduct[]; models: { value: string; label: string }[]; selectedModel: string }
 export interface TaskModels { models: { value: string; label: string }[]; selectedModel: string; engine?: CodingEngine }
 export interface RealAuditInput {
+  sourceReport?: { report_id: string; report_sha256: string; model_sha256: string };
+  sourceFindingCount?: number;
+  auditMode?: 'static' | 'dynamic' | 'joint';
   engine?: CodingEngine;
   productId: string; targetId: string; auditId: string; name: string; model: string;
   miningStrategy: 'focus_area' | 'api' | 'file_sweep'; apiInventory: string; memoryMode: string; bacAnalysis: string;

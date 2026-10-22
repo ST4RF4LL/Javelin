@@ -1,11 +1,11 @@
 import { dirname } from "node:path";
 import { readFile } from "node:fs/promises";
-import { PROTOCOL, PHASES, SHA, ID, TERMINAL, CLEANUP, OUTCOMES, digest, check, validatePacket, validateSubmission } from "./contract.mjs";
+import { PROTOCOL, EXPLORATION_PROTOCOL, runtimeProtocol, PHASES, SHA, ID, TERMINAL, CLEANUP, OUTCOMES, digest, check, validatePacket, validateSubmission } from "./contract.mjs";
 import { checkedJson } from "./controller.mjs";
 
 export function validateRuntimeEvidence(value, intake = null) {
   const errors = [];
-  if (value?.protocol !== PROTOCOL || value?.artifact_type !== "runtime-testing-evidence-set" || value?.artifact_digest !== digest(value)) return ["runtime-evidence-header-invalid"];
+  if (!runtimeProtocol(value?.protocol) || value?.artifact_type !== "runtime-testing-evidence-set" || value?.artifact_digest !== digest(value)) return ["runtime-evidence-header-invalid"];
   if (!SHA.test(value.authorization_digest ?? "") || !ID.test(value.audit_id ?? "") || !["CLOSED", "SKIPPED", "BLOCKED", "QUARANTINED"].includes(value.status)
     || !CLEANUP.has(value.cleanup_status) || !Number.isInteger(value.elapsed_ms) || value.elapsed_ms < 0) errors.push("runtime-evidence-state-invalid");
   if (intake && (value.audit_id !== intake.audit_id || value.artifact_digest !== intake.policy?.runtime_testing?.evidence_digest
@@ -45,17 +45,30 @@ export async function verifyRuntimeEvidenceFiles(path, intake = null) {
   const root = dirname(path); const value = JSON.parse(await readFile(path, "utf8"));
   check(validateRuntimeEvidence(value, intake).length === 0, "runtime-evidence-invalid");
   const grant = await checkedJson(root, "authorization.json");
-  check(digest(grant) === value.authorization_digest && grant.artifact_digest === value.authorization_digest && grant.audit_id === value.audit_id
+  check(digest(grant) === value.authorization_digest && grant.protocol === value.protocol && grant.artifact_digest === value.authorization_digest && grant.audit_id === value.audit_id
     && grant.environment_revision === value.environment_revision && (!intake || grant.scope_digest === intake.scope_digest), "runtime-evidence-authorization-invalid");
+  for (const revision of value.finding_revisions ?? []) {
+    if (!value.scopes?.some(scope => scope.id === revision.scope_id && scope.kind === 'FINAL_REPORT_FINDING')) continue;
+    const source = await checkedJson(root, 'source-report.json', revision.report?.sha256);
+    check(source.protocol === 'report-validation.v1' && digest(source) === source.artifact_digest
+      && digest(source.source) === digest(revision.source_report)
+      && source.findings.some(finding => finding.finding_id === revision.finding_id && digest(finding) === revision.finding_object_digest), 'runtime-report-source-changed');
+  }
   for (const binding of value.evidence_bindings) {
     const record = await checkedJson(root, binding.path, binding.sha256);
-    check(record.protocol === PROTOCOL && record.audit_id === value.audit_id && record.artifact_digest === digest(record), "runtime-evidence-record-invalid");
+    check(record.protocol === value.protocol && record.audit_id === value.audit_id && record.artifact_digest === digest(record), "runtime-evidence-record-invalid");
   }
   for (const packet of value.packets.filter(row => row.result)) {
     const input = await checkedJson(root, `packets/${packet.id}.input.json`);
     validatePacket(input, grant); check(digest(input) === packet.input_digest && input.artifact_digest === packet.input_digest, "runtime-packet-input-changed");
-    for (const field of ["id", "phase", "hypothesis_id", "finding_id", "finding_object_digest", "vulnerability_type_id", "focus_area_id", "scope_digest"]) {
+    for (const field of ["id", "phase", "hypothesis_id", "finding_id", "finding_object_digest", "vulnerability_type_id", "focus_area_id", "scope_digest", "finding_revision_id"]) {
       check((input[field] ?? null) === (packet[field] ?? null), "runtime-packet-input-binding-invalid");
+    }
+    if (value.protocol === EXPLORATION_PROTOCOL && ["EXPLORE", "CONFIRM"].includes(packet.phase)) {
+      check(digest(input.scope_ref) === digest(packet.scope_ref), "runtime-packet-scope-changed");
+      check(value.scopes?.some(scope => scope.id === input.scope_ref.id && scope.kind === input.scope_ref.kind && digest(scope) === input.scope_ref.digest), "runtime-packet-scope-unregistered");
+      if (packet.phase === "CONFIRM") check(value.finding_revisions?.some(revision => revision.id === input.finding_revision_id && revision.scope_id === input.scope_ref.id
+        && revision.finding_id === input.finding_id && revision.finding_object_digest === input.finding_object_digest), "runtime-finding-revision-unregistered");
     }
     const result = await checkedJson(root, packet.result_path);
     check(digest(result) === packet.result_digest && result.artifact_digest === packet.result_digest, "runtime-packet-result-changed");
@@ -68,7 +81,7 @@ export async function verifyRuntimeEvidenceFiles(path, intake = null) {
 }
 
 export function runtimeForFinding(evidence, finding) {
-  const bound = evidence.packets.filter(packet => packet.finding_id === finding.finding_id && packet.finding_object_digest === finding.finding_object_digest);
+  const bound = evidence.packets.filter(packet => packet.finding_id === finding.finding_id && packet.finding_object_digest === (finding.finding_object_digest ?? digest(finding)));
   const hypotheses = new Set(bound.map(packet => packet.hypothesis_id).filter(Boolean));
   const packets = evidence.packets.filter(packet => bound.includes(packet) || packet.phase === "EXPLORE" && hypotheses.has(packet.hypothesis_id));
   return { status: evidence.status === "SKIPPED" ? "SKIPPED" : packets.length ? "AVAILABLE" : "NOT_TESTED", packets };
@@ -76,9 +89,16 @@ export function runtimeForFinding(evidence, finding) {
 
 export function runtimeCandidates(evidence, sourceFindings = []) {
   if (!Array.isArray(evidence?.packets)) return [];
-  const mapped = new Set(evidence.packets.filter(packet => packet.phase === "CONFIRM" && sourceFindings.some(finding => finding.finding_id === packet.finding_id && finding.finding_object_digest === packet.finding_object_digest)).map(packet => packet.hypothesis_id));
-  const latest = new Map(evidence.packets.filter(packet => packet.phase === "EXPLORE" && packet.result?.outcome === "SUPPORTED" && !mapped.has(packet.hypothesis_id)).map(packet => [packet.hypothesis_id, packet]));
+  const mapped = new Set(evidence.packets.filter(packet => packet.phase === "CONFIRM" && sourceFindings.some(finding =>
+    (finding.finding_id === packet.finding_id || evidence.protocol === EXPLORATION_PROTOCOL && !finding.finding_id)
+    && (finding.finding_object_digest ?? (evidence.protocol === EXPLORATION_PROTOCOL ? digest(finding) : null)) === packet.finding_object_digest)).map(packet => packet.hypothesis_id));
+  const latest = new Map(evidence.packets.filter(packet => (packet.phase === "EXPLORE" || evidence.protocol === EXPLORATION_PROTOCOL && packet.phase === "CONFIRM") && packet.result?.outcome === "SUPPORTED" && !mapped.has(packet.hypothesis_id)).map(packet => [packet.hypothesis_id, packet]));
   return [...latest.values()]
     .map(packet => ({ finding_id: `runtime-${packet.id}`, claim_scope: "RUNTIME_ONLY", source_mapping: "UNKNOWN", packet_id: packet.id,
+      ...(packet.scope_ref?.kind === 'FINAL_REPORT_FINDING' ? { source_finding_id: packet.finding_id,
+        source_report: evidence.scopes.find(scope => scope.id === packet.scope_ref.id)?.source_report } : {}),
+      ...(evidence.protocol === EXPLORATION_PROTOCOL ? { title: packet.result?.summary, scope_ref: packet.scope_ref,
+        evidence_chain: evidence.packets.filter(row => row.phase === "CONTACT" || row.hypothesis_id === packet.hypothesis_id || row.scope_ref?.id === packet.scope_ref?.id)
+          .map(row => ({ packet_id: row.id, input_digest: row.input_digest, result_digest: row.result_digest, outcome: row.outcome, evidence_ids: row.evidence_ids ?? [] })), deployment_binding: "UNKNOWN" } : {}),
       vulnerability_type_id: packet.vulnerability_type_id, evidence_digest: packet.result_digest, scope_digest: packet.scope_digest }));
 }

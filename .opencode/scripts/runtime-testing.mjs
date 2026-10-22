@@ -4,7 +4,7 @@ import { checkedJson } from "../lib/runtime-testing/controller.mjs";
 import { check } from "../lib/runtime-testing/contract.mjs";
 
 try {
-  check(process.env.AUDIT_RUNTIME_PROTOCOL === "runtime-testing.v1", "runtime-protocol-not-selected");
+  check(["runtime-testing.v1", "runtime-testing.v2"].includes(process.env.AUDIT_RUNTIME_PROTOCOL), "runtime-protocol-not-selected");
   const root = process.env.AUDIT_RUNTIME_STATE_ROOT;
   const state = await checkedJson(root, "state.json");
   const command = process.argv[2] ?? "status";
@@ -23,6 +23,7 @@ try {
       check(evidence.authorization_digest === state.authorization_digest && evidence.status === state.status, "runtime-evidence-not-sealed");
     }
     const result = command === "enqueue" ? { status: "SKIPPED", reason: state.reason ?? "ENVIRONMENT_CLOSED" } : state;
+    if (state.protocol === "runtime-testing.v2" && result === state) for (const key of ["scopes", "finding_revisions", "outbox", "evidence"]) delete result[key];
     process.stdout.write(`${JSON.stringify(result)}\n`);
   } else {
     check(/^http:\/\/127\.0\.0\.1:\d+$/.test(connection.endpoint), "runtime-controller-endpoint-invalid");

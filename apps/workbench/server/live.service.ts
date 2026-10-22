@@ -11,7 +11,7 @@ function normalizeReport(r: Row): Report { return { id: r.id, name: r.name || r.
 export function normalizeAudit(a: Row): Audit {
   const actions: Record<string, AuditAction[]> = { running: ['pause', 'cancel'], paused: ['resume', 'cancel'], queued: ['dispatch'], failed: ['recover'], interrupted: ['recover'], cancelled: ['recover'] };
   if (a.execution_incomplete) for (const status of ['failed', 'interrupted', 'cancelled']) actions[status] = [];
-  return { id: String(a.id), name: a.name || a.id, repository: a.repository_name || a.repository_id || '未关联项目',
+  return { id: String(a.id), name: a.name || a.id, repository: a.audit_mode === 'dynamic' ? '授权测试环境' : a.repository_name || a.repository_id || '未关联项目',
     engine: a.engine || a.execution?.engine || 'opencode',
     product: a.provenance?.product_name || a.product_name || '未关联产品', branch: a.branch || a.git_ref || a.ref || '—', commit: a.commit || '—',
     productId: a.provenance?.audit_product_id || a.provenance?.product_id || a.product_id, targetId: a.provenance?.target_id || a.target_id || a.repository_id, allowedActions: a.managed === false || a.provenance?.audit_managed === false || a.source === 'artifact' ? [] : (actions[a.status] || []), error: typeof a.error === 'string' ? a.error : undefined,
@@ -19,7 +19,7 @@ export function normalizeAudit(a: Row): Audit {
     canRetry: ['queued', 'failed', 'interrupted', 'cancelled', 'completed', 'artifact_only'].includes(a.status) && !!a.repository_id,
     executionIncomplete: a.execution_incomplete === true,
     status: a.status, progress: Number(a.progress) || 0, stage: a.stage || '等待调度', findings: Number(a.finding_count) || 0,
-    updatedAt: a.updated_at || a.created_at || '', version: a.version || 0, strategy: a.mining_strategy === 'file_sweep' ? '逐文件地毯式审计' : a.mining_strategy === 'api' ? '逐接口 API 审查' : '高风险 Focus Area',
+    updatedAt: a.updated_at || a.created_at || '', version: a.version || 0, strategy: a.report_validation ? '基于最终报告动态验证' : a.audit_mode === 'dynamic' ? '独立动态测试' : a.mining_strategy === 'file_sweep' ? '逐文件地毯式审计' : a.mining_strategy === 'api' ? '逐接口 API 审查' : '高风险 Focus Area',
     model: a.model || '默认模型', tasks: { total: a.todo?.total || 0, done: a.todo?.done || 0, gap: a.todo?.gap || 0 },
     stages: (a.stages || []).map((s: Row) => ({ id: s.id, label: s.label || s.name || s.id, status: ['done', 'complete', 'completed', 'COMPLETE', 'DONE'].includes(s.state || s.status) ? 'done' : ['active', 'running', 'RUNNING'].includes(s.state || s.status) ? 'active' : 'pending' })),
     logs: [], source: 'live' };
@@ -148,10 +148,11 @@ export class LiveService {
     const audit = result.audit || result;
     if (!normalizeAudit(audit).canRetry) throw new BadRequestException('当前任务状态不支持新建重试。');
     const productId = identifier(audit.provenance?.audit_product_id || audit.provenance?.product_id || audit.product_id, '任务所属产品');
-    const targetId = identifier(audit.provenance?.target_id || audit.repository_id, '源码对象');
+    const targetId = audit.audit_mode === 'dynamic' ? '' : identifier(audit.provenance?.target_id || audit.repository_id, '源码对象');
     const privateDraft = audit.status === 'artifact_only' ? {} : await this.write(`/api/v2/products/${encodeURIComponent(productId)}/audits/${encodeURIComponent(id)}/retry-draft`, {});
     const runtime = audit.runtime_testing;
-    return { productId, targetId, name: `${String(audit.name || id).replace(/（重试）$/u, '').slice(0, 156)}（重试）`,
+    return { productId, targetId, ...(audit.audit_mode ? { auditMode: audit.audit_mode } : {}), name: `${String(audit.name || id).replace(/（重试）$/u, '').slice(0, 156)}（重试）`,
+      ...(audit.report_validation ? { sourceReport: { report_id: audit.report_validation.report_id, report_sha256: audit.report_validation.report_sha256, model_sha256: audit.report_validation.model_sha256 }, sourceFindingCount: audit.report_validation.finding_count } : {}),
       engine: privateDraft.engine || audit.engine || audit.execution?.engine || 'opencode',
       model: audit.model || 'default', memoryMode: privateDraft.memory_mode || audit.memory_mode || 'full', bacAnalysis: audit.bac_analysis?.mode || 'auto',
       miningStrategy: privateDraft.mining_strategy || audit.mining_strategy || (privateDraft.api_inventory?.trim() ? 'api' : 'focus_area'), apiInventory: privateDraft.api_inventory || '',
@@ -193,6 +194,15 @@ export class LiveService {
     const report = await this.read(`/api/v1/reports/${encodeURIComponent(id)}?live=1`, { timeoutMs: 20000, label: '报告正文' });
     if (typeof report.body !== 'string') throw new ServiceUnavailableException('报告接口未返回正文。');
     return { ...normalizeReport(report), body: report.body, html: typeof report.rendered_html === 'string' ? report.rendered_html : '', presentation: report.presentation };
+  }
+  async reportValidationDraft(id: string): Promise<RealAuditDraft> {
+    identifier(id, '报告编号');
+    const value = await this.read(`/api/v1/reports/${encodeURIComponent(id)}/validation-source`, { timeoutMs: 20000, label: '报告验证来源' });
+    return { productId: identifier(value.product_id, '报告所属产品'), targetId: '', auditMode: 'dynamic', sourceReport: value.source_report, sourceFindingCount: value.finding_count,
+      name: `${String(value.source_audit_id).slice(0, 140)} · 报告动态验证`, engine: value.engine, model: value.model,
+      miningStrategy: 'focus_area', apiInventory: '', memoryMode: 'off', bacAnalysis: 'off',
+      additionalInstructionsEnabled: false, additionalInstructions: '', testEnvironmentEnabled: false, testEnvironmentContext: '',
+      runtimeTesting: { mode: 'TARGETED_CONFIRMATION', budgetMinutes: 60, identityMode: 'auto', testInput: false, testMutation: false } };
   }
   async downloadReport(id: string) {
     identifier(id, '报告编号');

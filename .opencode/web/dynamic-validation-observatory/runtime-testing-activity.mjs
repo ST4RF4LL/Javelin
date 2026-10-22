@@ -1,6 +1,6 @@
 import { createHash } from "node:crypto";
 import { controlledBytes } from "../../lib/task-board/contract.mjs";
-import { PROTOCOL, ID, SHA, PHASES, digest, validatePacket, httpUrl } from "../../lib/runtime-testing/contract.mjs";
+import { PROTOCOL, runtimeProtocol, ID, SHA, PHASES, digest, validatePacket, httpUrl } from "../../lib/runtime-testing/contract.mjs";
 import { sanitizeForWeb } from "./model.mjs";
 
 const hash = value => createHash("sha256").update(value).digest("hex");
@@ -12,7 +12,7 @@ const unique = rows => [...new Set(rows.filter(Boolean))];
 function preview(value, gaps) {
   const safe = sanitizeForWeb(value), text = typeof safe === "string" ? safe : JSON.stringify(safe);
   if (text == null || text.length <= 64 * 1024) return safe;
-  gaps.push("动作详情超过显示上限，已截断；关联 HTTP 正文仍保留其原始捕获标记。");
+  gaps.push("动作详情超过显示上限，已截断；关联 HTTP 正文与 SSH 输出仍保留其原始捕获标记。");
   return { text: text.slice(0, 64 * 1024), truncated: true };
 }
 
@@ -57,7 +57,7 @@ export function runtimeNetworkExchange({ content, record, binding, packet, repos
     if (redirects.length) gaps.push("重定向链仅包含工具摘要，未自动构造各跳的 HTTP 请求/响应。");
     const exchangeId = `http_runtime-${hash(`${repositoryId}\0${packet.audit_id}\0${binding.id}\0${binding.sha256}`).slice(0, 32)}`;
     return { gaps, exchange: sanitizeForWeb({ schema_version: 2, artifact_type: "HTTP_EXCHANGE_V2", exchange_id: exchangeId,
-      parent_exchange_id: null, request_session_id: content.identity_id ?? null, source: "chrome_devtools_mcp", runtime_protocol: PROTOCOL,
+      parent_exchange_id: null, request_session_id: content.identity_id ?? null, source: "chrome_devtools_mcp", runtime_protocol: packet.protocol,
       audit_id: packet.audit_id, repository_id: repositoryId, finding_id: packet.finding_id ?? null,
       started_at: record.recorded_at, recorded_at: record.recorded_at, timestamp_source: "evidence_capture", duration_ms: null,
       request: { method: value.method, url: value.url, headers: requestHeaders, body: requestBody },
@@ -81,14 +81,14 @@ export async function readRuntimeTestingActivity({ reportsRoot, repositoryId, au
     if (sha != null) ensure(SHA.test(sha) && hash(bytes) === sha, "证据文件 SHA-256 不匹配。");
     return JSON.parse(bytes.toString("utf8"));
   }
-  const sealed = value => ensure(value?.protocol === PROTOCOL && value.audit_id === auditId && value.artifact_digest === digest(value), "动态证据协议、审计或封存摘要不匹配。");
+  const sealed = value => ensure(runtimeProtocol(value?.protocol) && value.audit_id === auditId && value.artifact_digest === digest(value), "动态证据协议、审计或封存摘要不匹配。");
   try {
     ensure(typeof auditId === "string" && ID.test(auditId), "审计编号格式无效。");
     const authorization = await read("authorization.json"); sealed(authorization);
     let state, terminal = false;
     try { state = await read("evidence-set.json"); terminal = true; sealed(state); ensure(state.artifact_type === "runtime-testing-evidence-set", "证据集类型无效。"); }
     catch (error) { if (error.code !== "ENOENT") throw error; state = await read("state.json"); }
-    ensure(state.protocol === PROTOCOL && state.audit_id === auditId && state.authorization_digest === authorization.artifact_digest
+    ensure(state.protocol === authorization.protocol && state.audit_id === auditId && state.authorization_digest === authorization.artifact_digest
       && state.environment_revision === authorization.environment_revision && Array.isArray(state.packets), "执行状态与授权或审计绑定不一致。");
     const bindings = terminal ? state.evidence_bindings : state.evidence;
     ensure(Array.isArray(bindings) && new Set(bindings.map(row => row.id)).size === bindings.length, "证据索引缺失或重复。");
@@ -110,6 +110,8 @@ export async function readRuntimeTestingActivity({ reportsRoot, repositoryId, au
         validatePacket(packet, authorization);
         ensure(packet.id === row.id && packet.artifact_digest === row.input_digest
           && ["phase", "finding_id", "finding_object_digest", "hypothesis_id", "scope_digest"].every(key => (packet[key] ?? null) === (row[key] ?? null)), "工作包输入与执行记录绑定不一致。");
+        ensure(packet.protocol === authorization.protocol, "执行包协议与授权不一致。");
+        if (packet.scope_ref) ensure(digest(packet.scope_ref) === digest(row.scope_ref) && state.scopes?.some(scope => scope.id === packet.scope_ref.id && digest(scope) === packet.scope_ref.digest), "运行入口绑定不一致。");
         item.finding_id = packet.finding_id ?? null; item.title = item.finding_id ? `漏洞 ${item.finding_id}` : `${phaseName(packet.phase)} / 未关联漏洞`;
         if (row.result_path) {
           ensure(row.result_path === `packets/${row.id}.result.json`, "工作包结果路径无效。");
@@ -137,10 +139,18 @@ export async function readRuntimeTestingActivity({ reportsRoot, repositoryId, au
               if (typeof content === "string") { try { content = JSON.parse(content); } catch { content = { raw: record.content }; } }
             }
             const gaps = [], action = { id: binding.id, packet_id: packet.id, phase: packet.phase, tool: typeof content.tool === "string" ? content.tool : "UNKNOWN",
-              status: content.status === "FAILED" || content.result?.isError ? "FAILED" : content.raw ? "UNKNOWN" : "COMPLETED",
-              recorded_at: record.recorded_at ?? null, summary: content.code ?? content.tool ?? "脱敏动作原文", identity_id: content.identity_id ?? null,
+              status: content.status === "STARTED" ? "UNKNOWN" : content.status === "FAILED" || content.result?.isError ? "FAILED" : content.raw ? "UNKNOWN" : "COMPLETED",
+              recorded_at: record.recorded_at ?? null, summary: content.summary ?? content.code ?? content.tool ?? "脱敏动作原文", identity_id: content.identity_id ?? null,
               exchange_ids: [], gaps };
             if (content.identity_id != null) ensure(packet.identity_ids.includes(content.identity_id), "动作身份不属于当前工作包。");
+            if (content.status === "STARTED") gaps.push("此记录仅证明命令请求已提交；实际结果以同包后续动作证据为准，缺少结果时须核对远端状态。");
+            const ssh = content.result?.structuredContent?.ssh_execution;
+            if (ssh) {
+              action.transport = "ssh"; action.status = ssh.status === "COMPLETED" && ssh.exit_code !== 0 ? "FAILED" : ssh.status;
+              action.summary = `SSH 命令：${ssh.status}，退出码 ${ssh.exit_code ?? "未提供"}`;
+              if (ssh.output_truncated) gaps.push("SSH 输出超过捕获上限，已截断；不能据此推定完整结果。");
+              if (["TIMED_OUT", "CANCELLED", "DISCONNECTED", "FAILED"].includes(ssh.status)) gaps.push("远端进程状态未确认，需核对本次命令和清理情况。");
+            }
             const captured = runtimeNetworkExchange({ content, record, binding, packet, repositoryId, authorization });
             gaps.push(...captured.gaps);
             if (captured.exchange) { exchanges.push(captured.exchange); action.exchange_ids.push(captured.exchange.exchange_id); item.exchange_ids.push(captured.exchange.exchange_id); }

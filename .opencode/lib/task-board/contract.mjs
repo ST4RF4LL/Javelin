@@ -110,6 +110,7 @@ function normalizeBacTask(value) {
 }
 
 export function deliveryOutcome(summary) {
+  if (summary.audit_mode === "dynamic") return "RUNTIME_ONLY";
   if (summary.file_sweep) {
     if (!summary.total) return summary.file_sweep.browsed_files ? "DISCOVERY_ONLY" : "NO_REPORTS";
     if (summary.reported && summary.file_sweep.gap_files) return "PARTIAL";
@@ -135,7 +136,7 @@ export function summarize(board) {
   const sweep = sweepSummary(board);
   const complete = board.publication.state === "SEALED" && reported + gap === total && (board.mining_strategy !== "file_sweep" || sweep?.complete === true);
   const apiReported = board.api_sources.filter(source => apiDeliveries.get(source.source_id) === true).length;
-  return { protocol: PROTOCOL, revision: board.revision, audit_id: board.audit_id, total, reported, done: reported, gap,
+  return { protocol: PROTOCOL, ...(board.audit_mode ? { audit_mode: board.audit_mode } : {}), revision: board.revision, audit_id: board.audit_id, total, reported, done: reported, gap,
     ...(board.mining_strategy ? { mining_strategy: board.mining_strategy } : {}),
     ...(sweep ? { file_sweep: sweep } : {}),
     pending: count("PENDING"), running: count("RUNNING"), failed: count("FAILED"), complete, mining_complete: complete,

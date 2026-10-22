@@ -33,6 +33,7 @@ import { ProductStore, UNDEFINED_PRODUCT_ID } from "./product-store.mjs";
 import { controlledBytes } from "../../lib/task-board/contract.mjs";
 import { renderBoardReport } from "../../lib/task-board/review.mjs";
 import { renderStructuredBoardReport } from "../../lib/task-board/report.mjs";
+import { readReportSource, reportSourceRequest } from "../../lib/runtime-testing/report-source.mjs";
 import { createWorkbenchUiHandler, normalizeModernOrigin } from "./workbench-ui.mjs";
 import { runtimeBuild } from "./runtime-build.mjs";
 import { NativeSessionController } from '../../lib/audit-runtime/native-sessions.mjs';
@@ -424,6 +425,15 @@ export function createAuditWorkbenchServer({
     createAudit: async (input, session) => {
       await productCatalogReady;
       const productId = input.product_id ?? UNDEFINED_PRODUCT_ID;
+      if (input.audit_mode === "dynamic") {
+        const product = productStore.assertProduct(productId, { writable: true });
+        const snapshot = { kind: "runtime-environment", product_id: product.id, target_id: null, target_name: product.name,
+          source_scopes: [], storage_namespace: `runtime-${createHash("sha256").update(product.id).digest("hex").slice(0, 24)}` };
+        const snapshotDigest = createHash("sha256").update(JSON.stringify(snapshot)).digest("hex");
+        const audit = await runner.createAuditFromTarget({ ...input, engine: session.engine, target_id: null, execution_spec: snapshot, execution_spec_digest: snapshotDigest }, input.idempotency_key, { nativeSession: session });
+        if (!productStore.auditLink(audit.id)) await productStore.linkRuntimeAudit({ auditId: audit.id, productId, snapshot, snapshotDigest });
+        return audit;
+      }
       let targetId = input.target_id;
       if (!targetId) {
         const sourcePath = await realpath(input.source_root ?? session.directory);
@@ -462,13 +472,16 @@ export function createAuditWorkbenchServer({
     for (const repository of runner.runtimeRepositories()) await productStore.importLegacyRepository(repository);
     for (const audit of runner.listAudits()) {
       if (productStore.auditLink(audit.id)) continue;
+      if (audit.audit_mode === "dynamic") {
+        await productStore.linkRuntimeAudit({ auditId: audit.id, productId: audit.execution_spec.product_id, snapshot: audit.execution_spec, snapshotDigest: audit.execution_spec_digest }); continue;
+      }
       const target = productStore.getTarget(UNDEFINED_PRODUCT_ID, audit.repository_id);
       const snapshot = await productStore.targetExecutionSnapshot(UNDEFINED_PRODUCT_ID, target.id);
       await productStore.linkAudit({ auditId: audit.id, productId: UNDEFINED_PRODUCT_ID, targetId: target.id, snapshot: snapshot.snapshot, snapshotDigest: snapshot.digest });
     }
   });
   productCatalogReady.then(() => productAudits.ready).then(() => { productMemory.start(); productAudits.start(); }).catch(error => { productAudits.lastError = error.message; });
-  runner.setTargetOperationGuard?.((audit, operation) => withTargetOperationLock(audit.execution_spec?.target_id ?? audit.repository_id, operation));
+  runner.setTargetOperationGuard?.((audit, operation) => audit.audit_mode === "dynamic" ? operation() : withTargetOperationLock(audit.execution_spec?.target_id ?? audit.repository_id, operation));
 
   function recordOwnership(record) {
     const auditId = record.audit_id ?? record.id;
@@ -476,7 +489,7 @@ export function createAuditWorkbenchServer({
     const audit = managed?.repository_id === record.repository_id ? managed : null;
     const link = audit ? productStore.auditLink(auditId) : null;
     const target = productStore.targetById(link?.target_id ?? record.repository_id);
-    const product = target ? productStore.assertProduct(target.product_id) : null;
+    const product = target ? productStore.assertProduct(target.product_id) : link ? productStore.assertProduct(productStore.auditProductId(link)) : null;
     return { product_id: product?.id ?? null, product_name: product?.name ?? "未关联产品",
       product_name_at_creation: link?.product_name_at_creation ?? null,
       target_id: target?.id ?? null, target_name: target?.name ?? record.repository_name ?? "未关联测试对象",
@@ -653,7 +666,7 @@ export function createAuditWorkbenchServer({
     productStore.assertProduct(productId);
     const link = productStore.auditLink(auditId);
     const audit = runner.getAudit(auditId);
-    if (!link || productStore.targetById(link.target_id)?.product_id !== productId || !audit) throw Object.assign(new Error("产品空间内没有该审计任务。"), { statusCode: 404, code: "product-audit-not-found" });
+    if (!link || productStore.auditProductId(link) !== productId || !audit) throw Object.assign(new Error("产品空间内没有该审计任务。"), { statusCode: 404, code: "product-audit-not-found" });
     return { ...audit, product_id_at_creation: link.product_id_at_creation, product_name_at_creation: link.product_name_at_creation, target_id: link.target_id, target_snapshot_digest: link.snapshot_digest };
   }
 
@@ -682,7 +695,7 @@ export function createAuditWorkbenchServer({
   async function assertLegacyUndefinedAudit(auditId) {
     await productCatalogReady;
     const link = productStore.auditLink(auditId);
-    if (link && productStore.targetById(link.target_id)?.product_id !== UNDEFINED_PRODUCT_ID) {
+    if (link && productStore.auditProductId(link) !== UNDEFINED_PRODUCT_ID) {
       throw Object.assign(new Error("该审计任务属于正式产品；请使用产品空间 API 或界面管理。"), { statusCode: 409, code: "legacy-write-product-scoped" });
     }
   }
@@ -709,7 +722,7 @@ export function createAuditWorkbenchServer({
       const result = await runner.deleteAudit(auditId, { repositoryId: audit.repository_id, expectedVersion: expected, artifactPaths: artifacts.map(artifact => artifact.path) });
       const validationRunsRemoved = await dynamicRunner.deleteAuditRuns(auditId);
       const findingWorkflowsRemoved = await findingWorkflow.deleteAudit(auditId, audit.repository_id);
-      await productStore.unlinkAudit(auditId, audit.repository_id);
+      await productStore.unlinkAudit(auditId, productStore.auditLink(auditId)?.target_id ?? null);
       return { ...result, removed_validation_runs: validationRunsRemoved, removed_finding_workflows: findingWorkflowsRemoved };
     };
     return productStore.targetById(audit.repository_id) ? withTargetOperationLock(audit.repository_id, remove) : remove();
@@ -773,7 +786,7 @@ export function createAuditWorkbenchServer({
       const previous = audits.get(current.id);
       const audit = { ...previous };
       const fields = ["id", "name", "repository_id", "repository_name", "commit", "status", "version", "event_sequence", "created_at", "updated_at", "terminal", "queue", "paths", "provider_session_id", "task_context", "todo", "model", "error", "exit_code", "recovery_count", "last_recovered_at", "interrupted_at", "interruption_reason", "todo_completion", "stage_delivery", "context_window_recovery", "completion_source"];
-      fields.push("task_protocol", "task_board", "mining_strategy", "runtime_testing", "runtime_testing_state", "bac_analysis", "execution");
+      fields.push("task_protocol", "task_board", "mining_strategy", "runtime_testing", "runtime_testing_state", "bac_analysis", "execution", "audit_mode", "report_validation");
       for (const field of fields) audit[field] = current[field] ?? null;
       if (!previous) Object.assign(audit, { stages: [], progress: 0, stage: "等待调度", finding_count: 0, artifact_count: 0, runtime_validation_count: 0 });
       if (current.stage_delivery_enforcement === "TODO_ENFORCED" && current.todo?.total > 0) {
@@ -822,6 +835,18 @@ export function createAuditWorkbenchServer({
     }
     const sha256 = value => createHash("sha256").update(value).digest("hex");
     return { report, bytes, presentation: { format, source_sha256: sha256(sourceBytes), sha256: sha256(bytes), derived: !bytes.equals(sourceBytes) } };
+  }
+
+  async function reportValidationSource(reportId, productId = null, expected = null) {
+    const { report } = await reportContent(reportId, { original: true });
+    const owner = recordOwnership(report);
+    if (!owner.product_id || productId && owner.product_id !== productId) throw Object.assign(new Error("当前产品内没有该报告。"), { statusCode: 404, code: "product-report-not-found" });
+    const audit = runner.getAudit(report.audit_id);
+    if (audit && ["queued", "preparing", "recovering", "running", "pausing", "paused", "cancelling"].includes(audit.status)) throw Object.assign(new Error("来源审计仍有活动工作，请等待报告封存。"), { statusCode: 409, code: "report-source-active" });
+    const root = runner.artifactSources().find(item => item.repository_id === report.repository_id)?.reports_root;
+    const source = await readReportSource({ root, report });
+    if (expected && (expected.report_id !== reportId || expected.report_sha256 !== source.source.report_sha256 || expected.model_sha256 !== source.source.model_sha256)) throw Object.assign(new Error("报告版本已变化，请重新打开报告验证表单。"), { statusCode: 409, code: "report-source-changed" });
+    return { source, productId: owner.product_id, audit };
   }
 
   async function repositoriesSnapshot(url = null) {
@@ -1005,7 +1030,17 @@ export function createAuditWorkbenchServer({
             assertSafeMutation(request);
             const body = await requestJson(request);
             const selection = await auditAgentSelection(body);
-            const audit = await withTargetOperationLock(body.target_id, async () => {
+            const createDynamic = async () => {
+              const product = productStore.assertProduct(scopedProductId, { writable: true });
+              const reportSource = body.source_report ? (await reportValidationSource(body.source_report.report_id, product.id, body.source_report)).source : null;
+              const snapshot = { kind: "runtime-environment", product_id: product.id, target_id: null, target_name: product.name,
+                source_scopes: [], storage_namespace: `runtime-${createHash("sha256").update(product.id).digest("hex").slice(0, 24)}` };
+              const digest = createHash("sha256").update(JSON.stringify(snapshot)).digest("hex");
+              const created = await runner.createAuditFromTarget({ ...body, ...selection, target_id: null, execution_spec: snapshot, execution_spec_digest: digest }, request.headers["idempotency-key"], { reportSource });
+              if (!productStore.auditLink(created.id)) await productStore.linkRuntimeAudit({ auditId: created.id, productId: product.id, snapshot, snapshotDigest: digest });
+              return created;
+            };
+            const audit = body.audit_mode === "dynamic" ? await createDynamic() : await withTargetOperationLock(body.target_id, async () => {
               const frozen = await productStore.targetExecutionSnapshot(scopedProductId, body.target_id);
               const created = await runner.createAuditFromTarget({ ...body, ...selection, target_id: frozen.target.id, execution_spec: frozen.snapshot, execution_spec_digest: frozen.digest }, request.headers["idempotency-key"]);
               const existingLink = productStore.auditLink(created.id);
@@ -1349,6 +1384,14 @@ export function createAuditWorkbenchServer({
       if (request.method === "GET" && url.pathname === "/api/v1/reports") {
         const data = await snapshot();
         json(response, 200, { items: data.reports, count: data.reports.length });
+        return;
+      }
+      const reportValidationId = matchReportPath(url.pathname, "validation-source");
+      if (request.method === "GET" && reportValidationId) {
+        const { source, productId, audit } = await reportValidationSource(reportValidationId);
+        json(response, 200, { product_id: productId, source_report: reportSourceRequest(source.source),
+          source_audit_id: source.source.audit_id, finding_count: source.source.finding_count,
+          engine: audit?.execution?.engine ?? "opencode", model: audit?.model ?? "default" });
         return;
       }
       const reportDownloadId = matchReportPath(url.pathname, "download");

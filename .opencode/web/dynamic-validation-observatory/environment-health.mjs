@@ -40,6 +40,15 @@ async function readPackageComponent(projectRoot) {
   }
 }
 
+async function sshComponent(projectRoot) {
+  try {
+    const manifest = JSON.parse(await readFile(join(projectRoot, ".opencode", "node_modules", "ssh2", "package.json"), "utf8"));
+    return { id: "ssh2", label: "SSH 执行器", category: "动态验证", status: "ready", version: manifest.version, command: "npm ci --prefix .opencode", required_for: ["ssh_dynamic"], detail: "SSH 客户端依赖已安装；目标认证在授权任务中检查，不要求 Chrome。" };
+  } catch {
+    return { id: "ssh2", label: "SSH 执行器", category: "动态验证", status: "unavailable", version: null, command: "npm ci --prefix .opencode", required_for: ["ssh_dynamic"], detail: "缺少 SSH 客户端依赖，请安装项目依赖。" };
+  }
+}
+
 async function inspectMcpConfiguration(configPaths) {
   const states = { chrome_devtools: false, valid_configs: 0, invalid_configs: 0 };
   for (const path of [...new Set(configPaths.filter(Boolean))]) {
@@ -169,7 +178,8 @@ export class EnvironmentHealthService {
       probeExecutable({ id: "bac_python", label: "Python（越权专项）", category: "静态分析（可选）", command: environment.AUDIT_BAC_PYTHON || (platform === "win32" ? "python" : "python3"), requiredFor: ["bac_analysis"], environment, platform, execute, resolveCommand }),
     ]);
     const chromeMcp = configuredComponent("chrome_devtools_mcp", "Chrome DevTools MCP", "动态验证", mcp.chrome_devtools, ["dynamic"], "隔离 Chrome DevTools MCP 已启用。" );
-    const components = [node, npm, dependencies, git, opencode, ttyd, java, joern, joernParse, opengrep, semgrep, gitleaks, osvScanner, chrome, chromeMcp, bacPython];
+    const ssh = await sshComponent(this.projectRoot);
+    const components = [ssh, node, npm, dependencies, git, opencode, ttyd, java, joern, joernParse, opengrep, semgrep, gitleaks, osvScanner, chrome, chromeMcp, bacPython];
     const capabilities = [
       capability("workbench", "工作台", ["node", "project_dependencies"], components),
       capability("static", "静态漏洞挖掘", ["node", "git", "opencode", "project_dependencies"], components, { anyOf: ["opengrep", "semgrep"] }),
@@ -179,6 +189,7 @@ export class EnvironmentHealthService {
       capability("dependency_scan", "依赖漏洞扫描（可选）", ["osv_scanner"], components, { optional: true }),
       capability("deep_dataflow", "深度数据流分析（可选）", ["java", "joern", "joern_parse"], components, { optional: true }),
       capability("terminal_monitor", "ttyd 交互终端", ["node", "opencode", "ttyd"], components),
+      capability("ssh_dynamic", "SSH 动态验证", ["node", "git", "opencode", "project_dependencies", "ssh2"], components),
       capability("dynamic", "Web 动态验证", ["node", "npm", "git", "opencode", "project_dependencies", "chrome", "chrome_devtools_mcp"], components),
     ];
     const value = {

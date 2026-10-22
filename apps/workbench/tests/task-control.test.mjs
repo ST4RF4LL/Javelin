@@ -76,6 +76,21 @@ test('真实提交使用产品级 API、固定任务协议和幂等键，默认�
   bacSelection(call.body.bac_analysis);
 });
 
+test('报告验证草稿仅冻结来源，不自动授权；提交固定为定向验证并保留完整环境原文', async () => {
+  const sourceReport = { report_id: 'report-fixture', report_sha256: 'a'.repeat(64), model_sha256: 'b'.repeat(64) };
+  mockTransport(call => call.url.pathname.endsWith('/validation-source') ? json({ product_id: input.productId, source_report: sourceReport, source_audit_id: 'original', finding_count: 3, engine: 'opencode', model: 'default' }) : undefined);
+  const response = await request('reports/report-fixture/validation-draft', post({})); assert.equal(response.statusCode, 201);
+  const draft = response.json(); assert.deepEqual(draft.sourceReport, sourceReport); assert.equal(draft.testEnvironmentEnabled, false); assert.equal(draft.testEnvironmentContext, ''); assert.equal(draft.sourceFindingCount, 3);
+  assert.deepEqual(calls.map(call => call.method), ['GET']);
+  assert.throws(() => createTaskInput({ ...input, ...draft }), /显式授权/);
+  assert.throws(() => createTaskInput({ ...input, ...draft, auditMode: 'static' }), /来源/);
+  const context = '内网环境使用 SSO 登录，具体授权地址与测试身份由此完整说明。PRIVATE_REPORT_CONTEXT';
+  const created = await request('audits', post({ ...input, ...draft, testEnvironmentEnabled: true, testEnvironmentContext: context, runtimeTesting: { mode: 'INTEGRATED_TESTING', budgetMinutes: 90, testInput: true } }));
+  assert.equal(created.statusCode, 201, created.body); const call = calls.at(-1);
+  assert.deepEqual(call.body.source_report, sourceReport); assert.equal(call.body.runtime_testing.mode, 'TARGETED_CONFIRMATION'); assert.equal(call.body.runtime_testing.budget_minutes, 90); assert.equal(call.body.test_environment_context, context); assert.equal(call.body.target_id, null);
+  assert.doesNotMatch(created.body, /PRIVATE_REPORT_CONTEXT/);
+});
+
 test('空环境继续静态流程；自由文本授权完整转交，不要求固定账号格式', async () => {
   const empty = createTaskInput({ ...input, testEnvironmentEnabled: true, testEnvironmentContext: '   ', runtimeTesting: { mode: 'invalid' } }).body;
   assert.equal(empty.test_environment_enabled, false); assert.equal(empty.runtime_testing, null);
@@ -96,6 +111,23 @@ test('逐文件策略从新版创建接口转交后台，保持静态默认与�
   assert.equal(calls[0].body.memory_mode, 'full');
   assert.equal(calls[0].body.test_environment_enabled, false);
   assert.equal(normalizeAudit({ ...audit, mining_strategy: 'file_sweep' }).strategy, '逐文件地毯式审计');
+});
+
+test('三种审计入口独立建模：动态无需源码，联合使用 v2，静态忽略残留授权字段', async () => {
+  const runtimeTesting = { mode: 'INTEGRATED_TESTING', budgetMinutes: 60, identityMode: 'auto', testInput: true, testMutation: false };
+  const environment = { testEnvironmentEnabled: true, testEnvironmentContext: '授权测试环境及专用身份 PRIVATE_V2_CONTEXT', runtimeTesting };
+  const response = await request('audits', post({ ...input, ...environment, targetId: '', auditMode: 'dynamic' }));
+  assert.equal(response.statusCode, 201, response.body);
+  assert.equal(calls[0].body.audit_mode, 'dynamic'); assert.equal(calls[0].body.target_id, null);
+  assert.equal(calls[0].body.runtime_testing.protocol, 'runtime-testing.v2');
+  assert.equal(calls[0].body.test_environment_context, environment.testEnvironmentContext);
+  assert.ok(!response.body.includes('PRIVATE_V2_CONTEXT'));
+  const joint = createTaskInput({ ...input, ...environment, auditMode: 'joint' }).body;
+  assert.equal(joint.target_id, input.targetId); assert.equal(joint.runtime_testing.protocol, 'runtime-testing.v2');
+  const statically = createTaskInput({ ...input, ...environment, auditMode: 'static' }).body;
+  assert.equal(statically.runtime_testing, null); assert.equal(statically.test_environment_context, '');
+  assert.throws(() => createTaskInput({ ...input, auditMode: 'dynamic', targetId: '', testEnvironmentEnabled: false }), /授权/);
+  assert.equal(normalizeAudit({ ...audit, audit_mode: 'dynamic' }).strategy, '独立动态测试');
 });
 
 test('批量创建沿用产品级队列入口与配置契约，每个仓库有独立任务和幂等键', async () => {

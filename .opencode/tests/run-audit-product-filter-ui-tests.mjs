@@ -56,10 +56,11 @@ function fixture() {
   const $ = id => { if (!nodes.has(id)) nodes.set(id, new Element()); return nodes.get(id); };
   const state = { view: 'audits', selectedProductId: 'p1', auditProductFilter: 'p1', selectedTargetIds: new Set(['selected-target']), products: [{ id: 'p1', name: '产品一', status: 'active' }, { id: 'p2', name: '产品二', status: 'active' }], targets: [], workspace: { audits: [], queue: {} }, audits: [], auditTab: 'all', auditPage: 1, auditPageSize: 20, auditTotal: 0, auditTotalPages: 1, runtime: { runner: { enabled: true } }, auditDialogRequest: 0, modelSettings: { selected_model: 'default', options: [{ value: 'default', label: '默认' }] } };
   Object.assign(state, { taskBoardViews: new Map(), selectedAudits: new Map(), auditSelectionScope: null, batchDeleteItems: [], batchDeleteStarted: false, batchDeleteBusy: false, batchDeleteStop: false });
+  state.agentSettings = { default_engine: 'opencode', profiles: [{ id: 'opencode', label: 'OpenCode v1', enabled: true, available: true }] };
   const context = vm.createContext({ state, $, document: { querySelectorAll: () => [] }, URLSearchParams, AbortController, crypto, structuredClone, auditListPath, auditScope, resolveAuditScope, auditCanDelete, auditSelectionKey, deleteAuditRequest,
     element: (...args) => new Element(...args), table: () => [new Element('table'), new Element('tbody')], cell() {}, short: String, auditStatus: () => new Element(), auditProgressText: () => '',
     renderActiveView() {}, renderAuditDetail() {}, connectEventStream() {}, closeAuditDrawer() { $('audit-drawer').open = false; },
-    showError: error => errors.push(error), toast() {}, load: async () => {}, setView: view => { state.view = view; }, syncAuditContextControls() {},
+    showError: error => errors.push(error), toast() {}, load: async () => {}, loadAgentSettings: async () => {}, loadAuditModels: async () => {}, setView: view => { state.view = view; }, syncAuditContextControls() {},
     auditViews: async items => items, disposed: false, navigationSequence: 0, invalidateFindings() {}, openAudit: async id => { context.openedId = id; },
     api: async (url, options = {}) => { calls.push({ url, options }); return context.respond(url, options); },
     respond: async url => {

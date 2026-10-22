@@ -1005,6 +1005,7 @@ if (mode === "run") {
     assert.equal(dynamic.status, chromeLocation ? "ready" : "blocked");
     assert.deepEqual(dynamic.blockers, chromeLocation ? [] : ["chrome"]);
     assert.equal(macHealth.capabilities.find(item => item.id === "static").status, "ready");
+    assert.equal(macHealth.capabilities.find(item => item.id === "ssh_dynamic").status, "ready");
   }
 
   let windowsChromeLaunches = 0;

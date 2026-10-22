@@ -21,7 +21,7 @@ server.setRequestHandler(ListToolsRequestSchema, async () => ({ tools: [...envir
 } ] }));
 server.setRequestHandler(CallToolRequestSchema, async ({ params }) => {
   try {
-    const paths = { submit_result: "/submit", configure_environment: "/configure", register_sensitive_values: "/redactions", browser_tools: "/tools", browser_call: "/call" };
+    const paths = { submit_result: "/submit", configure_environment: "/configure", register_sensitive_values: "/redactions", browser_tools: "/tools", browser_call: "/call", execution_tools: "/tools", execution_call: "/call" };
     if (!paths[params.name]) throw new Error("runtime-tool-unknown");
     const result = await request(paths[params.name], params.arguments ?? {});
     return { isError: result?.isError === true, content: [{ type: "text", text: JSON.stringify(result) }],
