@@ -48,11 +48,11 @@
     "test:agent-mining": "node --test tests/run-agent-mining-tests.mjs",
     "agent-mining": "node scripts/agent-mining.mjs",
     "test:product-memory": "node --test tests/run-product-memory-tests.mjs tests/run-product-audit-tests.mjs tests/run-product-memory-integration-tests.mjs tests/run-product-memory-ui-tests.mjs",
-    "start:audit-workbench:modern": "npm --prefix ../apps/workbench run start:integrated",
+    "start:audit-workbench:modern": "npm --prefix ../apps/workbench run start:integrated --",
     "build:audit-workbench:modern": "npm --prefix ../apps/workbench run build",
     "start:audit-workbench:preview": "npm --prefix ../apps/workbench run start:preview:baseline",
     "test:audit-workbench:modern": "node --test tests/run-workbench-ui-tests.mjs && npm --prefix ../apps/workbench test",
-    "start:audit-workbench:platform": "npm --prefix ../apps/workbench run start:platform",
+    "start:audit-workbench:platform": "npm --prefix ../apps/workbench run start:platform --",
     "test:audit-workbench:platform": "npm --prefix ../apps/workbench run test:tasks",
     "test:agent-engines": "node --test tests/run-agent-settings-tests.mjs tests/run-agent-settings-ui-tests.mjs tests/run-agent-engines-integration-tests.mjs tests/run-opencode-v2-tests.mjs lib/audit-runtime/engines/grow.test.mjs",
     "test:runtime-ssh": "node --test tests/run-runtime-ssh-tests.mjs"

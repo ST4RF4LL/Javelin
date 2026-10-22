@@ -52,7 +52,7 @@ export function OriginalFeature({ view, auditId, hidden = false }: { view: Origi
         if (key === 'querySelector' || key === 'querySelectorAll') return body[key].bind(body);
         const value = Reflect.get(target, key, target); return typeof value === 'function' ? value.bind(target) : value;
       } });
-      mounted = module.mountWorkbench({ document: scopedDocument, initialView: location.current.view, onNavigate: (next: OriginalView) => { if (next !== location.current.view) navigate(routes[next]); }, onFileCoverage: (id: string) => navigate(`/audits/coverage?audit_id=${encodeURIComponent(id)}`), onBatchCreate: runtime.liveReadOnly ? null : (selection: BatchAuditSelection) => createEntry.current(selection), onMutation: () => { void queryClient.invalidateQueries(); } });
+      mounted = module.mountWorkbench({ document: scopedDocument, terminalServerUrl: new URL('/terminal/', window.location.href).href, initialView: location.current.view, onNavigate: (next: OriginalView) => { if (next !== location.current.view) navigate(routes[next]); }, onFileCoverage: (id: string) => navigate(`/audits/coverage?audit_id=${encodeURIComponent(id)}`), onBatchCreate: runtime.liveReadOnly ? null : (selection: BatchAuditSelection) => createEntry.current(selection), onMutation: () => { void queryClient.invalidateQueries(); } });
       shownView.current = location.current.view;
       // 原页面按资源到达逐步显示，模型或目录读取不能阻塞整个页面。
       if (!disposed) { setController(mounted!); setLoading(false); }

@@ -74,7 +74,24 @@ npm --prefix apps/workbench run start:platform
 
 `build` 不会自动安装依赖。监控构建需要 `devDependencies` 中的 `esbuild`，React Router、TypeScript 和 Vite 也属于构建依赖；显式 `--include=dev` 可避免生产环境安装设置遗漏它们。`--include=optional` 保留当前系统需要的原生组件。出现 `Cannot find package 'esbuild'` 时，先执行上面的 `ci` 命令，成功后再构建；无需全局安装 esbuild，也不要从 macOS/Linux 复制 `node_modules` 到 Windows。只在仓库根目录或 `.opencode` 安装依赖不会同步 `apps/workbench` 的依赖。
 
-打开 `http://127.0.0.1:4181`，点击“创建审计”：
+需要让其他设备访问时，指定监听地址：
+
+```sh
+# 监听所有 IPv4 网卡，默认端口 4181
+npm --prefix apps/workbench run start:platform -- --host 0.0.0.0
+
+# 仅监听本机某张网卡，并指定端口（替换为本机实际 IP）
+npm --prefix apps/workbench run start:platform -- --host 192.168.1.100 --port 4181
+
+# 同时开放原界面 4173
+npm --prefix apps/workbench run start:platform -- --host 0.0.0.0 --legacy
+```
+
+默认仍监听 `127.0.0.1`。`--host` 支持 IPv4、IPv6（如 `::`）及 `localhost`；也支持 `WORKBENCH_HOST`、`WORKBENCH_PORT` 环境变量，命令行优先。指定 IP 必须属于本机。`start:integrated` 和 `start` 也接受 `--host`、`--port`。修改源码后先重新执行 `npm --prefix apps/workbench run build`，再重新启动 Web 入口。
+
+其他设备访问 `http://<部署机器实际 IP>:4181`，例如 `http://192.168.1.100:4181`；`0.0.0.0` 是监听地址，不是发给其他用户的访问地址。需保证网络可达并在主机防火墙放行所选 TCP 端口；启用 `--legacy` 时再放行 4173。页面、业务 API、SSE 和交互终端均通过平台入口访问；审计 API 4183 和终端网关 4184 保持本机监听，无需对外开放。平台入口沿用现有管理权限，能够连入的用户可以使用其任务和设置功能。
+
+打开 `http://127.0.0.1:4181`（远程访问时替换为部署机器 IP），点击“创建审计”：
 
 1. 填写任务名，选择产品和模型。
 2. 选择已有源码对象，或登记本机源码绝对目录。当前 Runner 仅支持一个完整源码目录；多范围、过滤规则及不可用对象会明确禁用。

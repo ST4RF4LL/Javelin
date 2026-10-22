@@ -2,13 +2,12 @@ import { fileURLToPath } from 'node:url';
 import { resolve } from 'node:path';
 import { existsSync } from 'node:fs';
 import { runtimeBuild } from '../../../.opencode/web/dynamic-validation-observatory/runtime-build.mjs';
-import { ensureWorkbenchTerminalMonitor } from './start-terminal-monitor.mjs';
+import { ensureWorkbenchTerminalMonitor, terminalMonitorConfiguration } from './start-terminal-monitor.mjs';
 import { DEFAULT_SERVICE_ORIGIN, ensureAuditService } from '../../../.opencode/lib/audit-runtime/service-process.mjs';
 
 const root = fileURLToPath(new URL('../../../', import.meta.url));
 const apiEntry = new URL('../build/api/server/main.js', import.meta.url);
 const origin = process.env.WORKBENCH_UPSTREAM || DEFAULT_SERVICE_ORIGIN;
-const port = Number(process.env.WORKBENCH_PORT || 4181);
 let app, legacyApp, ownedTerminal, stopping = false;
 
 export async function probeBackend(upstream, transport) {
@@ -41,35 +40,38 @@ async function close() {
 }
 async function main() {
   const args = process.argv.slice(2);
-  if (args.some(arg => arg !== '--legacy')) throw new Error('用法：start:platform [-- --legacy]');
-  const legacy = args.includes('--legacy');
-  if (!Number.isInteger(port) || port < 1 || port > 65535 || [4173, 4183].includes(port)) throw new Error('WORKBENCH_PORT 需要是有效端口，且不能占用原界面的 4173 或审计 API 的 4183。');
+  if (!existsSync(fileURLToPath(apiEntry))) throw new Error('请先执行 npm --prefix apps/workbench run build。');
+  const { listenOptions, listenHelp, listenOrigin } = await import('../build/api/server/listen-options.js');
+  const { host, port, legacy, help } = listenOptions(args, process.env, { allowLegacy: true });
+  if (help) { process.stdout.write(`用法：npm --prefix apps/workbench run start:platform -- [--host <IP>] [--port <端口>] [--legacy]\n${listenHelp}\n--legacy 同时开启 4173 原界面，使用相同监听地址。\n`); return; }
+  if (port === terminalMonitorConfiguration().port) throw new Error('平台端口不能与终端端口相同，请修改 --port 或 WORKBENCH_TERMINAL_PORT。');
+  const modernOrigin = listenOrigin(host, port);
   const upstream = new URL(origin);
   if (!['http:', 'https:'].includes(upstream.protocol) || upstream.pathname !== '/' || upstream.search || upstream.hash || upstream.username || upstream.password) throw new Error('WORKBENCH_UPSTREAM 必须是无凭据的 HTTP(S) origin。');
   if (['127.0.0.1', 'localhost', '[::1]'].includes(upstream.hostname) && upstream.port === '4173') throw new Error('4173 是原界面保留入口，不能作为新版后台。请移除 WORKBENCH_UPSTREAM 的旧值后重新启动。');
-  if (!existsSync(fileURLToPath(apiEntry))) throw new Error('请先执行 npm --prefix apps/workbench run build。');
   const existing = await probeBackend(upstream.origin);
   if (!existing && upstream.origin !== DEFAULT_SERVICE_ORIGIN) throw new Error('指定的审计服务未运行，请先启动该服务。');
   process.env.WORKBENCH_MODE = 'integrated'; process.env.WORKBENCH_ENABLE_TASKS = '1';
   process.env.WORKBENCH_UPSTREAM = upstream.origin;
   process.env.WORKBENCH_LEGACY_ENABLED = legacy ? '1' : '0';
-  process.env.WORKBENCH_MODERN_ORIGIN = `http://127.0.0.1:${port}`;
+  process.env.WORKBENCH_HOST = host; process.env.WORKBENCH_PORT = String(port);
+  process.env.WORKBENCH_MODERN_ORIGIN = modernOrigin;
   const { createApp } = await import(apiEntry.href);
   app = await createApp();
   // 先绑定新版端口，避免端口冲突时启动额外 Runner。
-  await app.listen(port, '127.0.0.1');
+  await app.listen(port, host);
   if (legacy) {
     // A second UI client, never a second audit Runner.
     legacyApp = await createApp({ legacy: true });
-    await legacyApp.listen(4173, '127.0.0.1');
+    await legacyApp.listen(4173, host);
   }
   if (!existing) {
-    await ensureAuditService({ origin: upstream.origin, modernOrigin: `http://127.0.0.1:${port}` });
+    await ensureAuditService({ origin: upstream.origin, modernOrigin });
     await probeBackend(upstream.origin);
   }
   try { ownedTerminal = await ensureWorkbenchTerminalMonitor(); }
   catch (error) { process.stderr.write(`交互终端服务未就绪：${error.message}\n`); }
-  process.stdout.write(`\n新平台已启动：http://127.0.0.1:${port}\n${legacy ? '原界面保留入口：http://127.0.0.1:4173/' : '原界面：未开启（需要时添加 --legacy）'}\n审计 API：${upstream.origin}（${existing ? '复用已有服务' : '已在后台启动'}）\n请求诊断：${process.env.WORKBENCH_DIAGNOSTICS_DIR || resolve(root, 'reports/platform/workbench-api/requests.jsonl')}\nCtrl+C 只关闭 Web 与本次终端连接，审计任务继续运行。后台管理：node .opencode/scripts/audit-service.mjs status|stop\n`);
+  process.stdout.write(`\n新平台已启动：${modernOrigin}\n${['0.0.0.0', '::'].includes(host) ? `已监听所有网卡；其他设备请访问 http://<本机实际 IP>:${port}（IPv6 地址需加方括号），并放行此 TCP 端口。\n` : ''}${legacy ? `原界面保留入口：${listenOrigin(host, 4173)}/` : '原界面：未开启（需要时添加 --legacy）'}\n审计 API：${upstream.origin}（${existing ? '复用已有服务' : '已在后台启动'}）\n请求诊断：${process.env.WORKBENCH_DIAGNOSTICS_DIR || resolve(root, 'reports/platform/workbench-api/requests.jsonl')}\nCtrl+C 只关闭 Web 与本次终端连接，审计任务继续运行。后台管理：node .opencode/scripts/audit-service.mjs status|stop\n`);
   process.once('SIGINT', () => { void close().catch(fail); });
   process.once('SIGTERM', () => { void close().catch(fail); });
 }

@@ -3,6 +3,7 @@ import { readFile } from 'node:fs/promises';
 import { Readable } from 'node:stream';
 import type { LiveService } from './live.service.js';
 import type { RuntimeService } from './runtime.service.js';
+import { interfaceOrigin } from './listen-options.js';
 
 const assets: Record<string, string> = {
   'index.html': 'text/html; charset=utf-8', 'app.js': 'text/javascript; charset=utf-8',
@@ -11,12 +12,14 @@ const assets: Record<string, string> = {
 const publicRoot = new URL('../../../../../.opencode/web/dynamic-validation-observatory/public/', import.meta.url);
 
 export function registerLegacyRoutes(server: FastifyInstance, live: LiveService, runtime: RuntimeService, legacy = false) {
-  const page = async (_request: unknown, reply: any) => reply.header('Cache-Control', 'no-store').type(assets['index.html']).send(await readFile(new URL('index.html', publicRoot)));
+  const page = async (_request: unknown, reply: any) => reply.header('Cache-Control', 'no-store').type(assets['index.html']).send(
+    (await readFile(new URL('index.html', publicRoot), 'utf8')).replace('<head>', '<head><meta name="workbench-terminal-base" content="/terminal/">'));
   for (const path of ['/legacy', '/legacy/', '/legacy/*', '/api/workbench/legacy']) server.get(path, (_request, reply) => reply.code(404).send({ message: '旧界面入口未开放，请显式启用 4173 原界面。' }));
   // Shared feature document for the modern Shadow DOM mount; not a legacy entry.
   server.get('/api/workbench/feature-document', page);
   if (legacy) { server.get('/', page); server.get('/index.html', page); }
-  server.get('/workbench', (_request, reply) => reply.redirect(legacy ? process.env.WORKBENCH_MODERN_ORIGIN || 'http://127.0.0.1:4181' : '/'));
+  server.get('/workbench', (request, reply) => reply.redirect(legacy ? interfaceOrigin(request.headers.host || '127.0.0.1', Number(process.env.WORKBENCH_PORT || 4181)) : '/'));
+  server.get('/original-ui', (request, reply) => runtime.config.legacyUrl ? reply.redirect(`${interfaceOrigin(request.headers.host || '127.0.0.1', 4173)}/`) : reply.code(404).send({ message: '原界面未开启。' }));
   for (const [name, type] of Object.entries(assets)) {
     if (name === 'index.html') continue;
     server.get(`/${name}`, async (_request, reply) => reply.header('Cache-Control', 'no-cache').type(type).send(await readFile(new URL(name, publicRoot))));

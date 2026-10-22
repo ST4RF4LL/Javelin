@@ -23,7 +23,7 @@ test('默认关闭旧入口；新界面业务文档和静态模块不依赖原�
   assert.equal((await app.inject('/api/workbench/config')).json().legacyUrl, null);
   const page = await app.inject('/api/workbench/feature-document');
   assert.equal(page.statusCode, 200); assert.match(page.headers['content-type'], /text\/html/);
-  assert.equal(page.body, await readFile(new URL('../../../.opencode/web/dynamic-validation-observatory/public/index.html', import.meta.url), 'utf8'));
+  assert.equal(page.body, (await readFile(new URL('../../../.opencode/web/dynamic-validation-observatory/public/index.html', import.meta.url), 'utf8')).replace('<head>', '<head><meta name="workbench-terminal-base" content="/terminal/">'));
   for (const view of ['dashboard', 'projects', 'audits', 'findings', 'reports', 'validation', 'runtime', 'settings']) assert.ok(page.body.includes(`id="view-${view}"`));
   for (const path of ['/app.js', '/product-memory-ui.js', '/agent-settings-ui.js', '/styles.css', '/logo_DJ.png']) {
     const response = await app.inject(path); assert.equal(response.statusCode, 200, path); assert.ok(response.rawPayload.length > 0);
@@ -35,8 +35,10 @@ test('默认关闭旧入口；新界面业务文档和静态模块不依赖原�
 test('显式启用的原界面在根路径提供页面，保留入口为 4173，操作仍转发同一服务', () => fixture(async (app, live) => {
   const page = await app.inject('/'); assert.equal(page.statusCode, 200); assert.match(page.body, /id="view-audits"/);
   assert.equal((await app.inject('/index.html')).body, page.body);
-  assert.equal((await app.inject('/api/workbench/config')).json().legacyUrl, 'http://127.0.0.1:4173/');
-  assert.equal((await app.inject('/workbench')).headers.location, 'http://127.0.0.1:4181');
+  assert.equal((await app.inject('/api/workbench/config')).json().legacyUrl, '/original-ui');
+  assert.equal((await app.inject('/workbench')).headers.location, 'http://localhost:4181');
+  assert.equal((await app.inject({ url: '/original-ui', headers: { host: '192.168.1.25:4181' } })).headers.location, 'http://192.168.1.25:4173/');
+  assert.equal((await app.inject({ url: '/workbench', headers: { host: '[::1]:4173' } })).headers.location, 'http://[::1]:4181');
   assert.equal((await app.inject('/legacy/')).statusCode, 404);
   const calls = [];
   live.transport = async (url, options) => { calls.push({ url: String(url), options }); return new Response('{"id":"existing-audit"}', { headers: { 'Content-Type': 'application/json' } }); };

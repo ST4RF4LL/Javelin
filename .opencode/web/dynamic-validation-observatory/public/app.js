@@ -91,7 +91,8 @@ export function sortReportsByTime(reports, order = "newest") {
   });
 }
 
-export function mountWorkbench({ document = globalThis.document, window = globalThis.window, initialView = "dashboard", initialFilters = {}, onNavigate = null, onFileCoverage = null, onBatchCreate = null, onMutation = null } = {}) {
+export function mountWorkbench({ document = globalThis.document, window = globalThis.window, initialView = "dashboard", initialFilters = {}, onNavigate = null, onFileCoverage = null, onBatchCreate = null, onMutation = null, terminalServerUrl } = {}) {
+terminalServerUrl ??= document.querySelector('meta[name="workbench-terminal-base"]') ? new URL('/terminal/', window.location.href).href : undefined;
 let disposed = false;
 let navigationSequence = 0;
 const agentLabels = { opencode: "OpenCode v1", "opencode-v2": "OpenCode v2", grow: "Grow" };
@@ -916,7 +917,7 @@ function renderAuditDetail() {
   if (audit.repository_id) actions.append(auditDeleteButton(audit));
   if (state.auditMonitor?.auditId !== audit.id) {
     destroyAuditMonitor();
-    state.auditMonitor = WorkbenchMonitor.createAuditMonitor({ document, window, audit, renderOriginalEvent: renderAgentEvent });
+    state.auditMonitor = WorkbenchMonitor.createAuditMonitor({ document, window, audit, renderOriginalEvent: renderAgentEvent, serverUrl: terminalServerUrl });
   } else state.auditMonitor.setAudit(audit);
   const logs = state.auditMonitor.element;
   const runtimePanel = renderRuntimeTesting(audit);

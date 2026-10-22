@@ -178,6 +178,13 @@ test('SSE 恢复后更新连接提示，复用最后同步时间而不伪造新�
 const sharedAudit = overrides => audit({ status: 'running', provider_session_id: 'ses_fixture',
   terminal: { live: true, shared_server: true, backend: 'opencode-process', server_generation: 'generation-1' }, ...overrides });
 
+test('远程平台终端链接保留访问者使用的 IP、端口及同源代理路径', () => {
+  const f = fixture({ audit: sharedAudit(), serverUrl: 'http://192.168.1.25:4281/terminal/' });
+  f.get('monitor-open-terminal').click();
+  assert.equal(f.popups[0].navigations[0], 'http://192.168.1.25:4281/terminal/audits/audit-test/?generation=generation-1');
+  f.destroy();
+});
+
 test('点击才弹出独立终端，保持事件筛选、展开、滚动和原始视图', () => {
   const f = fixture({ audit: sharedAudit() });
   f.setAudit(sharedAudit()); assert.equal(f.popups.length, 0);

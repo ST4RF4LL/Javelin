@@ -11,6 +11,8 @@ import { AppModule } from './app.module.js';
 import { LiveService } from './live.service.js';
 import { RuntimeService } from './runtime.service.js';
 import { registerLegacyRoutes } from './legacy-routes.js';
+import { listenOptions, listenHelp, listenOrigin } from './listen-options.js';
+import { registerTerminalProxy } from './terminal-proxy.js';
 
 export async function createApp({ legacy = false } = {}) {
   const adapter = new FastifyAdapter({ bodyLimit: 1024 * 1024, forceCloseConnections: true, genReqId: () => randomUUID() });
@@ -50,6 +52,7 @@ export async function createApp({ legacy = false } = {}) {
     }
   });
   registerLegacyRoutes(server, app.get(LiveService), app.get(RuntimeService), legacy);
+  registerTerminalProxy(server, !app.get(RuntimeService).config.liveReadOnly);
   const root = fileURLToPath(new URL('../../client/', import.meta.url));
   if (!legacy && existsSync(root)) {
     await app.register(fastifyStatic, { root, wildcard: false });
@@ -61,9 +64,11 @@ export async function createApp({ legacy = false } = {}) {
   await app.init(); return app;
 }
 if (process.argv[1] && resolve(process.argv[1]) === fileURLToPath(import.meta.url)) {
+  const { host, port, help } = listenOptions(process.argv.slice(2), process.env, { defaultPort: process.env.WORKBENCH_MODE === 'integrated' ? 4181 : 4180 });
+  if (help) { process.stdout.write(`${listenHelp}\n`); process.exit(0); }
+  process.env.WORKBENCH_HOST = host; process.env.WORKBENCH_PORT = String(port);
   const app = await createApp(); app.enableShutdownHooks();
   const runtime = app.get(RuntimeService).config;
-  const port = Number(process.env.WORKBENCH_PORT || (runtime.mode === 'integrated' ? 4181 : 4180));
-  await app.listen(port, '127.0.0.1');
-  process.stdout.write(`新版工作台：http://127.0.0.1:${port}（${runtime.mode === 'integrated' ? runtime.liveReadOnly ? '融合入口 · 真实数据只读' : '真实任务运行模式' : '演示预览'}）\n`);
+  await app.listen(port, host);
+  process.stdout.write(`新版工作台：${listenOrigin(host, port)}（${runtime.mode === 'integrated' ? runtime.liveReadOnly ? '融合入口 · 真实数据只读' : '真实任务运行模式' : '演示预览'}）\n`);
 }
