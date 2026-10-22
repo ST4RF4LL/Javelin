@@ -152,7 +152,8 @@ export class LiveService {
     const privateDraft = audit.status === 'artifact_only' ? {} : await this.write(`/api/v2/products/${encodeURIComponent(productId)}/audits/${encodeURIComponent(id)}/retry-draft`, {});
     const runtime = audit.runtime_testing;
     return { productId, targetId, ...(audit.audit_mode ? { auditMode: audit.audit_mode } : {}), name: `${String(audit.name || id).replace(/（重试）$/u, '').slice(0, 156)}（重试）`,
-      ...(audit.report_validation ? { sourceReport: { report_id: audit.report_validation.report_id, report_sha256: audit.report_validation.report_sha256, model_sha256: audit.report_validation.model_sha256 }, sourceFindingCount: audit.report_validation.finding_count } : {}),
+      ...(audit.report_validation ? { sourceReport: { report_id: audit.report_validation.report_id, report_sha256: audit.report_validation.report_sha256, model_sha256: audit.report_validation.model_sha256,
+        ...(audit.report_validation.finding_ids === undefined ? {} : { finding_ids: audit.report_validation.finding_ids }) }, sourceFindingCount: audit.report_validation.finding_count } : {}),
       engine: privateDraft.engine || audit.engine || audit.execution?.engine || 'opencode',
       model: audit.model || 'default', memoryMode: privateDraft.memory_mode || audit.memory_mode || 'full', bacAnalysis: audit.bac_analysis?.mode || 'auto',
       miningStrategy: privateDraft.mining_strategy || audit.mining_strategy || (privateDraft.api_inventory?.trim() ? 'api' : 'focus_area'), apiInventory: privateDraft.api_inventory || '',
@@ -198,8 +199,17 @@ export class LiveService {
   async reportValidationDraft(id: string): Promise<RealAuditDraft> {
     identifier(id, '报告编号');
     const value = await this.read(`/api/v1/reports/${encodeURIComponent(id)}/validation-source`, { timeoutMs: 20000, label: '报告验证来源' });
+    return this.validationDraft(value);
+  }
+  async findingValidationDraft(id: string): Promise<RealAuditDraft> {
+    identifier(id, '漏洞编号');
+    const value = await this.read(`/api/v1/findings/${encodeURIComponent(id)}/validation-source`, { timeoutMs: 20000, label: '漏洞验证来源' });
+    return this.validationDraft(value);
+  }
+  private validationDraft(value: Row): RealAuditDraft {
     return { productId: identifier(value.product_id, '报告所属产品'), targetId: '', auditMode: 'dynamic', sourceReport: value.source_report, sourceFindingCount: value.finding_count,
-      name: `${String(value.source_audit_id).slice(0, 140)} · 报告动态验证`, engine: value.engine, model: value.model,
+      ...(value.finding_title ? { sourceFindingTitle: String(value.finding_title) } : {}),
+      name: `${String(value.finding_title || value.source_audit_id).slice(0, 140)} · ${value.finding_title ? '单漏洞动态验证' : '报告动态验证'}`, engine: value.engine, model: value.model,
       miningStrategy: 'focus_area', apiInventory: '', memoryMode: 'off', bacAnalysis: 'off',
       additionalInstructionsEnabled: false, additionalInstructions: '', testEnvironmentEnabled: false, testEnvironmentContext: '',
       runtimeTesting: { mode: 'TARGETED_CONFIRMATION', budgetMinutes: 60, identityMode: 'auto', testInput: false, testMutation: false } };

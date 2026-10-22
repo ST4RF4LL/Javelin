@@ -262,7 +262,7 @@ function displayText(value, limit = 4000) {
     ? value.map(item => displayText(item, limit)).filter(Boolean).join("\n")
     : typeof value === "string"
       ? value
-      : value?.summary ?? value?.description ?? value?.claim ?? value?.rationale ?? value?.outcome ?? value?.note ?? value?.control ?? null;
+      : value?.summary ?? value?.description ?? value?.claim ?? value?.text ?? value?.snippet ?? value?.rationale ?? value?.outcome ?? value?.note ?? value?.control ?? null;
   if (!text) return null;
   const normalized = String(text).trim();
   if (!normalized) return null;
@@ -275,6 +275,16 @@ function positiveInteger(value) {
 }
 
 function locationFrom(value, role = null) {
+  if (typeof value === "string") {
+    const text = value.trim().replace(/^`([^`]+)`$/, "$1");
+    if (!text) return null;
+    const match = text.match(/^(.+?):(?:L)?(\d+)(?:-(?:L)?(\d+))?$/);
+    if (match) return locationFrom({ path: match[1], line: match[2], line_end: match[3] }, role);
+    // Preserve prose references without inventing a path or a line number.
+    return /[/.\\]/.test(text) && !/\s/.test(text)
+      ? locationFrom({ path: text }, role)
+      : { path: null, line: null, line_end: null, detail: displayText(text, 1000), role };
+  }
   if (!value || typeof value !== "object") return null;
   const path = [value.path, value.file, value.file_path, value.source_file, value.uri]
     .find(item => typeof item === "string" && item.trim()) ?? null;
@@ -296,9 +306,10 @@ function normalizedLocations(raw) {
 
   // 旧版 correlation artifact 使用 locations 数组；Finding v2 使用
   // locations.primary，并把源/汇证据的位置放进 evidence.facts[].locator。
-  if (Array.isArray(raw.locations)) {
+  if (Array.isArray(raw.locations) || typeof raw.locations === "string") {
     add(raw.locations);
   } else if (raw.locations && typeof raw.locations === "object") {
+    add(raw.locations);
     add(raw.locations.primary, "主位置");
     for (const key of ["secondary", "related", "additional", "affected"]) add(raw.locations[key], key);
   }
@@ -306,15 +317,16 @@ function normalizedLocations(raw) {
   add(raw.affected_locations, "受影响位置");
   add(raw.additional_locations, "补充位置");
   add(raw.source_binding?.primary_location, "主位置");
-  if (raw.file || raw.location) {
-    add(typeof raw.location === "object" ? raw.location : {
+  add(raw.location, "主位置");
+  if (raw.file) {
+    add({
       path: raw.file,
       line: raw.line_start ?? raw.line,
       line_end: raw.line_end,
       detail: typeof raw.location === "string" ? raw.location : raw.lines,
     }, "主位置");
   }
-  for (const fact of Array.isArray(raw.evidence?.facts) ? raw.evidence.facts : []) {
+  for (const fact of evidenceFacts(raw)) {
     const role = typeof fact?.kind === "string" && fact.kind ? `${fact.kind} 证据` : "证据位置";
     add(fact?.locator ?? fact?.location, role);
   }
@@ -324,7 +336,7 @@ function normalizedLocations(raw) {
   for (const candidate of candidates) {
     // 同一文件同一起始行的主定位与 evidence locator 表示同一个锚点；
     // line_end 的差异不应令它在页面里重复出现。
-    const key = `${candidate.path ?? ""}\u0000${candidate.line ?? ""}`;
+    const key = `${candidate.path ?? candidate.detail ?? ""}\u0000${candidate.line ?? ""}`;
     const existing = seen.get(key);
     if (existing) {
       if (!existing.line_end && candidate.line_end) existing.line_end = candidate.line_end;
@@ -340,6 +352,22 @@ function normalizedLocations(raw) {
   return locations;
 }
 
+function evidenceFacts(raw) {
+  const array = value => Array.isArray(value) ? value : value ? [value] : [];
+  const references = (values, kind, claim = null) => array(values).map(value => {
+    const location = locationFrom(value);
+    return { kind, claim: claim ?? displayText(value) ?? (location?.path ? `${location.path}${location.line ? `:${location.line}${location.line_end ? `-${location.line_end}` : ""}` : ""}` : null),
+      // A report/evidence artifact reference is not automatically source code.
+      locator: location?.line ? location : null };
+  });
+  const agent = raw.agent_mining;
+  return [...array(raw.evidence?.facts ?? raw.evidence), ...array(raw.evidence_facts),
+    ...references(agent?.expected_policy?.evidence, "Agent 策略证据", agent?.expected_policy?.reason),
+    ...array(agent?.chain).flatMap(node => references(node?.evidence, "Agent 路径证据", node?.reason)),
+    ...array(agent?.edges).flatMap(edge => references(edge?.evidence, "Agent 调用证据", edge?.reason)),
+    ...references(raw.evidence_refs, "证据引用"), ...references(raw.review?.evidence_refs, "复核引用")];
+}
+
 function normalizedEvidence(raw) {
   const values = [];
   const add = (items, fallbackKind = "证据") => {
@@ -353,7 +381,7 @@ function normalizedEvidence(raw) {
       });
     }
   };
-  add(raw.evidence?.facts);
+  add(evidenceFacts(raw));
   add(raw.sink_evidence, "汇点证据");
   add(raw.control_evidence, "控制证据");
   add(raw.config_evidence, "配置证据");
@@ -401,10 +429,12 @@ function normalizedSeverity(raw) {
   return "UNKNOWN";
 }
 
-function normalizeFinding(raw, auditId, sourcePath) {
-  const locations = normalizedLocations(raw);
+function normalizeFinding(raw, auditId, sourcePath, reportDetail = null) {
+  const details = [raw, raw.dossier?.finding, reportDetail?.row, reportDetail?.row?.dossier?.finding].filter(Boolean);
+  const unique = (rows, key) => [...new Map(rows.map(row => [key(row), row])).values()];
+  const locations = unique(details.flatMap(normalizedLocations), row => `${row.path ?? row.detail}:${row.line}`).slice(0, 20);
   const location = locations[0] ?? {};
-  const evidence = normalizedEvidence(raw);
+  const evidence = unique(details.flatMap(normalizedEvidence), row => `${row.kind}:${row.text}:${row.location?.path}:${row.location?.line}`).slice(0, 24);
   const sourceFindings = Array.isArray(raw.source_findings) ? raw.source_findings : [];
   const sourceTypes = [...new Set(sourceFindings.map(item => item?.vuln_type ?? item?.vulnerability_type_id).filter(item => typeof item === "string" && item))];
   const vulnerabilityType = raw.vulnerability_type_id ?? raw.classification?.vulnerability_type_id ?? raw.cwe ?? (sourceTypes.length ? sourceTypes.join("、") : null);
@@ -433,26 +463,37 @@ function normalizeFinding(raw, auditId, sourcePath) {
     reachability: displayText(raw.reachability?.rationale ?? raw.reachability?.state),
     attacker_influence: displayText(raw.attacker_influence?.rationale ?? raw.attacker_influence?.state),
     guards: displayText(raw.guards ?? raw.attack_surface?.controls),
-    remediation: displayText(raw.remediation?.summary ?? raw.remediation),
+    remediation: displayText(raw.remediation?.summary ?? raw.remediation ?? raw.recommendation),
     residual_uncertainty: displayText(raw.residual_uncertainty ?? raw.uncertainty?.assumptions ?? raw.attack_surface?.blindspots),
     source_finding_ids: sourceFindings.slice(0, 32).map(item => item?.finding_id ?? item?.id).filter(Boolean),
     contradiction_count: Array.isArray(raw.contradictions) ? raw.contradictions.length : 0,
     source_path: sourcePath,
+    detail_source_path: reportDetail?.path ?? null,
   };
 }
 
 export function findingsFromArtifacts(artifacts) {
   const byAudit = new Map();
+  const reportDetails = new Map();
+  const normalize = (item, artifact) => {
+    if (!reportDetails.has(artifact.audit_id)) reportDetails.set(artifact.audit_id, finalReportModelForAudit(artifacts, artifact.audit_id));
+    const source = reportDetails.get(artifact.audit_id);
+    const id = item.canonical_id ?? item.finding_id ?? item.id;
+    const rows = [...(source?.model.findings ?? []), ...(source?.model.excluded_findings ?? [])];
+    const matches = id ? rows.filter(row => (row.canonical_id ?? row.finding_id ?? row.id) === id) : [];
+    // Only exact, unique IDs within this audit may contribute report details.
+    return normalizeFinding(item, artifact.audit_id, artifact.path, matches.length === 1 ? { row: matches[0], path: source.artifact.path } : null);
+  };
   for (const artifact of artifacts.filter(item => item.kind === "correlation")) {
     if (byAudit.has(artifact.audit_id)) continue;
     const findings = Array.isArray(artifact.data?.canonical_findings) ? artifact.data.canonical_findings : [];
-    if (findings.length) byAudit.set(artifact.audit_id, findings.map(item => normalizeFinding(item, artifact.audit_id, artifact.path)));
+    if (findings.length) byAudit.set(artifact.audit_id, findings.map(item => normalize(item, artifact)));
   }
   for (const artifact of artifacts.filter(item => item.kind === "vulnerability-mining")) {
     if (byAudit.has(artifact.audit_id)) continue;
     const current = byAudit.get(artifact.audit_id) ?? [];
     const findings = Array.isArray(artifact.data?.findings) ? artifact.data.findings : [];
-    for (const item of findings) current.push(normalizeFinding(item, artifact.audit_id, artifact.path));
+    for (const item of findings) current.push(normalize(item, artifact));
     byAudit.set(artifact.audit_id, current);
   }
   const seen = new Set();

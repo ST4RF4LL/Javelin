@@ -3,7 +3,7 @@ import { readFileSync } from 'node:fs';
 
 // 在模块加载时固定摘要；健康检查不能把磁盘上的新代码冒充已加载版本。
 const sources = [
-  './server.mjs', './audit-runner.mjs', './audit-progress.mjs', './product-store.mjs',
+  './server.mjs', './audit-runner.mjs', './audit-progress.mjs', './product-store.mjs', './workspace-model.mjs',
   './opencode-model-settings.mjs', './audit-queue-scheduler.mjs', './snapshot-cache.mjs',
   '../../lib/runtime-exploration/contract.mjs', '../../lib/runtime-exploration/service.mjs', '../../lib/runtime-exploration/agent.mjs', '../../lib/runtime-exploration/agent-mcp.mjs', '../../lib/runtime-exploration/planner.md',
   '../../lib/source-followup/service.mjs', '../../lib/runtime-testing/evidence.mjs', './runtime-testing-activity.mjs',

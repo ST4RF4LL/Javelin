@@ -42,9 +42,24 @@ export function verifyReportSource(value) {
     && SHA.test(value.source?.report_sha256 ?? '') && SHA.test(value.source?.model_sha256 ?? '')
     && Array.isArray(value.findings) && value.findings.length === value.source.finding_count && value.findings.length > 0,
   'report-validation-snapshot-invalid', '报告验证输入快照校验失败。');
+  if (value.source.finding_ids !== undefined) check(Array.isArray(value.source.finding_ids)
+    && JSON.stringify(value.source.finding_ids) === JSON.stringify(value.findings.map(row => row.finding_id)),
+  'report-validation-selection-mismatch', '漏洞选择与验证快照不一致。');
   return value;
 }
 
+export function selectReportFindings(value, ids) {
+  verifyReportSource(value);
+  if (ids === undefined) return value;
+  check(Array.isArray(ids) && ids.length > 0 && ids.length <= 500
+    && ids.every(id => typeof id === 'string' && id.trim() && id.length <= 240) && new Set(ids).size === ids.length,
+  'report-validation-selection-invalid', '请选择有效且不重复的漏洞；空选择不能执行整份报告。');
+  const findings = ids.map(id => value.findings.find(row => row.finding_id === id));
+  check(findings.every(Boolean), 'report-validation-finding-not-found', '所选漏洞不在该报告的可验证清单内，请刷新漏洞或报告。');
+  return seal({ protocol: value.protocol, source: { ...value.source, finding_ids: [...ids], finding_count: findings.length }, findings });
+}
+
 export function reportSourceRequest(source) {
-  return { report_id: source.report_id, report_sha256: source.report_sha256, model_sha256: source.model_sha256 };
+  return { report_id: source.report_id, report_sha256: source.report_sha256, model_sha256: source.model_sha256,
+    ...(source.finding_ids === undefined ? {} : { finding_ids: [...source.finding_ids] }) };
 }

@@ -91,7 +91,7 @@ export function sortReportsByTime(reports, order = "newest") {
   });
 }
 
-export function mountWorkbench({ document = globalThis.document, window = globalThis.window, initialView = "dashboard", initialFilters = {}, onNavigate = null, onFileCoverage = null, onBatchCreate = null, onMutation = null, terminalServerUrl } = {}) {
+export function mountWorkbench({ document = globalThis.document, window = globalThis.window, initialView = "dashboard", initialFilters = {}, onNavigate = null, onFileCoverage = null, onBatchCreate = null, onValidationCreate = null, onMutation = null, terminalServerUrl } = {}) {
 terminalServerUrl ??= document.querySelector('meta[name="workbench-terminal-base"]') ? new URL('/terminal/', window.location.href).href : undefined;
 let disposed = false;
 let navigationSequence = 0;
@@ -201,6 +201,9 @@ const state = {
   findingLoading: false,
   findingRequestSequence: 0,
   findingSearchTimer: null,
+  validationDraftSequence: 0,
+  validationDraftController: null,
+  validationDraftDialog: null,
 };
 
 const VIEW_META = {
@@ -333,7 +336,7 @@ async function api(path, options = {}) {
 
 function setView(view) {
   if (disposed || !VIEW_META[view]) return;
-  if (state.view !== view) closeAuditDrawer();
+  if (state.view !== view) { closeAuditDrawer(); cancelValidationDraft(); }
   state.view = view;
   document.querySelectorAll(".view").forEach(item => item.classList.toggle("active", item.id === `view-${view}`));
   document.querySelectorAll(".nav button[data-view]").forEach(item => item.classList.toggle("active", item.dataset.view === view));
@@ -1705,6 +1708,8 @@ function renderFindings() {
     const action = element("button", "button secondary", "查看证据与处理");
     action.addEventListener("click", () => openFinding(finding));
     footer.append(action);
+    const validate = validationDraftButton('findings', finding);
+    if (validate) footer.append(validate);
     card.append(header, sourceContext(finding), location, summary, facts, footer);
     value.append(card);
   }
@@ -1800,6 +1805,8 @@ function findingEvidenceSection(finding) {
 function openFinding(finding) {
   state.selectedFinding = finding;
   state.selectedFindingResourceId = finding.resource_id;
+  const validate = validationDraftButton('findings', finding, 'finding-dialog');
+  $("finding-validation-actions").replaceChildren(...(validate ? [validate] : []));
   $("finding-detail-title").textContent = finding.title;
   $("finding-detail-subtitle").textContent = `${finding.provenance?.product_name ?? "未关联产品"} · ${finding.provenance?.audit_name ?? finding.audit_id} · ${finding.id}`;
   $("finding-detail-source").replaceChildren(sourceContext(finding));
@@ -1811,6 +1818,7 @@ function openFinding(finding) {
   const sourceNote = finding.source_finding_ids?.length
     ? `关联来源：${finding.source_finding_ids.join("、")}。${finding.contradiction_count ? `存在 ${finding.contradiction_count} 条矛盾记录。` : "未记录矛盾。"}`
     : finding.contradiction_count ? `存在 ${finding.contradiction_count} 条矛盾记录。` : "未记录来源 finding 关联。";
+  if (finding.detail_source_path) facts.append(element("p", "source-artifact mono", `最终报告详情来源：${finding.detail_source_path}`));
   const impact = [finding.impact, finding.severity_rationale].filter(Boolean).join("\n") || null;
   const analysis = [finding.reachability && `可达性：${finding.reachability}`, finding.attacker_influence && `攻击者影响：${finding.attacker_influence}`, finding.guards && `已检查防护：${finding.guards}`].filter(Boolean).join("\n") || null;
   $("finding-detail-body").replaceChildren(
@@ -1867,6 +1875,44 @@ async function submitFindingWorkflow(event) {
   }
 }
 
+function cancelValidationDraft() {
+  state.validationDraftSequence++;
+  state.validationDraftController?.abort();
+  state.validationDraftController = null;
+  state.validationDraftDialog = null;
+}
+
+function validationDraftButton(kind, record, dialogId = null) {
+  if (typeof onValidationCreate !== 'function') return null;
+  const label = kind === 'findings' ? '验证此漏洞' : '基于报告验证';
+  const button = element('button', 'button secondary', label);
+  button.type = 'button';
+  button.title = kind === 'findings' ? '仅为此漏洞创建独立动态验证，需填写授权环境。' : '根据最终报告逐项动态验证，需填写授权环境。';
+  button.addEventListener('click', async () => {
+    if (button.disabled || disposed) return;
+    cancelValidationDraft();
+    const sequence = state.validationDraftSequence;
+    const controller = new AbortController(); state.validationDraftController = controller; state.validationDraftDialog = dialogId;
+    button.disabled = true; button.textContent = '正在校验来源…';
+    try {
+      const id = kind === 'findings' ? record.resource_id : record.id;
+      const draft = await api(`/api/workbench/${kind}/${encodeURIComponent(id)}/validation-draft`, {
+        method: 'POST', headers: { 'Content-Type': 'application/json' }, body: '{}', signal: AbortSignal.any([controller.signal, AbortSignal.timeout(20000)]),
+      });
+      if (disposed || sequence !== state.validationDraftSequence || dialogId && !$(dialogId).open) return;
+      state.validationDraftDialog = null;
+      if (dialogId) $(dialogId).close();
+      onValidationCreate(draft);
+    } catch (error) {
+      if (!disposed && sequence === state.validationDraftSequence && error.name !== 'AbortError') showError(error);
+    } finally {
+      button.disabled = false; button.textContent = label;
+      if (sequence === state.validationDraftSequence) { state.validationDraftController = null; state.validationDraftDialog = null; }
+    }
+  });
+  return button;
+}
+
 function renderReports() {
   renderSourceFilters("report");
   $("report-sort").value = state.reportSort;
@@ -1882,6 +1928,8 @@ function renderReports() {
     const download = element("a", "button secondary", "下载 Markdown");
     download.href = `/api/v1/reports/${encodeURIComponent(report.id)}/download`;
     actions.append(preview, download);
+    const validate = validationDraftButton('reports', report);
+    if (validate) actions.append(validate);
     card.append(sourceContext(report, { includeReports: false }), footer, actions);
     return card;
   });
@@ -1924,6 +1972,8 @@ function renderReportOutline(preview) {
 
 async function openReport(report) {
   state.selectedReportId = report.id;
+  const validate = validationDraftButton('reports', report, 'report-dialog');
+  $("report-validation-actions").replaceChildren(...(validate ? [validate] : []));
   const dialog = $("report-dialog");
   $("report-title").textContent = report.name;
   $("report-subtitle").textContent = `${report.repository_name ?? "—"} · ${report.path}`;
@@ -3425,6 +3475,7 @@ document.querySelectorAll("[data-close-project]").forEach(button => button.addEv
 document.querySelectorAll("[data-close-product]").forEach(button => button.addEventListener("click", () => $("product-dialog").close()));
 document.querySelectorAll("[data-close-validation]").forEach(button => button.addEventListener("click", () => $("validation-dialog").close()));
 document.querySelectorAll("[data-close-report]").forEach(button => button.addEventListener("click", () => $("report-dialog").close()));
+for (const id of ['report-dialog', 'finding-dialog']) $(id).addEventListener('close', () => { if (state.validationDraftDialog === id) cancelValidationDraft(); });
 document.querySelectorAll("[data-close-finding]").forEach(button => button.addEventListener("click", () => $("finding-dialog").close()));
 document.querySelectorAll("[data-close-terminal]").forEach(button => button.addEventListener("click", closeTerminal));
 document.querySelectorAll("[data-close-delete-audit]").forEach(button => button.addEventListener("click", closeDeleteAuditDialog));
@@ -3577,6 +3628,7 @@ return { ready, setView, refresh: load, openAudit, async navigate(view, filters 
   if (auditId) await openAudit(auditId, () => !disposed && sequence === navigationSequence);
 }, destroy() {
   disposed = true;
+  cancelValidationDraft();
   state.auditDialogRequest++; state.findingRequestSequence++; state.validationRequestSequence++; state.sourceOptionsRequestSequence++;
   state.auditController?.abort(); state.auditDetailController?.abort();
   destroyAuditMonitor();

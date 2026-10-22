@@ -1,7 +1,7 @@
 {
   "scripts": {
     "test": "npm run test:product-memory && npm run test:agent-mining && npm run test:bac && npm run test:runtime-testing && npm run test:runtime-ssh && npm run test:runtime-exploration && npm run test:report-validation && npm run test:knowledge && npm run test:config && npm run test:audit-runtime && npm run test:agent-engines && npm run test:task-board && npm run test:audit-todo && npm run test:audit-queue && npm run test:stage-agent-contract && npm run test:stage-delivery-contract && npm run test:truth-validation-contract && npm run test:threat-model-contract && npm run test:semgrep && npm run test:finding-contract && npm run test:report-details && npm run test:external-runtime-validation-contract && npm run test:dynamic-validation-contract && npm run test:windows-control && npm run test:dynamic-validation-core && npm run test:dynamic-validation-web && npm run test:audit-workbench && npm run test:finding-adjudication && npm run test:cvss-assessment && npm run test:adjudication-regressions && npm run test:attack-chain-contract && npm run test:semantic-reseed && npm run test:coverage && npm run test:semantic",
-    "test:report-validation": "node --test tests/run-report-validation-tests.mjs",
+    "test:report-validation": "node --test tests/run-report-validation-tests.mjs tests/run-finding-detail-tests.mjs tests/run-validation-entry-ui-tests.mjs",
     "test:runtime-exploration": "node --test tests/run-runtime-exploration-tests.mjs",
     "test:runtime-testing": "node --test tests/run-runtime-testing-tests.mjs",
     "test:validation-evidence": "node --test tests/run-validation-activity-tests.mjs tests/run-validation-activity-ui-tests.mjs tests/run-bruno-export-tests.mjs tests/run-runtime-browser-adapter-tests.mjs",

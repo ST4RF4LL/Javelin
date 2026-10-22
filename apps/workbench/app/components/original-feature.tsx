@@ -3,7 +3,7 @@ import { useNavigate, useSearchParams } from 'react-router';
 import { useQueryClient } from '@tanstack/react-query';
 import { Button } from './ui/button';
 import { useWorkspace } from '../lib/workspace';
-import type { BatchAuditSelection } from '../../shared/contracts';
+import type { BatchAuditSelection, RealAuditDraft } from '../../shared/contracts';
 
 export type OriginalView = 'dashboard' | 'projects' | 'audits' | 'findings' | 'reports' | 'validation' | 'runtime' | 'settings';
 const routes: Record<OriginalView, string> = { dashboard: '/', projects: '/products', audits: '/audits', findings: '/findings', reports: '/reports', validation: '/validation', runtime: '/runtime', settings: '/settings' };
@@ -21,8 +21,9 @@ type Controller = { ready: Promise<unknown>; destroy: () => void; refresh: () =>
 
 // 在 Shell 中持续挂载，切换页面时保留产品选择、筛选和原控制器状态。
 export function OriginalFeature({ view, auditId, hidden = false }: { view: OriginalView; auditId?: string; hidden?: boolean }) {
-  const { runtime, openBatch } = useWorkspace();
+  const { runtime, openBatch, openRetry } = useWorkspace();
   const createEntry = useRef(openBatch); createEntry.current = openBatch;
+  const validationEntry = useRef(openRetry); validationEntry.current = openRetry;
   const queryClient = useQueryClient();
   const host = useRef<HTMLDivElement>(null); const navigate = useNavigate(); const [params] = useSearchParams();
   const [controller, setController] = useState<Controller | null>(null);
@@ -52,7 +53,7 @@ export function OriginalFeature({ view, auditId, hidden = false }: { view: Origi
         if (key === 'querySelector' || key === 'querySelectorAll') return body[key].bind(body);
         const value = Reflect.get(target, key, target); return typeof value === 'function' ? value.bind(target) : value;
       } });
-      mounted = module.mountWorkbench({ document: scopedDocument, terminalServerUrl: new URL('/terminal/', window.location.href).href, initialView: location.current.view, onNavigate: (next: OriginalView) => { if (next !== location.current.view) navigate(routes[next]); }, onFileCoverage: (id: string) => navigate(`/audits/coverage?audit_id=${encodeURIComponent(id)}`), onBatchCreate: runtime.liveReadOnly ? null : (selection: BatchAuditSelection) => createEntry.current(selection), onMutation: () => { void queryClient.invalidateQueries(); } });
+      mounted = module.mountWorkbench({ document: scopedDocument, terminalServerUrl: new URL('/terminal/', window.location.href).href, initialView: location.current.view, onNavigate: (next: OriginalView) => { if (next !== location.current.view) navigate(routes[next]); }, onFileCoverage: (id: string) => navigate(`/audits/coverage?audit_id=${encodeURIComponent(id)}`), onBatchCreate: runtime.liveReadOnly ? null : (selection: BatchAuditSelection) => createEntry.current(selection), onValidationCreate: runtime.liveReadOnly ? null : (draft: RealAuditDraft) => validationEntry.current(draft), onMutation: () => { void queryClient.invalidateQueries(); } });
       shownView.current = location.current.view;
       // 原页面按资源到达逐步显示，模型或目录读取不能阻塞整个页面。
       if (!disposed) { setController(mounted!); setLoading(false); }

@@ -21,11 +21,16 @@ export function idempotencyKey(value: unknown) {
 export function createTaskInput(input: Record<string, unknown>) {
   const productId = identifier(input.productId, '产品');
   const auditMode = input.auditMode == null ? null : choice(input.auditMode, ['static', 'dynamic', 'joint'], 'static');
-  let sourceReport: { report_id: string; report_sha256: string; model_sha256: string } | undefined;
+  let sourceReport: { report_id: string; report_sha256: string; model_sha256: string; finding_ids?: string[] } | undefined;
   if (input.sourceReport != null) {
     const source = input.sourceReport as Record<string, unknown>;
     if (auditMode !== 'dynamic' || typeof source !== 'object' || !/^[a-f0-9]{64}$/.test(String(source.report_sha256)) || !/^[a-f0-9]{64}$/.test(String(source.model_sha256))) throw new BadRequestException('报告验证来源或摘要无效。');
     sourceReport = { report_id: identifier(source.report_id, '报告编号'), report_sha256: String(source.report_sha256), model_sha256: String(source.model_sha256) };
+    if (source.finding_ids !== undefined) {
+      const ids = source.finding_ids;
+      if (!Array.isArray(ids) || !ids.length || ids.length > 500 || ids.some(id => typeof id !== 'string' || !id.trim() || id.length > 240) || new Set(ids).size !== ids.length) throw new BadRequestException('漏洞选择无效；空选择不能执行整份报告。');
+      sourceReport.finding_ids = [...ids];
+    }
   }
   const targetId = auditMode === 'dynamic' ? null : identifier(input.targetId, '源码对象');
   const auditId = identifier(input.auditId, '任务编号');

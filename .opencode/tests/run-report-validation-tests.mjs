@@ -7,7 +7,7 @@ import { EventEmitter } from 'node:events';
 import { PassThrough } from 'node:stream';
 import { RuntimeTestingService } from '../lib/runtime-testing/service.mjs';
 import { authorize, selection, seal } from '../lib/runtime-testing/contract.mjs';
-import { readReportSource, reportSourceRequest } from '../lib/runtime-testing/report-source.mjs';
+import { readReportSource, reportSourceRequest, selectReportFindings, verifyReportSource } from '../lib/runtime-testing/report-source.mjs';
 import { verifyRuntimeEvidenceFiles } from '../lib/runtime-testing/evidence.mjs';
 import { workerInput } from '../lib/runtime-testing/environment-prompt.mjs';
 import { AgentSlots } from '../lib/agent-slots.mjs';
@@ -26,7 +26,7 @@ async function fixture(t, options = {}) {
   const authorization = authorize({ auditId, selected, enabled: options.enabled ?? true, context: options.context ?? '授权 http://fixture.test 的专用测试记录。', scopeDigest: scope });
   const calls = { workers: [], browser: 0, planner: 0, hints: [] };
   const service = new RuntimeTestingService({ root: join(reports, 'runtime-testing', auditId), privateRoot: join(root, 'private', 'runtime'),
-    authorization: authorization.public, privateContext: authorization.private, sourceReport: sourceReport(), agentSlots: new AgentSlots(2),
+    authorization: authorization.public, privateContext: authorization.private, sourceReport: options.sourceReport ?? sourceReport(), agentSlots: new AgentSlots(2),
     planner: () => { calls.planner++; assert.fail('报告验证不得启动 Planner'); },
     browserFactory: async () => { calls.browser++; return { tools: async () => [{ name: 'navigate_page', inputSchema: { type: 'object' } }], close: async () => {},
       call: async (name, args) => ({ content: [], structuredContent: { pages: [{ id: 1, selected: true, url: args.url }] } }) }; },
@@ -84,6 +84,17 @@ test('无授权或空环境保留每项 SKIPPED 且不启动 Worker、Planner �
     assert.equal(f.calls.workers.length, 0); assert.equal(f.calls.browser, 0); assert.equal(f.calls.planner, 0);
     assert.ok(f.service.exploration.state.report_validation.findings.every(row => row.execution_status === 'SKIPPED'));
   }
+});
+test('单漏洞仅验证选中项；空、重复、跨报告和快照不一致均拒绝', async t => {
+  const source = sourceReport(), selected = selectReportFindings(source, ['f-two']);
+  assert.equal(selected.source.finding_count, 1);
+  assert.deepEqual(reportSourceRequest(selected.source).finding_ids, ['f-two']);
+  for (const ids of [[], ['missing'], ['f-one', 'f-one'], null]) assert.throws(() => selectReportFindings(source, ids));
+  assert.throws(() => verifyReportSource(seal({ ...selected, source: { ...selected.source, finding_ids: ['f-one'] } })), /不一致/);
+  const f = await fixture(t, { sourceReport: selected }); await f.service.contact(); await settle(f.service);
+  assert.deepEqual(f.calls.workers.map(row => row.phase), ['CONTACT', 'CONFIRM']);
+  assert.equal(f.calls.hints[0].source_hint.finding.finding_id, 'f-two');
+  assert.equal(f.calls.planner, 0);
 });
 test('环境准备失败后逐项记录未执行原因，不启动探索或候选验证', async t => {
   const f = await fixture(t, { worker: ({ controller, active }) => controller.submit(active.token, submission({ execution_status: 'SKIPPED', outcome: 'INCONCLUSIVE', gaps: ['缺少必要的登录材料。'] })) });
@@ -149,6 +160,7 @@ test('报告 HTTP 入口校验产品与版本，创建独立任务并保存输�
   await runner.ready;
   const reports = runner.artifactSources()[0].reports_root; await mkdir(join(reports, 'final'), { recursive: true });
   const model = finalModel(); await atomicJson(join(reports, 'final/task-board-report-model.original.json'), model);
+  await atomicJson(join(reports, 'correlation/test.original.json'), { audit_id: 'original', canonical_findings: [...model.findings, ...model.excluded_findings] });
   const originalPath = join(reports, 'final/security-audit-report.original.md'), original = renderBoardReport(model); await writeFile(originalPath, original);
   const server = createAuditWorkbenchServer({ runner, stateRoot: runner.stateRoot, runtimeRoot: join(root, 'runtime'), platformConfigPath: configPath,
     queueScheduler: { ready: Promise.resolve(), enqueueNewAudit: async () => true, snapshot: async () => ({}), shutdown: async () => {} },
@@ -161,6 +173,15 @@ test('报告 HTTP 入口校验产品与版本，创建独立任务并保存输�
   const workspace = await (await request('/api/v1/workspace')).json(); const report = workspace.reports.find(row => row.audit_id === 'original'); assert.ok(report);
   const response = await request(`/api/v1/reports/${report.id}/validation-source`); const draft = await response.json(); assert.equal(response.status, 200, JSON.stringify(draft));
   assert.equal(draft.finding_count, 2); assert.equal(runner.listAudits().length, 0);
+  const findings = (await (await request('/api/v1/findings')).json()).items;
+  const target = findings.find(row => row.id === 'f-one'); assert.ok(target?.resource_id);
+  const singleResponse = await request(`/api/v1/findings/${target.resource_id}/validation-source`);
+  const single = await singleResponse.json(); assert.equal(singleResponse.status, 200, JSON.stringify(single));
+  assert.equal(single.finding_count, 1); assert.deepEqual(single.source_report.finding_ids, ['f-one']);
+  assert.equal(runner.listAudits().length, 0);
+  const excluded = findings.find(row => row.id === 'excluded');
+  assert.equal((await request(`/api/v1/findings/${excluded.resource_id}/validation-source`)).status, 422);
+  assert.equal((await request('/api/v1/findings/not-found/validation-source')).status, 404);
   const input = { audit_id: 'from-report', audit_mode: 'dynamic', name: '报告验证', source_report: draft.source_report,
     test_environment_enabled: true, test_environment_context: '授权 http://fixture.test 私有登录说明 PRIVATE_CREDENTIAL',
     runtime_testing: { explicit_authorization: true, mode: 'INTEGRATED_TESTING' } };
@@ -174,6 +195,11 @@ test('报告 HTTP 入口校验产品与版本，创建独立任务并保存输�
   assert.equal(audit.private_report_source, undefined); assert.doesNotMatch(JSON.stringify(audit), /PRIVATE_CREDENTIAL/);
   const stored = JSON.parse(await readFile(join(runner.stateRoot, audit.id, 'source-report.json'), 'utf8')); assert.equal(stored.findings.length, 2);
   assert.equal((await (await request(path, input)).json()).id, audit.id); assert.equal(runner.listAudits().length, 1);
+  const singleCreated = await request(path, { ...input, audit_id: 'single-finding', source_report: single.source_report }, 'single-finding-key');
+  const singleAudit = await singleCreated.json(); assert.equal(singleCreated.status, 202, JSON.stringify(singleAudit));
+  assert.deepEqual(singleAudit.report_validation.finding_ids, ['f-one']);
+  const singleStored = JSON.parse(await readFile(join(runner.stateRoot, singleAudit.id, 'source-report.json'), 'utf8'));
+  assert.deepEqual(singleStored.findings.map(row => row.finding_id), ['f-one']);
   assert.equal(await readFile(originalPath, 'utf8'), original);
   const linked = await request(path); assert.ok((await linked.json()).items.some(row => row.id === audit.id));
   // Exercise the actual queued Runner handoff with an owned fake process and

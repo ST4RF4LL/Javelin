@@ -91,6 +91,19 @@ test('报告验证草稿仅冻结来源，不自动授权；提交固定为定�
   assert.doesNotMatch(created.body, /PRIVATE_REPORT_CONTEXT/);
 });
 
+test('单漏洞草稿和重试保留选择；拒绝空选择且不沿用授权', async () => {
+  const sourceReport = { report_id: 'report-fixture', report_sha256: 'a'.repeat(64), model_sha256: 'b'.repeat(64), finding_ids: ['only-one'] };
+  mockTransport(call => call.url.pathname.endsWith('/validation-source') ? json({ product_id: input.productId, source_report: sourceReport, source_audit_id: 'original', finding_count: 1, finding_title: '指定漏洞', engine: 'opencode', model: 'default' })
+    : call.url.pathname.endsWith(`/${audit.id}`) ? json({ ...audit, status: 'interrupted', audit_mode: 'dynamic', report_validation: { ...sourceReport, finding_count: 1, audit_id: 'original' } }) : undefined);
+  const response = await request('findings/finding-resource/validation-draft', post({})); assert.equal(response.statusCode, 201, response.body);
+  const draft = response.json(); assert.deepEqual(draft.sourceReport, sourceReport); assert.equal(draft.sourceFindingTitle, '指定漏洞'); assert.equal(draft.testEnvironmentEnabled, false);
+  assert.deepEqual(calls.map(call => call.method), ['GET']);
+  const selected = { ...input, ...draft, testEnvironmentEnabled: true, testEnvironmentContext: '用户授权的 SSH 测试环境原文' };
+  assert.deepEqual(createTaskInput(selected).body.source_report.finding_ids, ['only-one']);
+  for (const ids of [[], ['only-one', 'only-one'], null]) assert.throws(() => createTaskInput({ ...selected, sourceReport: { ...sourceReport, finding_ids: ids } }));
+  const retry = await live.retryDraft(audit.id); assert.deepEqual(retry.sourceReport.finding_ids, ['only-one']); assert.equal(retry.testEnvironmentEnabled, false);
+});
+
 test('空环境继续静态流程；自由文本授权完整转交，不要求固定账号格式', async () => {
   const empty = createTaskInput({ ...input, testEnvironmentEnabled: true, testEnvironmentContext: '   ', runtimeTesting: { mode: 'invalid' } }).body;
   assert.equal(empty.test_environment_enabled, false); assert.equal(empty.runtime_testing, null);

@@ -33,7 +33,7 @@ import { ProductStore, UNDEFINED_PRODUCT_ID } from "./product-store.mjs";
 import { controlledBytes } from "../../lib/task-board/contract.mjs";
 import { renderBoardReport } from "../../lib/task-board/review.mjs";
 import { renderStructuredBoardReport } from "../../lib/task-board/report.mjs";
-import { readReportSource, reportSourceRequest } from "../../lib/runtime-testing/report-source.mjs";
+import { readReportSource, reportSourceRequest, selectReportFindings } from "../../lib/runtime-testing/report-source.mjs";
 import { createWorkbenchUiHandler, normalizeModernOrigin } from "./workbench-ui.mjs";
 import { runtimeBuild } from "./runtime-build.mjs";
 import { NativeSessionController } from '../../lib/audit-runtime/native-sessions.mjs';
@@ -846,7 +846,21 @@ export function createAuditWorkbenchServer({
     const root = runner.artifactSources().find(item => item.repository_id === report.repository_id)?.reports_root;
     const source = await readReportSource({ root, report });
     if (expected && (expected.report_id !== reportId || expected.report_sha256 !== source.source.report_sha256 || expected.model_sha256 !== source.source.model_sha256)) throw Object.assign(new Error("报告版本已变化，请重新打开报告验证表单。"), { statusCode: 409, code: "report-source-changed" });
-    return { source, productId: owner.product_id, audit };
+    return { source: selectReportFindings(source, expected?.finding_ids), productId: owner.product_id, audit };
+  }
+
+  async function findingValidationSource(resourceId) {
+    const data = await snapshot();
+    const finding = data.findings.find(row => row.resource_id === resourceId);
+    if (!finding) throw Object.assign(new Error("没有找到对应漏洞。"), { statusCode: 404, code: "finding-not-found" });
+    const reports = data.reports.filter(row => row.repository_id === finding.repository_id && row.audit_id === finding.audit_id
+      && row.path === `final/security-audit-report.${finding.audit_id}.md`);
+    if (reports.length !== 1) throw Object.assign(new Error("该漏洞尚无唯一的最终报告，请先完成报告封存后再验证。"), { statusCode: 422, code: "finding-validation-report-required" });
+    const result = await reportValidationSource(reports[0].id, recordOwnership(finding).product_id);
+    const ids = new Set([finding.id, ...(finding.source_finding_ids ?? [])]);
+    const matches = result.source.findings.filter(row => ids.has(row.finding_id));
+    if (matches.length !== 1) throw Object.assign(new Error("无法将该漏洞唯一对应到报告可验证项；已排除的误报不能直接启动验证，请核对报告。"), { statusCode: 422, code: "finding-validation-selection-ambiguous" });
+    return { ...result, source: selectReportFindings(result.source, [matches[0].finding_id]), finding };
   }
 
   async function repositoriesSnapshot(url = null) {
@@ -1342,6 +1356,14 @@ export function createAuditWorkbenchServer({
         json(response, 200, { products: [...products.values()],
           audits: data.audits.map(audit => ({ id: audit.id, name: audit.name, product_id: audit.provenance?.product_id, repository_id: audit.repository_id })),
           reports: data.reports.map(report => ({ id: report.id, name: report.name, audit_id: report.audit_id, product_id: report.provenance?.product_id })) });
+        return;
+      }
+      const findingValidation = url.pathname.match(/^\/api\/v1\/findings\/([^/]+)\/validation-source$/);
+      if (request.method === "GET" && findingValidation) {
+        const { source, productId, audit, finding } = await findingValidationSource(decodeURIComponent(findingValidation[1]));
+        json(response, 200, { product_id: productId, source_report: reportSourceRequest(source.source),
+          source_audit_id: source.source.audit_id, finding_count: source.source.finding_count, finding_title: finding.title,
+          engine: audit?.execution?.engine ?? "opencode", model: audit?.model ?? "default" });
         return;
       }
       const findingDetail = url.pathname.match(/^\/api\/v1\/findings\/([^/]+)$/);
