@@ -29,7 +29,7 @@ export async function probeBackend(upstream, transport) {
   if (!response.ok || health?.service !== 'opencode-audit-workbench') throw new Error('上游端口未返回有效的审计平台健康信息，请检查 WORKBENCH_UPSTREAM。');
   if (!health.runner?.enabled) throw new Error('审计服务正在以只读模式运行。请正常停止它，再执行此命令；或用 --enable-runner 重启服务。');
   if (new URL(upstream).hostname === '127.0.0.1' && (health.runtime_build?.protocol !== runtimeBuild.protocol || health.runtime_build?.source_sha256 !== runtimeBuild.source_sha256)) {
-    throw Object.assign(new Error('审计服务尚未加载当前代码。请先结束活动任务，再执行 node .opencode/scripts/audit-service.mjs stop 后重新启动；此次未启动第二个 Runner。'), { code: 'UPSTREAM_RESTART_REQUIRED' });
+    throw Object.assign(new Error('审计服务尚未加载当前代码，旧后台仍在运行。无需进入界面：先执行 node .opencode/scripts/audit-service.mjs tasks 查看；确认结束全部任务时执行 node .opencode/scripts/audit-service.mjs cancel-all，再执行 node .opencode/scripts/audit-service.mjs stop 后重新启动。此次未启动第二个 Runner。'), { code: 'UPSTREAM_RESTART_REQUIRED' });
   }
   return health;
 }

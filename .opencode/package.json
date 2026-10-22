@@ -54,7 +54,7 @@
     "test:audit-workbench:modern": "node --test tests/run-workbench-ui-tests.mjs && npm --prefix ../apps/workbench test",
     "start:audit-workbench:platform": "npm --prefix ../apps/workbench run start:platform --",
     "test:audit-workbench:platform": "npm --prefix ../apps/workbench run test:tasks",
-    "test:audit-runtime": "node --test tests/run-audit-service-transport-tests.mjs tests/run-audit-runtime-tests.mjs tests/run-windows-background-tests.mjs",
+    "test:audit-runtime": "node --test tests/run-audit-service-transport-tests.mjs tests/run-service-control-tests.mjs tests/run-audit-runtime-tests.mjs tests/run-windows-background-tests.mjs",
     "test:agent-engines": "node --test tests/run-agent-settings-tests.mjs tests/run-agent-settings-ui-tests.mjs tests/run-agent-engines-integration-tests.mjs tests/run-opencode-v2-tests.mjs lib/audit-runtime/engines/grow.test.mjs",
     "test:runtime-ssh": "node --test tests/run-runtime-ssh-tests.mjs"
   },

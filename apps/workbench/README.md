@@ -1,5 +1,17 @@
 # 新版工作台：真实任务模式
 
+升级后若提示“审计服务尚未加载当前代码”，旧后台仍在运行。即使 Web 已关闭，也可在项目根目录直接管理它（Windows、macOS、Linux 命令相同）：
+
+```sh
+node .opencode/scripts/audit-service.mjs tasks
+# 确定结束全部活动审计和动态验证时执行；保留报告与记录
+node .opencode/scripts/audit-service.mjs cancel-all
+node .opencode/scripts/audit-service.mjs stop
+npm --prefix apps/workbench run start:platform -- --host 0.0.0.0
+```
+
+`tasks` 和 `cancel-all` 直接连接已登记的本机后台，不启动第二个 Runner，也不要求后台与磁盘代码版本一致。取消后最多等待 60 秒确认；失败或超时时保留具体任务 ID，不强杀进程、不伪造结束状态。自定义服务目录时，在管理命令后加 `--service-root <目录>`。仅关闭 Web 窗口或按 Ctrl+C 不会关闭独立审计后台。
+
 报告补充验证入口：**审计报告 → 基于报告验证**（报告卡片与详情弹窗均可进入）。**漏洞发现 → 验证此漏洞**只验证选中的一条，支持从漏洞卡片或详情进入。两种入口均需已封存、模型与正文一致的最终报告；单漏洞入口还要求唯一对应报告中的可验证项。填写授权环境后创建独立任务，必要登录后验证选定范围，不重跑源码审计或全面动态探索，原报告保持不变。详见[运行测试流程](../../docs/runtime-testing-workflow.md)。
 
 漏洞详情兼容任务板的证据数组、Finding v2 的事实列表和字符串源码定位，并按同一审计内唯一的漏洞 ID 读取最终报告中的定位与证据；无法匹配或原始内容确实缺失时仍显示缺口，不推断源码行号。

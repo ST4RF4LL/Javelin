@@ -8,6 +8,7 @@ import { atomicJson } from '../lib/task-board/contract.mjs';
 import { SERVICE_PROTOCOL, DEFAULT_SERVICE_ORIGIN, defaultServiceRoot, readServiceConnection, ensureAuditService } from '../lib/audit-runtime/service-process.mjs';
 import { localServiceFetch, serviceRequestErrorCode } from '../lib/audit-runtime/local-service-transport.mjs';
 import { assertAuditRuntimeDependencies } from '../lib/audit-runtime/runtime-dependencies.mjs';
+import { connectServiceControl, cancelAllServiceTasks } from '../lib/audit-runtime/service-control.mjs';
 
 export async function startAuditService({ port = 4183, stateRoot, serviceRoot = defaultServiceRoot, modernOrigin = 'http://127.0.0.1:4181', backendOptions = {} } = {}) {
   assertAuditRuntimeDependencies();
@@ -68,14 +69,21 @@ if (process.argv[1] && resolve(process.argv[1]) === fileURLToPath(import.meta.ur
     } else if (command === 'start') {
       const result = await ensureAuditService({ ...options, origin: options.port === undefined ? DEFAULT_SERVICE_ORIGIN : `http://127.0.0.1:${options.port}` });
       process.stdout.write(`${JSON.stringify({ started: result.started, pid: result.health.runtime_service?.pid })}\n`);
+    } else if (['tasks', 'cancel-all'].includes(command)) {
+      const control = await connectServiceControl({ serviceRoot: options.serviceRoot });
+      if (command === 'cancel-all') await cancelAllServiceTasks(control, { notify: text => process.stdout.write(`${text}\n`) });
+      else {
+        const tasks = await control.tasks();
+        process.stdout.write(tasks.length ? `${tasks.map(task => `${task.kind === 'audit' ? '审计' : '动态验证'}\t${task.id}\t${task.status}`).join('\n')}\n` : '没有活动任务。\n');
+      }
     } else if (['status', 'stop'].includes(command)) {
       const connection = await readServiceConnection(options.serviceRoot);
       const response = await localServiceFetch(`${connection.origin}${command === 'stop' ? '/api/internal/service/stop' : '/api/v1/runtime/health'}`, {
         method: command === 'stop' ? 'POST' : 'GET', headers: { Authorization: `Bearer ${connection.token}` }, signal: AbortSignal.timeout(5000), redirect: 'error' }).catch(error => {
           throw new Error(`无法连接审计服务 ${connection.origin}（${serviceRequestErrorCode(error)}）。`, { cause: error });
         });
-      if (!response.ok) throw new Error(command === 'stop' && response.status === 409 ? '仍有活动任务，服务未停止。' : `服务请求失败：${response.status}`);
+      if (!response.ok) throw new Error(command === 'stop' && response.status === 409 ? '仍有活动任务，服务未停止。可执行 node .opencode/scripts/audit-service.mjs tasks 查看；明确结束全部任务时执行 node .opencode/scripts/audit-service.mjs cancel-all。' : `服务请求失败：${response.status}`);
       process.stdout.write(command === 'stop' ? '审计服务停止请求已接收。\n' : `${await response.text()}\n`);
-    } else throw new Error('用法：audit-service.mjs start|serve|status|stop');
+    } else throw new Error('用法：audit-service.mjs start|serve|status|tasks|cancel-all|stop');
   } catch (error) { process.stderr.write(`${error.message}\n`); process.exitCode = 1; }
 }
