@@ -6,6 +6,7 @@ import { createHash } from 'node:crypto';
 import WebSocket, { WebSocketServer } from 'ws';
 import { createTtydRuntime, checkTtyd } from './ttyd-runtime.mjs';
 import { terminalPage } from './terminal-page.mjs';
+import { localServiceFetch } from '../../../.opencode/lib/audit-runtime/local-service-transport.mjs';
 
 export const TERMINAL_MONITOR_HOST = '127.0.0.1';
 export const TERMINAL_MONITOR_ORIGINS = Object.freeze([
@@ -15,7 +16,7 @@ export const TERMINAL_MONITOR_ORIGINS = Object.freeze([
 const RESERVED_PORTS = new Set([4173, 4181, 4183]);
 const defaultStateRoot = () => resolve(process.env.AUDIT_WORKBENCH_STATE_ROOT || fileURLToPath(new URL('../../../reports/platform/audit-runs', import.meta.url)));
 export const TERMINAL_PROTOCOL = 'audit-terminal.ttyd.v1';
-export const TERMINAL_BUILD = createHash('sha256').update(['start-terminal-monitor.mjs','audit-terminal-runtime.mjs','ttyd-runtime.mjs','ttyd-command.mjs','terminal-page.mjs']
+export const TERMINAL_BUILD = createHash('sha256').update(['start-terminal-monitor.mjs','audit-terminal-runtime.mjs','ttyd-runtime.mjs','ttyd-command.mjs','terminal-page.mjs','../../../.opencode/lib/audit-runtime/local-service-transport.mjs']
   .map(file => readFileSync(new URL(file, import.meta.url))).reduce((a, b) => Buffer.concat([a, b]), Buffer.alloc(0))).digest('hex');
 function validPort(value, ephemeral = false) {
   const port = Number(value);
@@ -165,7 +166,7 @@ export async function startTerminalMonitor({ port = terminalMonitorConfiguration
 export async function ensureWorkbenchTerminalMonitor() {
   const { port } = terminalMonitorConfiguration();
   try {
-    const response = await fetch(`http://${TERMINAL_MONITOR_HOST}:${port}/api/config`, { signal: AbortSignal.timeout(2500), redirect: 'error' });
+    const response = await localServiceFetch(`http://${TERMINAL_MONITOR_HOST}:${port}/api/config`, { signal: AbortSignal.timeout(2500), redirect: 'error' });
     const config = await response.json();
     if (!response.ok || config.workbenchProtocol !== TERMINAL_PROTOCOL || config.sourceSha256 !== TERMINAL_BUILD ||
       config.stateRootId !== createHash('sha256').update(defaultStateRoot()).digest('hex')) throw new Error('终端端口已被旧版或其他服务占用，请正常停止所属服务后重启平台。');

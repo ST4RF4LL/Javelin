@@ -6,6 +6,7 @@ import { join, resolve } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { atomicJson } from '../lib/task-board/contract.mjs';
 import { SERVICE_PROTOCOL, DEFAULT_SERVICE_ORIGIN, defaultServiceRoot, readServiceConnection, ensureAuditService } from '../lib/audit-runtime/service-process.mjs';
+import { localServiceFetch, serviceRequestErrorCode } from '../lib/audit-runtime/local-service-transport.mjs';
 
 export async function startAuditService({ port = 4183, stateRoot, serviceRoot = defaultServiceRoot, modernOrigin = 'http://127.0.0.1:4181', backendOptions = {} } = {}) {
   const token = randomBytes(32).toString('hex'), generation = randomUUID();
@@ -67,8 +68,10 @@ if (process.argv[1] && resolve(process.argv[1]) === fileURLToPath(import.meta.ur
       process.stdout.write(`${JSON.stringify({ started: result.started, pid: result.health.runtime_service?.pid })}\n`);
     } else if (['status', 'stop'].includes(command)) {
       const connection = await readServiceConnection(options.serviceRoot);
-      const response = await fetch(`${connection.origin}${command === 'stop' ? '/api/internal/service/stop' : '/api/v1/runtime/health'}`, {
-        method: command === 'stop' ? 'POST' : 'GET', headers: { Authorization: `Bearer ${connection.token}` }, signal: AbortSignal.timeout(5000), redirect: 'error' });
+      const response = await localServiceFetch(`${connection.origin}${command === 'stop' ? '/api/internal/service/stop' : '/api/v1/runtime/health'}`, {
+        method: command === 'stop' ? 'POST' : 'GET', headers: { Authorization: `Bearer ${connection.token}` }, signal: AbortSignal.timeout(5000), redirect: 'error' }).catch(error => {
+          throw new Error(`无法连接审计服务 ${connection.origin}（${serviceRequestErrorCode(error)}）。`, { cause: error });
+        });
       if (!response.ok) throw new Error(command === 'stop' && response.status === 409 ? '仍有活动任务，服务未停止。' : `服务请求失败：${response.status}`);
       process.stdout.write(command === 'stop' ? '审计服务停止请求已接收。\n' : `${await response.text()}\n`);
     } else throw new Error('用法：audit-service.mjs start|serve|status|stop');

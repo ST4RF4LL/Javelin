@@ -9,7 +9,7 @@ import { once, EventEmitter } from 'node:events';
 import { setTimeout as delay } from 'node:timers/promises';
 import http from 'node:http';
 import WebSocket from 'ws';
-import { startTerminalMonitor, terminalMonitorConfiguration, installTerminalMonitorShutdown, TERMINAL_MONITOR_ORIGINS, TERMINAL_PROTOCOL } from '../scripts/start-terminal-monitor.mjs';
+import { startTerminalMonitor, ensureWorkbenchTerminalMonitor, terminalMonitorConfiguration, installTerminalMonitorShutdown, TERMINAL_MONITOR_ORIGINS, TERMINAL_PROTOCOL } from '../scripts/start-terminal-monitor.mjs';
 import { checkTtyd } from '../scripts/ttyd-runtime.mjs';
 import { readAuditTerminal } from '../scripts/audit-terminal-runtime.mjs';
 import { connectTtyd } from './fixtures/ttyd-client.mjs';
@@ -32,6 +32,18 @@ test('默认4184且固定本机，不能用环境变量开启任意Shell或外�
   assert.deepEqual(value.allowedOrigins, TERMINAL_MONITOR_ORIGINS);
   assert.equal(terminalMonitorConfiguration({ WORKBENCH_TERMINAL_PORT: '4284' }).port, 4284);
   for (const port of ['0', '4173', '4181', '4183', '-1', '65536', 'oops']) assert.throws(() => terminalMonitorConfiguration({ TERMINAL_PORT: port }));
+});
+test('启动时直连已有终端网关，不受全局 fetch 故障影响且不启动第二份终端', async () => {
+  const app = await startTerminalMonitor({ port: 0, spawnProcess() { assert.fail('不能启动 ttyd'); } });
+  const previous = process.env.WORKBENCH_TERMINAL_PORT, originalFetch = globalThis.fetch;
+  process.env.WORKBENCH_TERMINAL_PORT = String(app.server.address().port);
+  globalThis.fetch = () => { throw new Error('fetch failed'); };
+  try { assert.equal(await ensureWorkbenchTerminalMonitor(), null); }
+  finally {
+    globalThis.fetch = originalFetch;
+    previous === undefined ? delete process.env.WORKBENCH_TERMINAL_PORT : process.env.WORKBENCH_TERMINAL_PORT = previous;
+    await app.close();
+  }
 });
 test('HTTP/CORS/Host/WS边界：任意Shell、无关任务和非信任来源均不启动ttyd', async () => {
   let spawned = 0;

@@ -3,6 +3,7 @@ import { open, mkdir, readFile } from 'node:fs/promises';
 import { join, resolve } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { setTimeout as delay } from 'node:timers/promises';
+import { localServiceFetch, serviceRequestErrorCode } from './local-service-transport.mjs';
 
 export const SERVICE_PROTOCOL = 'audit-runtime-service.v1';
 export const DEFAULT_SERVICE_ORIGIN = 'http://127.0.0.1:4183';
@@ -10,22 +11,24 @@ const entry = fileURLToPath(new URL('../../scripts/audit-service.mjs', import.me
 export const platformRoot = resolve(fileURLToPath(new URL('../../../', import.meta.url)));
 export const defaultServiceRoot = join(platformRoot, 'reports/platform/audit-service');
 
-export async function serviceHealth(origin, fetcher = fetch) {
+export async function serviceHealth(origin, fetcher = localServiceFetch) {
   try {
     const response = await fetcher(`${origin}/api/v1/runtime/health`, { signal: AbortSignal.timeout(3000), redirect: 'error' });
-    if (!response.ok) throw new Error(`审计服务健康检查失败：HTTP ${response.status}`);
-    const value = await response.json();
-    if (value.service !== 'opencode-audit-workbench') throw new Error('端口被其他服务占用。');
+    if (!response.ok) throw Object.assign(new Error(`审计服务 ${origin} 健康检查失败：HTTP ${response.status}`), { code: 'AUDIT_SERVICE_HTTP_ERROR' });
+    const value = await response.json().catch(() => null);
+    if (value?.service !== 'opencode-audit-workbench') throw Object.assign(new Error(`审计服务 ${origin} 未返回有效健康信息，端口可能被其他服务占用。`), { code: 'AUDIT_SERVICE_PROTOCOL_ERROR' });
     return value;
   } catch (error) {
-    if ((error.code ?? error.cause?.code) === 'ECONNREFUSED') return null;
-    throw error;
+    const code = serviceRequestErrorCode(error);
+    if (code === 'ECONNREFUSED') return null;
+    if (['AUDIT_SERVICE_HTTP_ERROR', 'AUDIT_SERVICE_PROTOCOL_ERROR'].includes(code)) throw error;
+    throw Object.assign(new Error(`无法读取审计服务 ${origin} 的健康状态（${code}）。请检查服务日志与端口；未启动第二个 Runner。`, { cause: error }), { code: 'AUDIT_SERVICE_CONNECTION_FAILED', reason_code: code });
   }
 }
 
 // The dashboard is a client of this detached process, never its lifecycle owner.
 export async function ensureAuditService({ origin = DEFAULT_SERVICE_ORIGIN, modernOrigin = 'http://127.0.0.1:4181',
-  serviceRoot = defaultServiceRoot, stateRoot, fetcher = fetch, spawnProcess = spawn, timeoutMs = 30_000 } = {}) {
+  serviceRoot = defaultServiceRoot, stateRoot, fetcher = localServiceFetch, spawnProcess = spawn, timeoutMs = 30_000 } = {}) {
   // Detect the old daemon before attempting to acquire the same task state.
   let saved;
   try { saved = await readServiceConnection(serviceRoot); } catch (error) { if (error.code !== 'ENOENT') throw error; }
@@ -48,15 +51,22 @@ export async function ensureAuditService({ origin = DEFAULT_SERVICE_ORIGIN, mode
     } finally { await log.close(); }
   }
   const deadline = Date.now() + timeoutMs;
+  let lastConnectionError;
   while (Date.now() < deadline) {
     if (failure) throw failure;
-    const health = await serviceHealth(origin, fetcher);
+    let health;
+    try { health = await serviceHealth(origin, fetcher); }
+    catch (error) {
+      // Only retry reads after a known initialization/start, never launch on an ambiguous preflight.
+      if (!['ECONNRESET', 'EPIPE', 'UND_ERR_SOCKET'].includes(error.reason_code)) throw error;
+      lastConnectionError = error.reason_code;
+    }
     if (health?.runtime_service?.protocol === SERVICE_PROTOCOL && health.runtime_service.ready) return { health, started: Boolean(child) };
     if (health && !health.runtime_service) throw new Error('端口已被旧版后台占用，请先完成旧版后台迁移。');
-    if (!health && child?.exitCode != null) throw new Error(`审计服务启动失败，请查看 ${join(serviceRoot, 'service.log')}。`);
+    if (!health && child?.exitCode != null) throw new Error(`审计服务 ${origin} 已退出（退出码 ${child.exitCode}），请查看 ${join(serviceRoot, 'service.log')}。`);
     await delay(150);
   }
-  throw new Error(`审计服务尚未就绪，请查看 ${join(serviceRoot, 'service.log')}；未终止可能已经开始的任务。`);
+  throw new Error(`审计服务 ${origin} 尚未就绪${lastConnectionError ? `（${lastConnectionError}）` : ''}，请查看 ${join(serviceRoot, 'service.log')}；未终止可能已经开始的任务。`);
 }
 
 export async function readServiceConnection(serviceRoot = defaultServiceRoot) {

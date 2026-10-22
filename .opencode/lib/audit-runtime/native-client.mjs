@@ -1,6 +1,7 @@
 import { ensureAuditService, readServiceConnection } from './service-process.mjs';
+import { localServiceFetch } from './local-service-transport.mjs';
 
-export function createNativeClient({ serviceRoot, fetcher = fetch, connection: suppliedConnection } = {}) {
+export function createNativeClient({ serviceRoot, fetcher = localServiceFetch, connection: suppliedConnection } = {}) {
   let connection = suppliedConnection;
   return {
     async call(operation, input) {
