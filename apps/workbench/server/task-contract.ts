@@ -1,4 +1,5 @@
 import { BadRequestException } from '@nestjs/common';
+import { MINING_STRATEGIES } from '../shared/mining-strategies.js';
 
 export function identifier(value: unknown, label = '标识'): string {
   if (typeof value !== 'string' || !/^[a-zA-Z0-9][a-zA-Z0-9._-]{0,179}$/.test(value)) throw new BadRequestException(`${label}无效。`);
@@ -35,8 +36,29 @@ export function createTaskInput(input: Record<string, unknown>) {
   const targetId = auditMode === 'dynamic' ? null : identifier(input.targetId, '源码对象');
   const auditId = identifier(input.auditId, '任务编号');
   if (auditId.length < 3 || auditId.length > 128) throw new BadRequestException('任务编号需为 3–128 个字符。');
-  const mining = auditMode === 'dynamic' ? 'focus_area' : choice(input.miningStrategy, ['focus_area', 'api', 'file_sweep'], 'focus_area');
-  const apiInventory = mining === 'api' ? textField(input.apiInventory, 'API 清单', 120000, true) : '';
+  const allowedStrategies: string[] = MINING_STRATEGIES.map(strategy => strategy.id);
+  const mining = auditMode === 'dynamic' ? [] : input.miningStrategies ?? [choice(input.miningStrategy, allowedStrategies, 'focus_area')];
+  if (!Array.isArray(mining) || (auditMode !== 'dynamic' && !mining.length) || mining.length > allowedStrategies.length
+    || mining.some(value => typeof value !== 'string' || !allowedStrategies.includes(value)) || new Set(mining).size !== mining.length) {
+    throw new BadRequestException('请至少选择一种有效的漏洞挖掘方式，且不能重复。');
+  }
+  if (auditMode !== 'dynamic' && input.miningStrategies != null && input.miningStrategy != null
+    && (mining.length !== 1 || mining[0] !== input.miningStrategy)) throw new BadRequestException('新旧漏洞挖掘方式字段不一致。');
+  const apiInventory = mining.includes('api') ? textField(input.apiInventory, 'API 清单', 120000, true) : '';
+  let creedOptions: { paths?: string[]; symbols?: string[] } | undefined;
+  if (mining.includes('creed') && input.creedOptions != null) {
+    if (typeof input.creedOptions !== 'object' || Array.isArray(input.creedOptions) || Object.keys(input.creedOptions).some(key => !['paths', 'symbols'].includes(key))) throw new BadRequestException('CREED 范围格式无效。');
+    creedOptions = {};
+    for (const key of ['paths', 'symbols'] as const) {
+      const entries = (input.creedOptions as Record<string, unknown>)[key];
+      if (entries == null) continue;
+      const maximum = key === 'paths' ? 1000 : 400;
+      if (!Array.isArray(entries) || entries.length > 200 || entries.some(value => typeof value !== 'string' || !value.trim() || value.length > maximum || /[\x00-\x1f\x7f]/u.test(value))) throw new BadRequestException(`CREED 范围每类最多 200 项，${key === 'paths' ? '路径' : '函数名'}每项为 1–${maximum} 字符。`);
+      creedOptions[key] = [...new Set(entries.map(value => value.trim()))];
+    }
+    if (creedOptions.paths) creedOptions.paths = creedOptions.paths.map(path => path.replaceAll('\\', '/').replace(/\/$/, ''));
+    if (creedOptions.paths?.some(path => !path || /^(?:[A-Za-z]:|[/\\])/.test(path) || path.split(/[\\/]/).includes('..') || /[*?\[\]{}]/.test(path))) throw new BadRequestException('CREED 路径必须是源码根内的相对目录或文件，不支持通配符。');
+  }
   const additionalEnabled = input.additionalInstructionsEnabled === true;
   const additional = additionalEnabled ? textField(input.additionalInstructions, '补充说明', 12000, true) : '';
   const environment = auditMode !== 'static' && input.testEnvironmentEnabled === true ? textField(input.testEnvironmentContext, '测试环境', 24000) : '';
@@ -54,7 +76,9 @@ export function createTaskInput(input: Record<string, unknown>) {
   }
   return { productId, body: { ...(auditMode ? { audit_mode: auditMode } : {}), ...(sourceReport ? { source_report: sourceReport } : {}), name: textField(input.name, '任务名称', 160, true).trim(), target_id: targetId, audit_id: auditId,
     ...(input.engine == null ? {} : { engine: choice(input.engine, ['opencode', 'opencode-v2', 'grow'], 'opencode') }),
-    model: textField(input.model ?? 'default', '模型', 240), task_protocol: 'task-board.v1', mining_strategy: mining, api_inventory: apiInventory,
+    model: textField(input.model ?? 'default', '模型', 240), task_protocol: 'task-board.v1',
+    ...(auditMode === 'dynamic' ? {} : { mining_contract: 'mining-strategies.v1', mining_strategies: mining }), api_inventory: apiInventory,
+    ...(creedOptions ? { creed_options: creedOptions } : {}),
     memory_mode: choice(input.memoryMode, ['full', 'facts_only', 'off', 'blind'], 'full'), bac_analysis: choice(input.bacAnalysis, ['auto', 'off'], 'auto'),
     additional_instructions_enabled: additionalEnabled, additional_instructions: additional,
     test_environment_enabled: environmentEnabled, test_environment_context: environmentEnabled ? environment : '', runtime_testing: runtime } };

@@ -8,7 +8,9 @@ const now = () => new Date().toISOString();
 export const SWEEP_PROTOCOL = "file-sweep.v1";
 export const SWEEP_STATES = ["PENDING", "READING", "BROWSED", "GAP", "EXCLUDED"];
 const terminal = new Set(["BROWSED", "GAP", "EXCLUDED"]);
-export const taskKindForStrategy = strategy => strategy === "file_sweep" ? "focus_area" : strategy;
+export const taskKindForStrategy = strategy => strategy === "file_sweep" ? "focus_area" : strategy === "creed" ? "function" : strategy;
+const usesSweep = board => board.mining_strategies?.includes("file_sweep") ?? board.mining_strategy === "file_sweep";
+const sweepTasks = board => board.tasks.filter(task => !board.mining_strategies || task.strategy_id === "file_sweep");
 
 export function createFileSweep(manifest, board) {
   check(manifest.audit_id === board.audit_id && manifest.scope_digest === board.scope_digest && manifest.complete === true && Array.isArray(manifest.files), "逐文件清单必须完整且绑定本次冻结源码范围。");
@@ -36,12 +38,12 @@ export function sweepSummary(board) {
     pending_files: count("PENDING"), reading_files: count("READING"), gap_files: gap, excluded_files: count("EXCLUDED"),
     scope_exclusions: sweep.exclusions.length, complete: sweep.files.every(file => terminal.has(file.status)),
     browse_percentage: total ? Math.round(browsed / total * 10000) / 100 : 0,
-    published_areas: board.tasks.length, linked_files: sweep.files.filter(file => file.task_ids.length).length };
+    published_areas: sweepTasks(board).length, linked_files: sweep.files.filter(file => file.task_ids.length).length };
 }
 
 function ledger(board, open = true) {
-  check(board.mining_strategy === "file_sweep" && board.file_sweep?.protocol === SWEEP_PROTOCOL, "当前任务未初始化逐文件浏览清单。");
-  if (open) check(board.publication.state === "OPEN" && !board.final_report, "文件浏览发布阶段已经封存。");
+  check(usesSweep(board) && board.file_sweep?.protocol === SWEEP_PROTOCOL, "当前任务未初始化逐文件浏览清单。");
+  if (open) check(!board.active_round && board.publication.state === "OPEN" && !board.final_report && (!board.strategy_runs || board.strategy_runs.find(run => run.strategy_id === "file_sweep")?.state === "OPEN"), "文件浏览发布阶段已经封存。");
   return board.file_sweep;
 }
 export function filePage(board, { status = "all", offset = 0, limit = 25 } = {}) {
@@ -109,7 +111,7 @@ export function completeFile(board, input) {
   const outcome = input.outcome, summary = typeof input.summary === "string" ? input.summary.trim() : null, taskIds = input.task_ids ?? [];
   check(["BROWSED", "GAP"].includes(outcome) && typeof summary === "string" && summary.length > 0 && summary.length <= 6000, "浏览结果必须为 BROWSED/GAP，并提供具体中文判断或缺口。");
   check(Array.isArray(taskIds) && taskIds.length <= 100 && taskIds.every(id => typeof id === "string") && new Set(taskIds).size === taskIds.length, "关联 Focus Area 编号无效。");
-  check(taskIds.every(id => board.tasks.some(task => task.task_id === id)), "关联的 Focus Area 尚未上榜，请先发布。");
+  check(taskIds.every(id => sweepTasks(board).some(task => task.task_id === id)), "关联的 Focus Area 尚未上榜，请先发布。");
   if (existing?.attempt_id === input.attempt_id && ["BROWSED", "GAP"].includes(existing.status)) {
     check(existing.status === outcome && existing.summary === summary && JSON.stringify(existing.task_ids) === JSON.stringify(taskIds), "重复浏览结果与已接收结果不同。");
     return { recorded: true, duplicate: true };
@@ -118,14 +120,14 @@ export function completeFile(board, input) {
   const fullyRead = file.line_count === 0 || file.line_count !== null && file.read_ranges.length === 1 && file.read_ranges[0][0] === 1 && file.read_ranges[0][1] === file.line_count;
   if (outcome === "GAP" && board.file_sweep.discovery_version >= 2) check(file.read_error || fullyRead, "尚未浏览的文件不能直接登记 GAP；预算或上下文不足时请暂存进度并 defer，保留待处理状态。");
   if (outcome === "BROWSED") check(file.line_count === 0 || file.line_count !== null && file.read_ranges.length === 1 && file.read_ranges[0][0] === 1 && file.read_ranges[0][1] === file.line_count, "文件尚未完整读取，不得标为已浏览；请继续分页读取或记录 GAP。");
-  const generated = board.tasks.filter(task => task.source_ref === file.file_id);
+  const generated = sweepTasks(board).filter(task => task.source_ref === file.file_id);
   check(generated.every(task => taskIds.includes(task.task_id)), "浏览记录遗漏了本文件已经发布的 Focus Area。");
   Object.assign(file, { status: outcome, summary, task_ids: taskIds, reason: outcome === "GAP" ? summary : null, completed_at: now() });
   return { recorded: true };
 }
 export function assertSweepSealable(board) {
-  if (board.mining_strategy !== "file_sweep") return;
-  const sweep = ledger(board);
+  if (!usesSweep(board)) return;
+  const sweep = ledger(board, false);
   check(sweepSummary(board).complete, "仍有未完成浏览的文件，请继续处理或明确登记缺口，不能提前结束发布。");
-  check(board.tasks.every(task => sweep.files.some(file => file.task_ids.includes(task.task_id))), "存在未关联浏览记录的 Focus Area，不能封存发布。");
+  check(sweepTasks(board).every(task => sweep.files.some(file => file.task_ids.includes(task.task_id))), "存在未关联浏览记录的 Focus Area，不能封存发布。");
 }

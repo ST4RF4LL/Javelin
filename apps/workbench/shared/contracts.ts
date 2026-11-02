@@ -1,5 +1,6 @@
 export type Source = 'demo' | 'live';
 export type CodingEngine = 'opencode' | 'opencode-v2' | 'grow';
+export type MiningStrategy = 'focus_area' | 'api' | 'file_sweep' | 'creed';
 export interface AgentProfile { id: CodingEngine; label: string; command: string; enabled?: boolean; available: boolean; version?: string | null; reason?: string; capabilities?: Record<string, unknown> }
 export interface AgentSettings { default_engine: CodingEngine | null; enabled?: Record<CodingEngine, boolean>; commands: Record<CodingEngine, string>; profiles: AgentProfile[]; updated_at?: string }
 export const WORKBENCH_API_VERSION = 3;
@@ -38,7 +39,9 @@ export interface RealAuditInput {
   auditMode?: 'static' | 'dynamic' | 'joint';
   engine?: CodingEngine;
   productId: string; targetId: string; auditId: string; name: string; model: string;
-  miningStrategy: 'focus_area' | 'api' | 'file_sweep'; apiInventory: string; memoryMode: string; bacAnalysis: string;
+  miningStrategies?: MiningStrategy[]; miningStrategy?: MiningStrategy;
+  creedOptions?: { paths?: string[]; symbols?: string[] };
+  apiInventory: string; memoryMode: string; bacAnalysis: string;
   additionalInstructionsEnabled: boolean; additionalInstructions: string;
   testEnvironmentEnabled: boolean; testEnvironmentContext: string;
   runtimeTesting: { mode: string; budgetMinutes: number; identityMode: string; testInput: boolean; testMutation: boolean };

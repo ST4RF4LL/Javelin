@@ -354,6 +354,11 @@ main { padding: 30px 34px 48px; max-width: 1600px; margin: 0 auto; }
 .agent-command-field.is-disabled > input { background: #f6f7f8; color: var(--muted); }
 .field-unit { color: var(--muted); font-size: 10px; font-weight: 500; }
 .settings-note { margin: 0; color: var(--muted); font-size: 11px; line-height: 1.65; }
+.settings-form label.decision-clear-key { display: flex; align-items: center; gap: 8px; cursor: pointer; }
+.settings-form .decision-clear-key input { width: 16px; height: 16px; padding: 0; accent-color: var(--green); }
+.decision-model-feedback { margin: 0; color: var(--green); background: var(--green-soft); }
+.decision-model-result { margin-top: 16px; }
+.decision-model-result pre { max-height: 240px; overflow: auto; padding: 12px; border: 1px solid var(--line); border-radius: 7px; white-space: pre-wrap; overflow-wrap: anywhere; font-size: 12px; }
 .settings-panel .detail-facts { margin-bottom: 0; }
 
 .notice { margin-bottom: 16px; padding: 12px 14px; border-radius: 8px; font-size: 12px; }
@@ -510,11 +515,14 @@ dialog label.context-textarea { margin: 12px 0 0; }
 .mining-strategy { min-width: 0; margin: 0; padding: 0; border: 0; }
 .mining-strategy legend { padding: 0; margin-bottom: 8px; font-size: 12px; font-weight: 700; }
 .strategy-switch { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 4px; padding: 4px; border: 1px solid var(--line); border-radius: 10px; background: var(--canvas); }
-.strategy-switch .strategy-option { position: relative; display: block; margin: 0; cursor: pointer; }
-.strategy-option input { position: absolute; width: 1px; height: 1px; margin: 0; padding: 0; opacity: 0; }
+.strategy-switch .strategy-option { position: relative; display: flex; align-items: center; gap: 6px; margin: 0; padding: 0 8px; cursor: pointer; }
+.strategy-option input { width: 16px; height: 16px; margin: 0; padding: 0; flex-shrink: 0; accent-color: var(--green); }
 .strategy-option span { display: flex; align-items: center; justify-content: center; min-height: 44px; padding: 8px; border: 1px solid transparent; border-radius: 7px; color: var(--muted); font-size: 12px; font-weight: 700; text-align: center; }
 .strategy-option input:checked + span { color: var(--green); background: var(--panel); border-color: #9bc5ae; box-shadow: var(--shadow); }
 .strategy-option input:focus-visible + span { outline: 2px solid var(--green); outline-offset: 2px; }
+.creed-belief { padding: 12px 0; border-bottom: 1px solid var(--line); }
+.creed-belief summary { cursor: pointer; font-weight: 600; line-height: 1.6; }
+.creed-belief p { white-space: pre-wrap; overflow-wrap: anywhere; line-height: 1.7; }
 
 /* Product topology, durable audit knowledge, and operator feedback. */
 .product-memory-panel { margin-top: 20px; }

@@ -403,7 +403,7 @@ test("工作台新建任务默认冻结原生专项选择，读取重试草稿�
   const audit = runner.audits.get(created.id);
   const board = await readBoard(audit.task_board_path);
   assert.equal(board.bac_analysis.mode, "auto"); assert.equal(board.bac_analysis.task_plan_contract, TASK_PLAN);
-  assert.equal((await runner.retryDraft(created.id)).mining_strategy, "focus_area");
+  assert.deepEqual((await runner.retryDraft(created.id)).mining_strategies, ["focus_area"]);
   assert.deepEqual((await readBoard(audit.task_board_path)).bac_analysis, board.bac_analysis);
   assert.equal(runner.taskBoardServices.size, 0);
 });

@@ -46,7 +46,8 @@ test('新 API 与原产品目录、Runner 实际契约贯通：登记、创建�
     const { auditId: originalId, name: originalName, ...expectedDraft } = template;
     // 重试恢复的是原 Runner 保存的内容；其创建规则会去掉说明两端的空白。
     expectedDraft.additionalInstructions = (await readFile(join(root, 'runs', originalId, 'additional-instructions.txt'), 'utf8')).slice(0, -1);
-    assert.deepEqual(refill.json(), { ...expectedDraft, engine: 'opencode', name: `${originalName}（重试）` });
+    delete expectedDraft.miningStrategy;
+    assert.deepEqual(refill.json(), { ...expectedDraft, miningStrategies: ['api'], engine: 'opencode', name: `${originalName}（重新审计）` });
     const originalRefill = await app.inject({ url: `/api/v2/products/${product.id}/audits/${originalId}/retry-draft`, method: 'POST', payload: {} });
     assert.equal(originalRefill.statusCode, 200, originalRefill.body);
     assert.equal(originalRefill.json().test_environment_context, template.testEnvironmentContext);

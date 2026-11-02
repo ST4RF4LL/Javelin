@@ -139,7 +139,7 @@
           </section>
 
           <section id="view-settings" class="view">
-            <div class="page-heading"><div><p class="eyebrow">WORKBENCH SETTINGS</p><h2>设置</h2><p>配置默认 Agent 基座、模型、超时自动恢复与定时排队策略。</p></div></div>
+            <div class="page-heading"><div><p class="eyebrow">WORKBENCH SETTINGS</p><h2>设置</h2><p>配置默认 Agent 基座、模型、Decision Model、超时自动恢复与定时排队策略。</p></div></div>
             <article class="panel settings-panel">
               <div class="section-title"><div><p class="eyebrow">CODING AGENT</p><h2>Agent 基座</h2></div><span id="agent-settings-status" class="status">读取中</span></div>
               <form id="agent-settings-form" class="settings-form">
@@ -163,6 +163,28 @@
                 <div class="dialog-actions"><button id="save-model-settings" class="button secondary" type="submit">保存模型设置</button></div>
               </form>
               <dl id="model-settings-facts" class="detail-facts"></dl>
+            </article>
+            <article class="panel settings-panel">
+              <div class="section-title"><div><p class="eyebrow">DECISION MODEL</p><h2>Decision Model</h2></div><span id="decision-model-status" class="status" role="status">待读取</span></div>
+              <form id="decision-model-form" class="settings-form" autocomplete="off">
+                <div class="agent-command-heading"><label for="decision-model-enabled">使能 Decision Model</label><label class="enable-switch"><input id="decision-model-enabled" name="enabled" type="checkbox" role="switch" aria-label="使能 Decision Model" aria-describedby="decision-model-enable-note" disabled><span>ENABLE</span></label></div>
+                <p id="decision-model-enable-note" class="settings-note">默认关闭，保存后生效。未配置或未使能时保持原流程；已配置且使能后，后续接入的优化功能才可调用此模型。目前优化功能尚未接入。</p>
+                <label>API 地址<input name="endpoint" type="url" maxlength="4096" value="http://127.0.0.1:1234/v1/chat/completions" placeholder="http://127.0.0.1:1234/v1/chat/completions" required disabled></label>
+                <div class="form-row">
+                  <label>接口协议<select name="protocol" required disabled><option value="openai">OpenAI Chat 兼容（LM Studio）</option><option value="systemone">System One 原生</option></select></label>
+                  <label>模型名称<input name="model" maxlength="240" value="startlux-decision-4b" placeholder="startlux-decision-4b" required disabled></label>
+                </div>
+                <label>API-key（可选）<input name="api_key" type="password" maxlength="8192" autocomplete="new-password" placeholder="未设置，可留空" disabled></label>
+                <label class="decision-clear-key"><input name="clear_api_key" type="checkbox" disabled>清除已保存的 API-key</label>
+                <p id="decision-model-key-note" class="settings-note">API-key 不会回显；留空保留已保存的密钥。修改 API 地址时，请重新填写密钥，或勾选清除。</p>
+                <label>代理地址（可选）<input name="proxy" type="url" maxlength="4096" placeholder="http://127.0.0.1:7890" disabled></label>
+                <p class="settings-note">API 填写完整请求地址。代理支持 HTTP(S)，不支持代理认证；留空强制直连，不使用系统代理。</p>
+                <p class="settings-note">此配置尚未接入审计流程。保存和读取不会调用模型；“测试连接”会使用当前表单发送一次简单判定请求，不自动保存。测试只验证接口及输出格式，不代表漏洞或安全判断准确率。</p>
+                <div id="decision-model-error" class="notice error" role="alert" hidden></div>
+                <div id="decision-model-feedback" class="notice decision-model-feedback" role="status" hidden></div>
+                <div class="dialog-actions"><button id="reload-decision-model" class="button secondary" type="button">重新读取</button><button id="test-decision-model" class="button secondary" type="button" disabled>测试连接</button><button id="save-decision-model" class="button primary" type="submit" disabled>保存 Decision Model</button></div>
+              </form>
+              <div id="decision-model-test-result" class="decision-model-result" hidden><p id="decision-model-test-summary" class="settings-note"></p><pre id="decision-model-test-output"></pre></div>
             </article>
             <article class="panel settings-panel">
               <div class="section-title"><div><p class="eyebrow">TIMEOUT RECOVERY</p><h2>模型超时自动恢复</h2></div><span id="timeout-recovery-status" class="status">读取中</span></div>
@@ -212,18 +234,25 @@
         <label>测试对象<select name="target_id" id="repository-select" required></select></label>
         <label>越权专项分析<select name="bac_analysis"><option value="auto">启用：比较预期权限与实际访问路径</option><option value="off">关闭专项差分，保留常规权限审计</option></select></label>
         <fieldset class="mining-strategy" aria-describedby="mining-strategy-description">
-          <legend>漏洞挖掘策略</legend>
+          <legend>漏洞挖掘方式 · 可多选</legend>
           <div class="strategy-switch">
-            <label class="strategy-option"><input type="radio" name="mining_strategy" value="focus_area" checked><span>高风险 Focus Area</span></label>
-            <label class="strategy-option"><input type="radio" name="mining_strategy" value="api"><span>逐接口 API 审查</span></label>
-            <label class="strategy-option"><input type="radio" name="mining_strategy" value="file_sweep"><span>逐文件地毯式审计</span></label>
+            <label class="strategy-option"><input type="checkbox" name="mining_strategies" value="focus_area" checked><span>Focus Area · 风险优先</span></label>
+            <label class="strategy-option"><input type="checkbox" name="mining_strategies" value="api"><span>逐 API · 接口审查</span></label>
+            <label class="strategy-option"><input type="checkbox" name="mining_strategies" value="file_sweep"><span>逐文件 · 全面浏览</span></label>
+            <label class="strategy-option"><input type="checkbox" name="mining_strategies" value="creed"><span>CREED · 假设驱动</span></label>
           </div>
-          <p id="mining-strategy-description" class="context-note" aria-live="polite">由威胁建模提炼高风险主题，按 Focus Area 定向深入分析。</p>
+          <p id="mining-strategy-description" class="context-note" aria-live="polite">至少选择一种。所选方式共用执行预算，分别统计覆盖范围。</p>
         </fieldset>
         <div id="api-inventory-panel" hidden>
           <label for="api-inventory">API 审查清单<textarea id="api-inventory" name="api_inventory" rows="6" maxlength="120000" spellcheck="false" placeholder="每行一个接口，可附业务说明；也支持 JSON 数组。&#10;GET /orders/{id} 查询订单详情&#10;POST /orders/{id}/refund 申请退款" disabled></textarea></label>
           <p class="context-note">每个清单条目都会先定位相关代码，再派发审查。切换策略时保留当前输入，提交时仅使用所选策略。</p>
         </div>
+        <details id="creed-options-panel" class="audit-context-option" hidden>
+          <summary>CREED 分析范围（可选）</summary>
+          <label>相对目录或文件<textarea name="creed_paths" rows="3" maxlength="24000" placeholder="每行一项，例如 src/services 或 src/auth.ts" disabled></textarea></label>
+          <label>函数名称<textarea name="creed_symbols" rows="3" maxlength="24000" placeholder="每行一个函数名或限定符号，精确匹配，例如 PaymentService.cancel" disabled></textarea></label>
+          <p class="context-note">留空使用本次冻结的源码范围。路径不支持通配符；同时填写路径和函数时取交集。未支持或解析失败的范围明确记录缺口。</p>
+        </details>
         <div class="form-row"><label>audit_id<input name="audit_id" pattern="[A-Za-z0-9][A-Za-z0-9._\x2d]{2,127}" placeholder="audit-2026-001" required></label><label>版本备注<input name="ref" value="当前目录快照" maxlength="200"></label></div>
         <p id="audit-source-description" class="context-note">目录不要求 Git。任务实际启动前会生成范围清单与逐文件摘要；多范围对象会保存，但在跨范围关联流水线启用前不能启动。</p>
         <div class="audit-contexts">
@@ -244,7 +273,7 @@
             <label>测试身份偏好<select name="runtime_identity"><option value="auto">由 Agent 根据环境说明判断</option><option value="anonymous">匿名访问（不需要登录）</option><option value="shared">一个授权测试账号</option><option value="distinct">多个隔离测试账号</option></select></label>
             <label class="check"><input name="runtime_test_input" type="checkbox"><span>允许使用无害标记测试应用输入</span></label>
             <label class="check"><input name="runtime_test_mutation" type="checkbox" disabled><span>自主探索暂不开放数据修改／删除操作</span></label>
-            <p class="context-note">启用环境开关即确认目标为你有权测试的环境，并授权所选参与方式与动作。你填写的整段内容会作为私有 prompt 完整交给 Agent，不要求固定账号字段、分行格式或 JSON。Agent 先理解环境，再进行必要登录和测试；确实缺少信息时说明具体缺口，静态审计继续。未启用或未填写时自动跳过；浏览器只访问从原文确认的授权目标。新建重试会回填原说明供你修改；环境原文和凭据不在任务列表、日志或报告中回显。动态支持证据仍进入独立三方复核。</p>
+            <p class="context-note">启用环境开关即确认目标为你有权测试的环境，并授权所选参与方式与动作。你填写的整段内容会作为私有 prompt 完整交给 Agent，不要求固定账号字段、分行格式或 JSON。Agent 先理解环境，再进行必要登录和测试；确实缺少信息时说明具体缺口，静态审计继续。未启用或未填写时自动跳过；浏览器只访问从原文确认的授权目标。重新审计会回填原说明供你修改；环境原文和凭据不在任务列表、日志或报告中回显。动态支持证据仍进入独立三方复核。</p>
           </section>
         </div>
         <div id="audit-form-error" class="notice error" hidden></div>

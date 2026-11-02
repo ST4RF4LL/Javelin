@@ -23,3 +23,10 @@
 - NEGATIVE：先独立查入口约束、权限守卫和反证，再读本批正方；REFUTED / NOT_REFUTED / INCONCLUSIVE，附 affirmative_sha256。
 - MODERATOR：核验双方和源码；TRUE_POSITIVE / FALSE_POSITIVE / INCONCLUSIVE，附 affirmative_sha256、negative_sha256。证据不足保留 INCONCLUSIVE，不能凭先前结论填充。
 - 共享源码位置只用于复用证据；不同攻击前提、调用入口和安全边界仍逐项判断，不能批量复制裁决。完成本批即返回结果路径，不主动领取下一批。
+
+
+## 增量轮次的既有复核复用
+
+后台只在旧批次证据、关联输入及源码快照均未变化时考虑复用。三个角色均可额外提供 `dependency_scope:{complete:true,source_paths:["src/handler.ts","src/guard.ts"]}`，声明已经核查本批结论所依赖的全部调用方、被调用方、配置及策略源码。无法证明依赖范围完整时省略该字段或设 complete=false；不得为了减少复核次数填写完整。正常交付不要求该字段，缺少完整声明时下轮会重新复核。
+
+平台校验声明覆盖候选、原始报告与三方证据引用，并检查新增或变化工作项的源码与报告路径；引用无法定位、依赖不完整、相关路径有新证据时均不复用。历史批次仍保留原输入、真实会话和摘要，不把旧文档改绑成新会话。质量复核仍检查整个本轮输入，未执行工作项与缺口不能因复用而消失。

@@ -5,7 +5,7 @@ import { randomUUID } from "node:crypto";
 import { mkdir, readFile, rm } from "node:fs/promises";
 import { dirname, join } from "node:path";
 import { fileURLToPath } from "node:url";
-import { PROTOCOL, atomicJson, check, controlledBytes, hash } from "./contract.mjs";
+import { PROTOCOL, atomicJson, check, controlledBytes, hash, hasMiningStrategy } from "./contract.mjs";
 import { TaskBoardStore } from "./store.mjs";
 import { acceptReview, finalizeBoard, prepareReview } from "./review.mjs";
 import { correctReport } from "./report-correction.mjs";
@@ -17,6 +17,8 @@ import { FileFactsCache, nextFileBatch, completeFileBatch, relatedTasks } from "
 import { vulnerabilityScope } from "./vulnerability-scope.mjs";
 import { operationTimeout, timeoutRecoveryPolicy, timeoutRetryDelay, waitForTimeoutRetry } from "../audit-runtime/operation-timeout.mjs";
 import { prepareAgentLaunch, normalizeAgentLine } from "../audit-runtime/engines/index.mjs";
+
+import { buildCreedInventory, creedTasks, runCreedWorker } from "../creed/index.mjs";
 
 const guardian = fileURLToPath(new URL("./worker-host.mjs", import.meta.url));
 const instructionPath = fileURLToPath(new URL("./worker.md", import.meta.url));
@@ -40,25 +42,40 @@ export async function workerConfiguration(environment, task, startupScope = null
 
 export class TaskBoardService {
   constructor({ path, reportsRoot, privateRoot, workspaceRoot, sourceRoot, auditId, scopeDigest, environment = process.env, command = "opencode", engine = "opencode", model = null,
-    runtimeRequired = false, bacMode = "off", concurrency = 4, leaseMs = 30 * 60_000, onChange = async () => {}, onLog = async () => {}, onPauseRequested = async () => {}, worker = null, spawnProcess = spawn, memory = null, agentSlots = globalAgentSlots, fileManifestPath = null, getTimeoutRecoveryPolicy = null }) {
+    runtimeRequired = false, bacMode = "off", concurrency = 4, leaseMs = 30 * 60_000, onChange = async () => {}, onLog = async () => {}, onPauseRequested = async () => {}, worker = null, spawnProcess = spawn, memory = null, agentSlots = globalAgentSlots, fileManifestPath = null, creedOptions = {}, getTimeoutRecoveryPolicy = null }) {
     Object.assign(this, { path, reportsRoot, privateRoot, workspaceRoot, sourceRoot, auditId, scopeDigest, environment, command, model, runtimeRequired, bacMode, leaseMs, onLog, worker, spawnProcess });
     this.engine = engine;
     this.concurrency = Math.min(6, Math.max(1, concurrency)); this.token = randomUUID(); this.active = new Map(); this.paused = false; this.closed = false; this.lastDispatch = new Map();
     this.memory = memory; this.memoryTokens = new Map(); this.agentSlots = agentSlots;
-    this.fileManifestPath = fileManifestPath;
+    this.fileManifestPath = fileManifestPath; this.creedOptions = creedOptions;
     this.onPauseRequested = onPauseRequested;
     this.getTimeoutRecoveryPolicy = getTimeoutRecoveryPolicy ?? (() => timeoutRecoveryPolicy(this.environment));
     this.store = new TaskBoardStore({ path, reportsRoot, auditId, scopeDigest, onChange });
   }
   async start() {
+    this.starting = true;
     try {
       await this.store.open(); this.unsubscribeSlots = this.agentSlots.subscribe(() => this.pump()); await mkdir(this.privateRoot, { recursive: true });
       const board = this.store.snapshot();
-      if (board.mining_strategy === "file_sweep") {
+      if (hasMiningStrategy(board, "file_sweep")) {
         check(this.fileManifestPath, "逐文件模式缺少冻结文件清单。");
         await this.store.initializeFiles(JSON.parse(await readFile(this.fileManifestPath, "utf8")));
         const rules = await Promise.all(["./workflow.md", "./file-screening.md", "../../agents/security-threat-modeler.md"].map(path => readFile(new URL(path, import.meta.url), "utf8")));
         if (!["off", "blind"].includes(this.environment.AUDIT_MEMORY_MODE)) this.fileFacts = new FileFactsCache({ root: join(this.reportsRoot, "task-board", "file-facts"), rulesDigest: hash(JSON.stringify(rules)) });
+      }
+      if (hasMiningStrategy(board, "creed") && !board.active_round) {
+        check(this.fileManifestPath, "CREED 缺少冻结源码清单。");
+        if (!board.creed_inventory) {
+          const inventory = await buildCreedInventory({ sourceRoot: this.sourceRoot,
+            manifest: JSON.parse(await readFile(this.fileManifestPath, "utf8")), options: this.creedOptions });
+          await this.store.mutate(next => { next.creed_inventory = inventory; });
+        }
+        const next = this.store.snapshot();
+        if (next.strategy_runs?.find(run => run.strategy_id === "creed")?.state === "OPEN") {
+          const pending = creedTasks(next.creed_inventory).filter(task => !next.tasks.some(row => row.task_id === task.task_id));
+          for (let index = 0; index < pending.length; index += 100) await this.store.publish({ tasks: pending.slice(index, index + 100) });
+          await this.store.seal({ strategy_id: "creed", empty_reason: "冻结源码范围未提取到可完整分析的函数；提取记录与缺口已保留。" });
+        }
       }
       if (board.bac_analysis) check(board.bac_analysis.mode === this.bacMode, "任务面板与运行配置的专项选择不同。");
       else if (!board.tasks.length && !board.final_report) await this.store.mutate(next => { next.bac_analysis = { ...bacSelection(this.bacMode), task_plan_contract: TASK_PLAN }; });
@@ -67,7 +84,7 @@ export class TaskBoardService {
       this.endpoint = `http://127.0.0.1:${this.server.address().port}`;
       this.connectionPath = join(this.privateRoot, "endpoint.json");
       await atomicJson(this.connectionPath, { protocol: PROTOCOL, endpoint: this.endpoint, token: this.token });
-      this.timer = setInterval(() => this.pump(), 15_000); this.timer.unref?.(); this.pump(); return this;
+      this.timer = setInterval(() => this.pump(), 15_000); this.timer.unref?.(); this.starting = false; this.pump(); return this;
     } catch (error) { await this.shutdown(); throw error; }
   }
   async handle(request, response) {
@@ -90,7 +107,7 @@ export class TaskBoardService {
       else if (request.url === "/list") {
         const board = this.store.snapshot();
         const offset = Math.max(0, Number(body.offset) || 0), limit = Math.min(100, Math.max(1, Number(body.limit) || 25));
-        const rows = body.source === "api" ? board.api_sources : board.tasks.filter(task => !body.status || task.status === body.status);
+        const rows = body.source === "api" ? board.api_sources : board.tasks.filter(task => (!body.status || task.status === body.status) && (!body.strategy_id || task.strategy_id === body.strategy_id));
         result = { total: rows.length, items: rows.slice(offset, offset + limit), next_offset: offset + limit < rows.length ? offset + limit : null };
       } else if (request.url === "/files") result = this.store.files(body);
       else if (["/file-batch", "/file-batch-complete"].includes(request.url)) {
@@ -132,7 +149,7 @@ export class TaskBoardService {
     }
   }
   pump() {
-    if (this.closed || this.paused) return;
+    if (this.closed || this.paused || this.starting) return;
     if (this.pumping) { this.pumpRequested = true; return; }
     this.pumpRequested = false;
     this.pumping = this.dispatch().catch(error => this.log("stderr", `任务调度失败：${error.message}`)).finally(() => {
@@ -145,7 +162,8 @@ export class TaskBoardService {
   }
   async dispatch() {
     while (!this.closed && !this.paused && this.active.size < this.concurrency) {
-      const domains = [...new Set(this.store.snapshot().tasks.filter(task => task.status === "PENDING" && !this.active.has(task.domain)).map(task => task.domain))]
+      const board = this.store.snapshot();
+      const domains = [...new Set(board.tasks.filter(task => task.status === "PENDING" && !this.active.has(task.domain) && (!board.active_round || board.active_round.work_item_ids.includes(task.task_id))).map(task => task.domain))]
         .sort((a, b) => (this.lastDispatch.get(a) ?? 0) - (this.lastDispatch.get(b) ?? 0));
       if (!domains.length) return;
       const domain = domains[0], release = this.agentSlots.tryAcquire(`${this.auditId}:${domain}`);
@@ -155,7 +173,7 @@ export class TaskBoardService {
       if (!job) { release(); return; }
       const active = { job, controller: new AbortController(), promise: null }; this.active.set(domain, active); this.lastDispatch.set(domain, Date.now());
       active.promise = this.execute(active).catch(async error => {
-        try { await this.store.fail(job.task.task_id, job.attempt.attempt_id, error.message, { interrupted: active.controller.signal.aborted }); }
+        try { await this.store.fail(job.task.task_id, job.attempt.attempt_id, error.message, { interrupted: active.controller.signal.aborted, terminal: job.task.strategy_id === "creed", kind: error.code ?? "EXECUTION_FAILED" }); }
         catch (persistenceError) {
           this.paused = true;
           await this.log("stderr", `任务状态无法保存，调度已暂停：${persistenceError.message}`);
@@ -168,10 +186,11 @@ export class TaskBoardService {
   }
   async execute(active) {
     const { job, controller } = active;
+    const isCreed = job.task.strategy_id === "creed";
     const workRoot = join(this.privateRoot, "attempts", job.attempt.attempt_id);
     await mkdir(workRoot, { recursive: true });
     let memoryContext = null, memoryToken = null;
-    if (this.memory) {
+    if (this.memory && !isCreed) {
       try {
         const memoryMode = job.task.agent_mining?.track === "blind" || this.environment.AUDIT_MEMORY_MODE === "blind" ? "blind" : null;
         memoryContext = await this.memory.context(job.task.task_id, memoryMode);
@@ -180,7 +199,7 @@ export class TaskBoardService {
       } catch (error) { memoryContext = { status: "GAP", reason: error.message }; }
     }
     let agentMiningContext = null;
-    if (job.task.agent_mining) {
+    if (!isCreed && job.task.agent_mining) {
       try {
         const prepared = await prepareMining({ sourceRoot: this.sourceRoot, outputRoot: workRoot, auditId: this.auditId,
           taskId: job.task.task_id, attemptId: job.attempt.attempt_id, scopeDigest: this.scopeDigest, config: { ...job.task.agent_mining, ...(memoryContext?.binding?.mode === "blind" || this.environment.AUDIT_MEMORY_MODE === "blind" ? { track: "blind" } : {}) }, environment: this.environment });
@@ -188,7 +207,7 @@ export class TaskBoardService {
       } catch (error) { agentMiningContext = { agent_mining_gap: `Agent 静态挖掘准备失败：${error.message}` }; }
     }
     let bacContext = null;
-    if (taskBacEnabled(this.store.snapshot()) && BAC_AGENTS.has(job.task.agent_name)) {
+    if (!isCreed && taskBacEnabled(this.store.snapshot()) && BAC_AGENTS.has(job.task.agent_name)) {
       try {
         const ref = await prepareTaskBacPlan({ board: this.store.snapshot(), task: job.task, attempt: job.attempt, reportsRoot: this.reportsRoot, sourceRoot: this.sourceRoot });
         await this.store.mutate(board => { board.attempts.find(row => row.attempt_id === job.attempt.attempt_id).bac_plan = ref; });
@@ -200,11 +219,11 @@ export class TaskBoardService {
       }
     }
     const input = { protocol: PROTOCOL, audit_id: this.auditId, task: job.task, attempt_id: job.attempt.attempt_id,
-      vulnerability_mining_scope: await vulnerabilityScope(job.task, { memoryMode: memoryContext?.binding?.mode === "blind" ? "blind" : this.environment.AUDIT_MEMORY_MODE }),
+      vulnerability_mining_scope: isCreed ? null : await vulnerabilityScope(job.task, { memoryMode: memoryContext?.binding?.mode === "blind" ? "blind" : this.environment.AUDIT_MEMORY_MODE }),
       source_root: this.sourceRoot, scope_digest: this.scopeDigest, output_root: workRoot, report_path: join(workRoot, "report.json"), receipt_path: join(workRoot, "receipt.json"),
       report_check_cli: join(this.workspaceRoot, ".opencode", "scripts", "task-report-check.mjs"),
       memory_context: memoryContext, memory_cli: this.memory ? join(this.workspaceRoot, ".opencode", "scripts", "audit-memory.mjs") : null,
-      reports_root: this.reportsRoot, session_path: join(workRoot, "session.json"), ...bacContext, ...agentMiningContext, bac_mode: this.bacMode, runtime_protocol: this.runtimeRequired ? this.environment.AUDIT_RUNTIME_PROTOCOL || "runtime-testing.v1" : null };
+      reports_root: this.reportsRoot, session_path: join(workRoot, "session.json"), ...bacContext, ...agentMiningContext, bac_mode: isCreed ? "off" : this.bacMode, runtime_protocol: this.runtimeRequired ? this.environment.AUDIT_RUNTIME_PROTOCOL || "runtime-testing.v1" : null };
     const inputPath = join(workRoot, "input.json"); await atomicJson(inputPath, input);
     let timedOut = false, receiptSnapshot = null, capturing = null, captureStopped = false;
     const deadline = performance.now() + this.leaseMs;
@@ -228,7 +247,11 @@ export class TaskBoardService {
     }, this.leaseMs); timer.unref?.();
     const canReceive = () => !active.deliveryRevoked && !controller.signal.aborted && !this.paused && !this.closed;
     try {
-      const pending = this.worker ? this.worker({ job, input, inputPath, workRoot, signal: controller.signal }) : this.runWorker({ job, inputPath, signal: controller.signal, startupScope: input.vulnerability_mining_scope });
+      const pending = this.worker ? this.worker({ job, input, inputPath, workRoot, signal: controller.signal })
+        : isCreed ? runCreedWorker({ job, input, workRoot, sourceRoot: this.sourceRoot, workspaceRoot: this.workspaceRoot,
+          engine: this.engine, command: this.command, model: this.model, environment: this.environment,
+          signal: controller.signal, spawnProcess: this.spawnProcess, onLog: (stream, line) => this.log(stream, line) })
+          : this.runWorker({ job, inputPath, signal: controller.signal, startupScope: input.vulnerability_mining_scope });
       captureReceipt();
       const result = await pending;
       if (!canReceive()) throw new Error(timedOut ? "任务执行超时。" : "任务调度已暂停或停止。");
@@ -252,7 +275,8 @@ export class TaskBoardService {
       }
       const interrupted = active.deliveryRevoked || this.paused || this.closed || controller.signal.aborted && !timedOut;
       if (!received) await this.store.fail(job.task.task_id, job.attempt.attempt_id,
-        timedOut && !interrupted ? "任务执行超时。" : error.message, { interrupted, terminal: !interrupted && error.recovery_exhausted === true });
+        timedOut && !interrupted ? "任务执行超时。" : error.message, { interrupted, terminal: !interrupted && (isCreed || error.recovery_exhausted === true),
+          kind: timedOut ? "EXECUTION_TIMEOUT" : error.code === "opencode-operation-timeout" ? "MODEL_TIMEOUT" : error.code ?? "EXECUTION_FAILED" });
     } finally {
       clearTimeout(timer); stopCapture(); controller.signal.removeEventListener("abort", stopCapture);
       if (memoryToken) this.memoryTokens.delete(memoryToken);

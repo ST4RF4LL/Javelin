@@ -59,7 +59,7 @@ function groupedGaps(model) {
 
 export function renderStructuredBoardReport(model) {
   const noReports = model.report_version >= 2 && model.delivery_outcome === "NO_REPORTS";
-  const summary = model.summary, lines = [noReports ? "# 审计执行失败记录" : "# 安全审计报告", ""];
+  const summary = model.summary, workItem = model.report_version >= 4 ? "工作项" : "任务", lines = [noReports ? "# 审计执行失败记录" : "# 安全审计报告", ""];
   const section = (level, name) => lines.push(`${"#".repeat(level)} ${title(name)}`, "");
   const field = (label, value) => lines.push(`**${label}：** ${text(value) ?? ""}`, "");
   section(2, "1. 审计概览");
@@ -81,14 +81,14 @@ export function renderStructuredBoardReport(model) {
   }
   field(model.audit_mode === "dynamic" ? "授权环境范围摘要" : "源码范围摘要", model.scope_digest);
   section(3, "1.2 漏洞挖掘策略");
-  lines.push(model.audit_mode === "dynamic" ? "本次为独立动态测试：根据授权环境中的实际页面与请求建立基线，进行有界实验并独立复核。不包含源码审计；部署版本与源码映射为 UNKNOWN。" : summary.mining_strategy === "file_sweep"
+  lines.push(summary.mining_strategies?.length ? `本次启用：${summary.mining_strategies.map(id => ({focus_area:"Focus Area 风险优先",api:"逐 API 审查",file_sweep:"逐文件浏览与深入审查",creed:"CREED 假设驱动"}[id] ?? id)).join("、")}。各方式共享冻结源码范围，分析结果与覆盖分母独立；交付完成不证明没有漏洞。` : model.audit_mode === "dynamic" ? "本次为独立动态测试：根据授权环境中的实际页面与请求建立基线，进行有界实验并独立复核。不包含源码审计；部署版本与源码映射为 UNKNOWN。" : summary.mining_strategy === "file_sweep"
     ? "本次采用逐文件地毯式威胁发现策略：威胁分析 Agent 逐个浏览冻结范围内的文本文件，将可疑区域发布为 Focus Area，由专业 Agent 领取深入审计。文件已浏览不等于已完成深入审计或不存在漏洞。"
     : summary.mining_strategy === "api"
     ? "本次采用逐接口 API 审查策略，逐项分析用户提供清单中的接口。交付比例不代表已发现所有漏洞，也不证明接口清单覆盖全部应用入口。"
     : summary.mining_strategy === "focus_area"
       ? "本次采用高风险 Focus Area 策略，对威胁建模识别的高风险主题定向深入分析。交付比例不代表已发现所有漏洞或已逐一审查全部接口。"
       : "Focus Area 为高风险定向审查；API 为用户提供清单中的逐接口审查。交付比例不代表已发现所有漏洞，也不证明接口清单覆盖全部应用入口。", "");
-  section(3, "1.3 任务交付与结论范围");
+  section(3, `1.3 ${workItem}交付与结论范围`);
   if (model.audit_mode === "dynamic") lines.push("动态结果仅适用于本次授权环境和观察范围；没有复现不等于安全。执行、证据支持与最终裁定分别记录。", "");
   else if (noReports) lines.push("**审计执行未完成：本轮未收到任何源码审计报告，全部任务均登记为执行缺口。以下内容仅记录失败原因与缺口，无法据此判断目标是否存在漏洞。修复执行问题后须重新创建审计。**", "");
   else if (model.report_version >= 2 && model.delivery_outcome === "PARTIAL") lines.push(summary.file_sweep
@@ -99,9 +99,15 @@ export function renderStructuredBoardReport(model) {
   if (model.source_followup) lines.push(`独立源码补充轮次：${model.source_followup.path}；初始静态任务分母保持不变。`, "");
   if (model.runtime_exploration) lines.push(`动态探索：观察入口 ${model.runtime_exploration.scope_count} 个，规划 ${model.runtime_exploration.rounds} 轮，实验 ${model.runtime_exploration.intent_count} 项。`,
     model.runtime_exploration.summary, `完整探索记录：${model.runtime_exploration.path}；SHA-256：${model.runtime_exploration.sha256}。`, "");
-  if (model.audit_mode !== "dynamic") lines.push(`任务 ${summary.total} 项，收到报告 ${summary.reported} 项，执行缺口 ${summary.gap} 项。`, "");
-  if (model.audit_mode !== "dynamic" && summary.mining_strategy !== "api") lines.push(`- Focus Area：${summary.tracks.focus_area.reported}/${summary.tracks.focus_area.total}。`);
-  if (model.audit_mode !== "dynamic" && !["focus_area", "file_sweep"].includes(summary.mining_strategy)) lines.push(`- API 任务：${summary.tracks.api.reported}/${summary.tracks.api.total}。`, `- 用户提交 API ${summary.api_inventory.submitted} 项，相关任务全部交付 ${summary.api_inventory.reported} 项。`);
+  if (model.audit_mode !== "dynamic") lines.push(`${workItem} ${summary.total} 项，收到报告 ${summary.reported} 项，执行缺口 ${summary.gap} 项。`, "");
+  if (model.audit_mode !== "dynamic" && !summary.mining_strategies && summary.mining_strategy !== "api") lines.push(`- Focus Area：${summary.tracks.focus_area.reported}/${summary.tracks.focus_area.total}。`);
+  if (model.audit_mode !== "dynamic" && !summary.mining_strategies && !["focus_area", "file_sweep"].includes(summary.mining_strategy)) lines.push(`- API 任务：${summary.tracks.api.reported}/${summary.tracks.api.total}。`, `- 用户提交 API ${summary.api_inventory.submitted} 项，相关任务全部交付 ${summary.api_inventory.reported} 项。`);
+  if (summary.strategy_coverage) for (const [id, coverage] of Object.entries(summary.strategy_coverage)) {
+    const name = { focus_area: "Focus Area", api: "逐 API", file_sweep: "逐文件", creed: "CREED" }[id] ?? id;
+    lines.push(`- ${name}：工作项交付 ${coverage.reported}/${coverage.total}，执行缺口 ${coverage.gap}，失败 ${coverage.failed}。`);
+    if (id === "api") lines.push(`- 用户 API 清单：已交付 ${coverage.reported_apis}/${coverage.submitted_apis} 个接口。`);
+    if (id === "creed") lines.push(`- CREED 当前函数清单交付 ${coverage.reported}/${coverage.eligible_functions}；未纳入函数 ${coverage.omitted_functions ?? 0}；提取缺口 ${coverage.inventory_gaps} 项；清单${coverage.inventory_complete ? "完整" : "存在缺口"}。`);
+  }
   if (summary.file_sweep) {
     const sweep = summary.file_sweep;
     lines.push(`- 文件已浏览 ${sweep.browsed_files}/${sweep.eligible_files}；浏览缺口 ${sweep.gap_files}；非文本／链接排除 ${sweep.excluded_files}；范围排除记录 ${sweep.scope_exclusions} 项。`);
@@ -122,7 +128,7 @@ export function renderStructuredBoardReport(model) {
   if (model.incremental_rounds?.length) {
     section(3, "增量审计记录");
     for (const round of model.incremental_rounds) {
-      lines.push(`- 第 ${round.number} 轮：${round.started_at}；增补任务 ${round.task_ids.length} 项、文件浏览 ${round.file_ids.length} 项。`);
+      lines.push(model.report_version >= 4 ? `- 第 ${round.number} 轮：${round.started_at}；重试失败工作项 ${round.task_ids.length} 项。` : `- 第 ${round.number} 轮：${round.started_at}；增补任务 ${round.task_ids.length} 项、文件浏览 ${round.file_ids.length} 项。`);
       if (round.previous.report) lines.push(`  原报告：${round.previous.report.path}；SHA-256：${round.previous.report.sha256}。`);
       lines.push(`  原任务面板：${round.previous.board.path}。`);
     }
@@ -132,7 +138,13 @@ export function renderStructuredBoardReport(model) {
   model.findings.forEach((row, index) => {
     section(3, `2.${index + 1} ${row.title ?? row.finding_id}`);
     field("漏洞标识", row.finding_id);
-    field("来源任务", model.tasks.find(task => task.task_id === row.task_id)?.title ?? row.task_id);
+    field(`来源${workItem}`, model.tasks.find(task => task.task_id === row.task_id)?.title ?? row.task_id);
+    if (model.report_version >= 4 && row.strategy_ids) field("挖掘方式", row.strategy_ids.join("、"));
+    if (model.report_version >= 4 && row.occurrences) field("原始发现标识", row.occurrences.map(item => item.finding_id).join("、"));
+    if (model.report_version >= 4 && row.creed_analysis) {
+      section(4, "开发者假设与失效条件");
+      lines.push(code(JSON.stringify(row.creed_analysis, null, 2)), "");
+    }
     section(4, "漏洞说明");
     lines.push(row.description ?? row.summary ?? "", "");
     section(4, "严重性与代码位置");
@@ -147,12 +159,12 @@ export function renderStructuredBoardReport(model) {
   });
   if (!model.findings.length) lines.push(noReports ? "没有可供源码漏洞复核的审计报告；本轮无法形成源码安全结论。" : "本次未形成经三方复核确认的源码漏洞。", "");
 
-  section(2, "3. 任务复核明细");
+  section(2, `3. ${workItem}复核明细`);
   model.tasks.forEach((task, index) => {
     const review = model.assessments.find(row => row.task_id === task.task_id);
     section(3, `3.${index + 1} ${task.title}`);
-    field("任务标识", task.task_id);
-    field("审计粒度 / 领域", `${task.kind === "api" ? "API" : "Focus Area"} / ${task.domain}`);
+    field(`${workItem}标识`, task.task_id);
+    field("审计粒度 / 领域", `${task.kind === "api" ? "API" : task.kind === "function" ? "函数" : "Focus Area"} / ${task.domain}`);
     section(4, "复核结论与依据");
     field("复核状态", review?.status === "REVIEWED" ? "已复核" : "存在缺口或待补充");
     lines.push(review?.reason ?? task.reason ?? "", "");

@@ -95,7 +95,7 @@ export class ProductAuditService {
         const options = repo.repo_options ?? {};
         await this.createAudit({ target_id: repo.target_id, execution_spec: repo.target_snapshot, execution_spec_digest: repo.target_digest,
           audit_id: auditId, name: `${campaign.name} · ${repo.name}${job.kind === 'FOLLOWUP' ? ' · 定向补审' : ''}`, engine: campaign.spec.engine ?? 'opencode', model: campaign.spec.model, task_protocol: 'task-board.v1', product_campaign_id: campaign.id,
-          memory_mode: campaign.spec.memory_mode, mining_strategy: options.mining_strategy ?? 'focus_area', api_inventory: options.api_inventory ?? '', bac_analysis: options.bac_analysis ?? 'auto',
+          memory_mode: campaign.spec.memory_mode, ...(options.mining_strategies ? { mining_strategies: options.mining_strategies } : { mining_strategy: options.mining_strategy ?? 'focus_area' }), api_inventory: options.api_inventory ?? '', ...(options.creed_options ? { creed_options: options.creed_options } : {}), bac_analysis: options.bac_analysis ?? 'auto',
           additional_instructions_enabled: true, additional_instructions: instructions, test_environment_enabled: false, test_environment_context: '' }, `product-job:${job.id}`);
       }
       if (!this.products.auditLink(auditId)) await this.products.linkAudit({ auditId, productId: campaign.product_id, targetId: repo.target_id, snapshot: repo.target_snapshot, snapshotDigest: repo.target_digest });

@@ -31,7 +31,14 @@ async function fixture(t, options = {}) {
     }, ...options });
   runner.setQueueScheduler({ async enqueueNewAudit() { return true; } });
   await runner.ready;
-  t.after(async () => { await runner.shutdown().catch(() => {}); await rm(root, { recursive: true, force: true }); });
+  t.after(async () => {
+    await runner.shutdown();
+    // The fixture emits process close in a microtask; drain its final persistence before removing state.
+    await new Promise(resolve => setImmediate(resolve));
+    while (runner.completions.size) await Promise.allSettled([...runner.completions.values()]);
+    while (runner.writeQueues.size) await Promise.allSettled([...runner.writeQueues.values()]);
+    await rm(root, { recursive: true, force: true });
+  });
   const snapshot = { target_id: 'native-fixture', target_name: '当前会话测试', source_scopes: [{ id: 'source-one', path: source }] };
   const input = { target_id: snapshot.target_id, execution_spec: snapshot, execution_spec_digest: createHash('sha256').update(JSON.stringify(snapshot)).digest('hex'), bac_analysis: 'off' };
   const registration = { registration_id: 'registration-one', source_root: source,
@@ -44,14 +51,16 @@ async function unfinishedBoard(f, audit) {
   audit.paths = await f.runner.prepareExecutionWorkspace(audit, f.runner.repositoryForAudit(audit));
   const store = await new TaskBoardStore({ path: audit.task_board_path, reportsRoot: audit.paths.reports_root, auditId: audit.id, scopeDigest: audit.source_baseline.scope_digest }).open();
   await store.publish({ tasks: [{ task_id: 'unfinished', kind: 'focus_area', title: '补查授权路径', domain: 'web', source_ref: 'threat:fixture', prompt: '分析 main.js', code_refs: [{ path: 'main.js', line: 1 }] }] });
-  const job = await store.claim('web', 5000);
-  await store.receive({ taskId: job.task.task_id, attemptId: job.attempt.attempt_id, inputRoot: f.root,
-    receipt: { protocol: 'task-board.v1', audit_id: audit.id, task_id: job.task.task_id, attempt_id: job.attempt.attempt_id, outcome: 'GAP', reason: '模型额度耗尽' } });
+  for (let index = 0; index < 3; index++) {
+    const job = await store.claim('web', 5000);
+    await store.fail(job.task.task_id, job.attempt.attempt_id, '模型额度耗尽');
+  }
+  await store.skip({ task_id: 'unfinished', reason: '执行失败达到重试上限' });
   await store.seal(); await store.close(); audit.status = 'completed'; audit.provider_session_id = 'ses_previous';
   return readBoard(audit.task_board_path);
 }
 
-test('Web 增量入口重开已完成缺口任务、同请求只入队一次、运行时拒绝重复，启动沿用 session', async t => {
+test('Web 增量入口重开已封存的失败工作项、同请求只入队一次、运行时拒绝重复，启动沿用 session', async t => {
   const f = await fixture(t), created = await f.runner.createAuditFromTarget(f.input, 'incremental-web');
   const audit = f.runner.audits.get(created.id); await unfinishedBoard(f, audit);
   audit.todo_completion = { complete: true, delivery_outcome: 'NO_REPORTS' };
@@ -240,7 +249,7 @@ for (const strategy of ['focus_area', 'file_sweep']) test(`原生当前会话 ${
   t.after(() => hub.close());
   const native = await hub.register({ ...f.registration, mining_strategy: strategy }), id = native.audit.id;
   const service = f.runner.taskBoardServices.get(id), store = service.store;
-  assert.equal(store.snapshot().mining_strategy, strategy);
+  assert.deepEqual(store.snapshot().mining_strategies, [strategy]);
   service.worker = async ({ job, input }) => {
     await atomicJson(input.report_path, { summary: '受控夹具：已检查入口代码，无漏洞候选。', findings: [], gaps: [] });
     await atomicJson(input.receipt_path, { protocol: 'task-board.v1', audit_id: id, task_id: job.task.task_id, attempt_id: input.attempt_id, outcome: 'REPORTED', report_path: 'report.json' });
@@ -446,5 +455,44 @@ test('原生 OpenCode 超时在当前 session 请求 recover，子会话错误�
   assert.equal(command.action, 'recover'); assert.match(command.prompt, /复用已交付制品/);
   await hub.heartbeat({ ...heartbeat, ack: { id: command.id } });
   assert.equal(audit.status, 'running'); assert.equal(audit.execution.session_id, f.registration.session.session_id);
+  assert.equal(f.launches.length, 0);
+});
+
+test('创建与重新审计草稿保留四种挖掘方式的全部非空组合，不启动模型或动态目标', async t => {
+  const f = await fixture(t), all = ['focus_area', 'api', 'file_sweep', 'creed'];
+  for (let mask = 1; mask < 16; mask++) {
+    const selected = all.filter((_, index) => mask & (1 << index));
+    const audit = await f.runner.createAuditFromTarget({ ...f.input, audit_id: `audit-multi-${mask}`, mining_strategies: selected,
+      api_inventory: selected.includes('api') ? 'GET /fixture' : '', ...(selected.includes('creed') ? { creed_options: { paths: ['src'], symbols: ['authorize'] } } : {}) }, `multi-${mask}`);
+    assert.deepEqual(audit.mining_strategies, selected);
+    const board = await readBoard(f.runner.audits.get(audit.id).task_board_path);
+    assert.deepEqual(board.mining_strategies, selected); assert.equal(board.mining_contract, 'mining-strategies.v1');
+    const draft = await f.runner.retryDraft(audit.id); assert.deepEqual(draft.mining_strategies, selected);
+    if (selected.includes('creed')) assert.deepEqual(draft.creed_options, { paths: ['src'], symbols: ['authorize'] });
+  }
+  assert.equal(f.launches.length, 0);
+});
+
+test('创建接口拒绝空策略、重复策略、字段冲突、缺失 API 及越界 CREED 范围', async t => {
+  const f = await fixture(t);
+  const invalid = [
+    { mining_strategies: [] }, { mining_strategies: ['creed', 'creed'] }, { mining_strategies: ['unknown'] },
+    { mining_strategies: ['api'] }, { mining_strategies: ['creed'], mining_strategy: 'focus_area' },
+    { mining_strategies: ['focus_area'], api_inventory: 'GET /fixture' },
+    { mining_strategies: ['creed'], creed_options: { paths: ['../outside'] } },
+  ];
+  for (const [index, input] of invalid.entries()) await assert.rejects(f.runner.createAuditFromTarget({ ...f.input, ...input }, `invalid-multi-${index}`), { statusCode: 422 });
+  assert.equal(f.runner.audits.size, 0); assert.equal(f.launches.length, 0);
+});
+
+test('没有失败工作项时 Web 查询和直接增量动作均拒绝且不改变看板', async t => {
+  const f = await fixture(t), created = await f.runner.createAuditFromTarget(f.input, 'no-failed-work');
+  const audit = f.runner.audits.get(created.id);
+  audit.status = 'completed';
+  const original = await readFile(audit.task_board_path, 'utf8');
+  const page = await f.runner.taskBoardPage(audit.id);
+  assert.equal(page.incremental.available, false); assert.match(page.incremental.reason, /没有执行失败/);
+  await assert.rejects(f.runner.action(audit.id, 'incremental', audit.version, 'empty-incremental'), /没有执行失败/);
+  assert.equal(await readFile(audit.task_board_path, 'utf8'), original);
   assert.equal(f.launches.length, 0);
 });

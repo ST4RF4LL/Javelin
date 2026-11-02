@@ -4,6 +4,7 @@ import type { Audit, AuditPage, Snapshot, FindingPage, Report, ReportContent, Au
 import { createUpstreamTransport } from './upstream-transport.js';
 import { readLocalTaskModels } from './local-models.js';
 import { createTaskInput, identifier, idempotencyKey, textField } from './task-contract.js';
+import { MINING_STRATEGIES } from '../shared/mining-strategies.js';
 
 type Row = Record<string, any>;
 type ReadPolicy = { timeoutMs?: number; label?: string; signal?: AbortSignal; format?: 'bytes' };
@@ -19,7 +20,7 @@ export function normalizeAudit(a: Row): Audit {
     canRetry: ['queued', 'failed', 'interrupted', 'cancelled', 'completed', 'artifact_only'].includes(a.status) && !!a.repository_id,
     executionIncomplete: a.execution_incomplete === true,
     status: a.status, progress: Number(a.progress) || 0, stage: a.stage || '等待调度', findings: Number(a.finding_count) || 0,
-    updatedAt: a.updated_at || a.created_at || '', version: a.version || 0, strategy: a.report_validation ? '基于最终报告动态验证' : a.audit_mode === 'dynamic' ? '独立动态测试' : a.mining_strategy === 'file_sweep' ? '逐文件地毯式审计' : a.mining_strategy === 'api' ? '逐接口 API 审查' : '高风险 Focus Area',
+    updatedAt: a.updated_at || a.created_at || '', version: a.version || 0, strategy: a.report_validation ? '基于最终报告动态验证' : a.audit_mode === 'dynamic' ? '独立动态测试' : (a.mining_strategies ?? a.task_board?.mining_strategies ?? [a.mining_strategy || 'focus_area']).map((id: string) => MINING_STRATEGIES.find(strategy => strategy.id === id)?.label || id).join('、'),
     model: a.model || '默认模型', tasks: { total: a.todo?.total || 0, done: a.todo?.done || 0, gap: a.todo?.gap || 0 },
     stages: (a.stages || []).map((s: Row) => ({ id: s.id, label: s.label || s.name || s.id, status: ['done', 'complete', 'completed', 'COMPLETE', 'DONE'].includes(s.state || s.status) ? 'done' : ['active', 'running', 'RUNNING'].includes(s.state || s.status) ? 'active' : 'pending' })),
     logs: [], source: 'live' };
@@ -146,17 +147,18 @@ export class LiveService {
     this.validId(id);
     const result = await this.read(`/api/v1/audits/${encodeURIComponent(id)}?live=1`);
     const audit = result.audit || result;
-    if (!normalizeAudit(audit).canRetry) throw new BadRequestException('当前任务状态不支持新建重试。');
+    if (!normalizeAudit(audit).canRetry) throw new BadRequestException('当前任务状态不支持重新审计。');
     const productId = identifier(audit.provenance?.audit_product_id || audit.provenance?.product_id || audit.product_id, '任务所属产品');
     const targetId = audit.audit_mode === 'dynamic' ? '' : identifier(audit.provenance?.target_id || audit.repository_id, '源码对象');
     const privateDraft = audit.status === 'artifact_only' ? {} : await this.write(`/api/v2/products/${encodeURIComponent(productId)}/audits/${encodeURIComponent(id)}/retry-draft`, {});
     const runtime = audit.runtime_testing;
-    return { productId, targetId, ...(audit.audit_mode ? { auditMode: audit.audit_mode } : {}), name: `${String(audit.name || id).replace(/（重试）$/u, '').slice(0, 156)}（重试）`,
+    return { productId, targetId, ...(audit.audit_mode ? { auditMode: audit.audit_mode } : {}), name: `${String(audit.name || id).replace(/（重试|重新审计）$/u, '').slice(0, 154)}（重新审计）`,
       ...(audit.report_validation ? { sourceReport: { report_id: audit.report_validation.report_id, report_sha256: audit.report_validation.report_sha256, model_sha256: audit.report_validation.model_sha256,
         ...(audit.report_validation.finding_ids === undefined ? {} : { finding_ids: audit.report_validation.finding_ids }) }, sourceFindingCount: audit.report_validation.finding_count } : {}),
       engine: privateDraft.engine || audit.engine || audit.execution?.engine || 'opencode',
       model: audit.model || 'default', memoryMode: privateDraft.memory_mode || audit.memory_mode || 'full', bacAnalysis: audit.bac_analysis?.mode || 'auto',
-      miningStrategy: privateDraft.mining_strategy || audit.mining_strategy || (privateDraft.api_inventory?.trim() ? 'api' : 'focus_area'), apiInventory: privateDraft.api_inventory || '',
+      miningStrategies: audit.audit_mode === 'dynamic' ? [] : privateDraft.mining_strategies ?? audit.mining_strategies ?? [privateDraft.mining_strategy || audit.mining_strategy || (privateDraft.api_inventory?.trim() ? 'api' : 'focus_area')], apiInventory: privateDraft.api_inventory || '',
+      ...(privateDraft.creed_options || audit.creed_options ? { creedOptions: privateDraft.creed_options || audit.creed_options } : {}),
       additionalInstructionsEnabled: privateDraft.additional_instructions_enabled === true, additionalInstructions: privateDraft.additional_instructions || '',
       testEnvironmentEnabled: privateDraft.test_environment_enabled === true, testEnvironmentContext: privateDraft.test_environment_context || '',
       runtimeTesting: { mode: runtime?.mode || 'CONTACT_ONLY', budgetMinutes: runtime?.budget_minutes || 60, identityMode: runtime?.identity_mode || 'auto', testInput: runtime?.allowed_actions?.includes('test_input') === true, testMutation: runtime?.allowed_actions?.includes('test_mutation') === true },
@@ -210,7 +212,7 @@ export class LiveService {
     return { productId: identifier(value.product_id, '报告所属产品'), targetId: '', auditMode: 'dynamic', sourceReport: value.source_report, sourceFindingCount: value.finding_count,
       ...(value.finding_title ? { sourceFindingTitle: String(value.finding_title) } : {}),
       name: `${String(value.finding_title || value.source_audit_id).slice(0, 140)} · ${value.finding_title ? '单漏洞动态验证' : '报告动态验证'}`, engine: value.engine, model: value.model,
-      miningStrategy: 'focus_area', apiInventory: '', memoryMode: 'off', bacAnalysis: 'off',
+      miningStrategies: [], apiInventory: '', memoryMode: 'off', bacAnalysis: 'off',
       additionalInstructionsEnabled: false, additionalInstructions: '', testEnvironmentEnabled: false, testEnvironmentContext: '',
       runtimeTesting: { mode: 'TARGETED_CONFIRMATION', budgetMinutes: 60, identityMode: 'auto', testInput: false, testMutation: false } };
   }

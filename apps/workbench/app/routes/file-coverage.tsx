@@ -75,7 +75,7 @@ export default function FileCoverage() {
         <div className="coverage-note"><Files size={18} /><p>黄色表示关联了 Focus Area，灰色表示暂无关联。当前统计仅反映任务定位，<strong>不代表文件已审查或漏洞已确认。</strong></p></div>
         {data.file_sweep && <section className="panel file-sweep-progress" aria-label="逐文件威胁发现进度"><strong>文件已浏览 {data.file_sweep.browsed_files}/{data.file_sweep.eligible_files} · {data.file_sweep.browse_percentage}%</strong><p>浏览中 {data.file_sweep.reading_files} · 待浏览 {data.file_sweep.pending_files} · 浏览缺口 {data.file_sweep.gap_files} · 已排除 {data.file_sweep.excluded_files} · 已发布 Focus Area {data.file_sweep.published_areas}</p><p className="small-muted">威胁分析 Agent 逐文件初筛，专业 Agent 领取 Focus Area 后深入审计。浏览进度与深入审计分别统计。</p></section>}
         {coverage.error && <div className="task-alert" role="alert">刷新失败，当前显示上次结果。{coverage.error.message}</div>}
-        {!data.association_available && <div className="task-alert">本次历史任务没有通用任务面板定位记录，暂时只展示文件清单。</div>}
+        {!data.association_available && <div className="task-alert">本次历史任务没有工作项看板定位记录，暂时只展示文件清单。</div>}
         {!data.inventory_complete && <div className="task-alert">本次文件清单存在 {data.summary.inventory_errors} 个枚举错误，当前范围不完整。</div>}
         <div className="coverage-metrics">
           <section className="panel"><span>范围内文件</span><strong>{data.summary.total_files.toLocaleString()}</strong><small>本次审计保存的文件清单</small></section>

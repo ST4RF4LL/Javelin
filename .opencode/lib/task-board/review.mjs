@@ -1,15 +1,19 @@
 import { readFile, writeFile, mkdir } from "node:fs/promises";
 import { dirname, join } from "node:path";
-import { PROTOCOL, atomicJson, check, controlledBytes, deliveryOutcome, digest, hash, summarize, timestamp } from "./contract.mjs";
+import { PROTOCOL, atomicJson, check, controlledBytes, deliveryOutcome, digest, hash, summarize, timestamp, miningStrategies } from "./contract.mjs";
 import { readBoard } from "./store.mjs";
 import { runtimeCandidates, verifyRuntimeEvidenceFiles } from "../runtime-testing/evidence.mjs";
+import { groupConfirmedFindings } from "./finding-groups.mjs";
 import { renderStructuredBoardReport } from "./report.mjs";
 import { summarizeTaskBac, taskBacEnabled } from "./bac.mjs";
 import { BAC_EVIDENCE_STRUCTURE_ERROR } from "../bac/contract.mjs";
 import { assembleBatchBundle, prepareReviewBatches, validateBatchBundle } from "./review-batches.mjs";
 
 const nonempty = value => typeof value === "string" && value.trim();
-const reviewState = board => ({ ...(board.audit_mode ? { audit_mode: board.audit_mode } : {}), ...(board.source_followup ? { source_followup: board.source_followup } : {}), scope_digest: board.scope_digest, api_sources_digest: digest(board.api_sources), publication: board.publication, tasks: board.tasks.map(task => ({ task_id: task.task_id, spec_digest: task.spec_digest, status: task.status, report: task.report, reason: task.reason })), ...(board.mining_strategy ? { mining_strategy: board.mining_strategy } : {}),
+const strategyBinding = board => board.mining_strategies ? { mining_contract: board.mining_contract,
+  mining_strategies: board.mining_strategies, strategy_runs: board.strategy_runs,
+  ...(board.creed_inventory ? { creed_inventory_digest: digest(board.creed_inventory) } : board.creed_inventory_digest ? { creed_inventory_digest: board.creed_inventory_digest } : {}) } : {};
+const reviewState = board => ({ ...(board.audit_mode ? { audit_mode: board.audit_mode } : {}), ...(board.source_followup ? { source_followup: board.source_followup } : {}), ...strategyBinding(board), ...(board.active_round ? { active_round: board.active_round } : {}), scope_digest: board.scope_digest, api_sources_digest: digest(board.api_sources), publication: board.publication, tasks: board.tasks.map(task => ({ task_id: task.task_id, spec_digest: task.spec_digest, status: task.status, report: task.report, reason: task.reason })), ...(board.mining_strategy ? { mining_strategy: board.mining_strategy } : {}),
   ...(board.incremental_rounds?.length ? { incremental_rounds: board.incremental_rounds } : {}),
   ...(board.file_sweep ? { file_sweep_digest: digest(board.file_sweep) } : {}),
   ...(board.report_corrections?.length ? { report_corrections: board.report_corrections } : {}),
@@ -18,8 +22,9 @@ const reviewState = board => ({ ...(board.audit_mode ? { audit_mode: board.audit
     return { task_id: task.task_id, attempt_id: task.attempt_id, bac_plan: attempt?.bac_plan, bac_gap: attempt?.bac_gap, session_id: attempt?.session_id };
   }) } : {}) });
 const binding = (path, bytes) => ({ path, sha256: hash(bytes) });
-const sourceCandidate = (taskId, index, finding) => ({ candidate_id: `candidate-${hash(`${taskId}:${index}:${digest(finding)}`).slice(0, 32)}`,
-  task_id: taskId, claim_scope: "SOURCE", source_finding_id: finding?.finding_id ?? null, finding });
+const sourceCandidate = (task, index, finding) => ({ candidate_id: `candidate-${hash(`${task.task_id}:${index}:${digest(finding)}`).slice(0, 32)}`,
+  task_id: task.task_id, claim_scope: "SOURCE", source_finding_id: finding?.finding_id ?? null, finding,
+  ...(task.strategy_id ? { strategy_id: task.strategy_id, source_refs: task.source_refs } : {}) });
 
 async function invalidBacEvidence(summary, root, candidates, board, inputTasks, runtime) {
   const tasks = new Map(), blockedCandidates = new Set();
@@ -38,7 +43,7 @@ async function invalidBacEvidence(summary, root, candidates, board, inputTasks, 
     let report;
     try { report = await boundJson(root, task.report); } catch (error) { if (error instanceof SyntaxError) continue; throw error; }
     for (const [index, finding] of (Array.isArray(report?.findings) ? report.findings : []).entries()) {
-      const candidate = sourceCandidate(task.task_id, index, finding); expected.push(candidate);
+      const candidate = sourceCandidate(task, index, finding); expected.push(candidate);
       if (tasks.has(task.task_id) && finding?.bac_source) blockedCandidates.add(candidate.candidate_id);
     }
   }
@@ -67,10 +72,10 @@ export async function prepareReview(store, { runtimeRequired = false, bacMode = 
       try { report = JSON.parse(bytes.toString("utf8")); } catch { parseGap = "报告不是可解析的 JSON，需验证 Agent 阅读原文并记录补充任务。"; }
       if (!parseGap && (!Array.isArray(report?.findings) || !Array.isArray(report?.gaps) || !nonempty(report?.summary))) parseGap = "报告缺少明确的摘要、发现列表或缺口列表。";
       for (const [index, finding] of (Array.isArray(report?.findings) ? report.findings : []).entries()) {
-        candidates.push(sourceCandidate(task.task_id, index, finding));
+        candidates.push(sourceCandidate(task, index, finding));
       }
     }
-    tasks.push({ task_id: task.task_id, kind: task.kind, title: task.title, domain: task.domain, prompt: task.prompt, code_refs: task.code_refs,
+    tasks.push({ task_id: task.task_id, ...(task.strategy_id ? { strategy_id: task.strategy_id, source_refs: task.source_refs } : {}), kind: task.kind, title: task.title, domain: task.domain, prompt: task.prompt, code_refs: task.code_refs,
       status: task.status, report: task.report, reason: task.reason, parse_gap: parseGap, reported_gaps: Array.isArray(report?.gaps) ? report.gaps : [],
       ...(task.incremental ? { incremental: task.incremental, incremental_changes: report?.incremental_changes ?? [] } : {}) });
   }
@@ -103,9 +108,16 @@ export async function prepareReview(store, { runtimeRequired = false, bacMode = 
     await writeFile(join(store.reportsRoot, path), bytes);
     fileDiscovery = { ...binding(path, bytes), summary: store.summary().file_sweep };
   }
+  let creedDiscovery = null;
+  if (board.creed_inventory) {
+    const bytes = Buffer.from(`${JSON.stringify(board.creed_inventory, null, 2)}\n`);
+    const path = `validation/task-board.${board.audit_id}.functions.${hash(bytes)}.json`;
+    await mkdir(dirname(join(store.reportsRoot, path)), { recursive: true }); await writeFile(join(store.reportsRoot, path), bytes);
+    creedDiscovery = binding(path, bytes);
+  }
   const input = { protocol: PROTOCOL, artifact_type: "task-board-review-input", audit_id: board.audit_id, scope_digest: board.scope_digest,
-    ...(fileDiscovery ? { file_discovery: fileDiscovery } : {}),
-    ...(board.mining_strategy ? { mining_strategy: board.mining_strategy } : {}),
+    ...(fileDiscovery ? { file_discovery: fileDiscovery } : {}), ...(creedDiscovery ? { creed_discovery: creedDiscovery } : {}),
+    ...(board.mining_strategy ? { mining_strategy: board.mining_strategy } : {}), ...strategyBinding(board),
     ...(bacSummary ? { bac_summary: bacSummary } : {}),
     ...(board.audit_mode ? { audit_mode: board.audit_mode } : {}), ...(board.source_followup ? { source_followup: board.source_followup } : {}),
     board_digest: digest(reviewState(board)), bac_mode: bacMode, tasks, candidates, runtime };
@@ -139,6 +151,7 @@ function exactIds(rows, ids, field) {
 export async function validateReviewBundle(board, root, bundle) {
   const input = await boundJson(root, board.validation.input);
   check(input.audit_id === board.audit_id && input.board_digest === digest(reviewState(board)), "复核输入与当前任务面板不一致。");
+  check(digest(strategyBinding(input)) === digest(strategyBinding(board)), "复核输入未绑定本次多策略范围。");
   check((input.mining_strategy ?? null) === (board.mining_strategy ?? null), "复核输入未绑定本次漏洞挖掘策略。");
   if (board.bac_analysis) check(input.bac_mode === board.bac_analysis.mode, "复核输入的专项选择发生变化。");
   if (board.source_followup) {
@@ -164,18 +177,19 @@ export async function validateReviewBundle(board, root, bundle) {
     check(nonempty(doc.agent_session_id) && !sessions.has(doc.agent_session_id), "复核角色必须使用独立的真实会话。"); sessions.add(doc.agent_session_id);
   }
   header(quality, "REPORT_REVIEW");
+  if (board.creed_inventory) check(input.creed_discovery && digest(await boundJson(root, input.creed_discovery)) === digest(board.creed_inventory), "CREED 函数清单与复核输入不一致。");
   if (board.file_sweep) {
     check(input.file_discovery && digest(await boundJson(root, input.file_discovery)) === digest(board.file_sweep), "文件浏览记录与复核输入不一致。");
     const review = quality.file_discovery;
     check(review && ["REVIEWED", "GAP"].includes(review.status) && nonempty(review.reason) && Array.isArray(review.evidence_refs) && review.evidence_refs.length > 0 && Array.isArray(review.gaps), "逐文件威胁发现记录需要独立质量复核及证据引用。");
-    if (input.file_discovery.summary.gap_files || !input.file_discovery.summary.browsed_files) check(review.status === "GAP", "文件浏览缺口或未浏览任何文件时，必须保留发现阶段缺口。");
+    if (input.file_discovery.summary.gap_files || input.file_discovery.summary.pending_files || input.file_discovery.summary.reading_files || !input.file_discovery.summary.browsed_files) check(review.status === "GAP", "文件浏览缺口或未浏览任何文件时，必须保留发现阶段缺口。");
     if (review.status === "REVIEWED") check(!review.gaps.length, "存在发现阶段缺口，不能标为完整复核。");
   }
   exactIds(quality.assessments, input.tasks.map(task => task.task_id), "task_id");
   for (const row of quality.assessments) {
     check(["REVIEWED", "NEEDS_FOLLOWUP", "GAP"].includes(row.status) && nonempty(row.reason) && Array.isArray(row.evidence_refs) && Array.isArray(row.gaps), "报告质量复核字段不完整。");
     const task = input.tasks.find(task => task.task_id === row.task_id);
-    if (task.parse_gap || task.status === "GAP" || task.reported_gaps.length || invalidBac.tasks.has(row.task_id)) check(row.status !== "REVIEWED", "报告解析失败、执行缺口、自报缺口或专项证据缺口必须保留为待补充。");
+    if (task.parse_gap || task.status !== "REPORTED" || task.reported_gaps.length || invalidBac.tasks.has(row.task_id)) check(row.status !== "REVIEWED", "报告解析失败、执行缺口、自报缺口或专项证据缺口必须保留为待补充。");
     if (row.status === "REVIEWED") check(row.evidence_refs.length > 0 && row.gaps.length === 0, "审查充分的结论必须引用证据且没有未解决缺口。");
   }
   if (input.bac_mode === "auto") check(quality.bac_analysis && ["REVIEWED", "GAP"].includes(quality.bac_analysis.status)
@@ -267,12 +281,18 @@ function finalModel(board, { input, quality, roles }) {
   for (const candidate of input.candidates) {
     const review = roles.moderator.findings.find(row => row.candidate_id === candidate.candidate_id);
     const row = { ...(candidate.finding && typeof candidate.finding === "object" ? candidate.finding : {}), finding_id: candidate.candidate_id, task_id: candidate.task_id,
-      claim_scope: candidate.claim_scope, review, validation_state: review.verdict };
+      claim_scope: candidate.claim_scope, review, validation_state: review.verdict,
+      ...(candidate.strategy_id ? { strategy_ids: [candidate.strategy_id], source_refs: candidate.source_refs,
+        source_finding_ids: [candidate.candidate_id, ...(candidate.source_finding_id ? [candidate.source_finding_id] : [])], source_task_ids: [candidate.task_id] } : {}) };
     if (candidate.claim_scope === "RUNTIME_ONLY") runtimeFindings.push(row);
     else (review.verdict === "TRUE_POSITIVE" ? findings : excluded).push(row);
   }
   const residualGaps = [
     ...(input.runtime?.graph?.gaps ?? []),
+    ...(board.publication.state !== "SEALED" ? ["工作项规划尚未全部封存，本轮仅交付已选失败工作项的重试结果。"] : []),
+    ...(board.file_sweep?.files ?? []).filter(file => ["PENDING", "READING"].includes(file.status)).map(file => `文件浏览 ${file.path}：未完成，未计入已浏览范围。`),
+    ...(board.creed_inventory?.gaps ?? []).map(gap => `CREED 函数清单 ${gap.path ?? ""}：${gap.reason}`),
+    ...input.tasks.filter(task => !["REPORTED", "GAP"].includes(task.status)).map(task => `${task.title}：工作项仍为 ${task.status}，未计入已完成审查。`),
     ...(board.file_sweep?.files ?? []).filter(file => file.status === "GAP").map(file => `文件浏览 ${file.path}：${file.reason}`),
     ...(quality.file_discovery?.status === "GAP" ? [`逐文件威胁发现：${quality.file_discovery.reason}`, ...quality.file_discovery.gaps] : []),
     ...(board.publication.empty_reason && !board.file_sweep && board.audit_mode !== "dynamic" ? [board.publication.empty_reason] : []),
@@ -288,11 +308,13 @@ function finalModel(board, { input, quality, roles }) {
   ];
   const { revision, next_action, ...summary } = summarize(board);
   // Sealed v1/v2 artifacts must still reproduce their original model and bytes.
-  const reportVersion = board.final_report ? board.final_report.report_version ?? 1 : 3;
+  const reportVersion = board.final_report ? board.final_report.report_version ?? 1 : board.mining_strategies || board.active_round ? 4 : 3;
   return { protocol: PROTOCOL, ...(board.audit_mode ? { audit_mode: board.audit_mode } : {}), ...(input.source_followup ? { source_followup: input.source_followup } : {}), artifact_type: "task-board-final-report", audit_id: board.audit_id, scope_digest: board.scope_digest,
     ...(reportVersion >= 2 ? { report_version: reportVersion, delivery_outcome: deliveryOutcome(summary) } : {}),
     board_digest: input.board_digest, inputs: { intake: board.validation.input, ...board.validation.bundle }, summary, tasks: input.tasks,
-    assessments: quality.assessments, findings, excluded_findings: excluded, runtime_findings: runtimeFindings,
+    assessments: quality.assessments, findings: reportVersion >= 4 ? groupConfirmedFindings(findings) : findings,
+    ...(reportVersion >= 4 ? { finding_occurrences: [...findings, ...excluded] } : {}), excluded_findings: excluded, runtime_findings: runtimeFindings,
+    ...(input.creed_discovery ? { creed_discovery: input.creed_discovery } : {}),
     ...(input.file_discovery ? { file_discovery: { ...input.file_discovery, review: quality.file_discovery } } : {}),
     ...(board.report_corrections?.length ? { report_corrections: board.report_corrections } : {}),
     ...(board.incremental_rounds?.length ? { incremental_rounds: board.incremental_rounds } : {}),
@@ -326,7 +348,7 @@ export async function finalizeBoard(store) {
 
 export async function verifyBoardCompletion({ audit, reportsRoot }) {
   const board = await readBoard(audit.task_board_path), summary = summarize(board), errors = [];
-  if ((board.mining_strategy ?? null) !== (audit.mining_strategy ?? null)) errors.push("任务面板与创建时的漏洞挖掘策略不一致。");
+  if (digest(miningStrategies(board)) !== digest(miningStrategies(audit))) errors.push("任务面板与创建时的漏洞挖掘策略不一致。");
   if (!summary.mining_complete) errors.push("任务发布或报告收集尚未结束。");
   if (board.validation.status !== "REVIEWED") errors.push("后续报告复核尚未完成。");
   if (!board.final_report) errors.push("最终中文报告尚未封存。");

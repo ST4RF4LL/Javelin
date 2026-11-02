@@ -430,7 +430,7 @@ function normalizedSeverity(raw) {
 }
 
 function normalizeFinding(raw, auditId, sourcePath, reportDetail = null) {
-  const details = [raw, raw.dossier?.finding, reportDetail?.row, reportDetail?.row?.dossier?.finding].filter(Boolean);
+  const details = [raw, raw.dossier?.finding, reportDetail?.row, reportDetail?.row?.dossier?.finding, ...(raw.source_occurrences ?? []), ...(reportDetail?.row?.source_occurrences ?? [])].filter(Boolean);
   const unique = (rows, key) => [...new Map(rows.map(row => [key(row), row])).values()];
   const locations = unique(details.flatMap(normalizedLocations), row => `${row.path ?? row.detail}:${row.line}`).slice(0, 20);
   const location = locations[0] ?? {};
@@ -465,7 +465,11 @@ function normalizeFinding(raw, auditId, sourcePath, reportDetail = null) {
     guards: displayText(raw.guards ?? raw.attack_surface?.controls),
     remediation: displayText(raw.remediation?.summary ?? raw.remediation ?? raw.recommendation),
     residual_uncertainty: displayText(raw.residual_uncertainty ?? raw.uncertainty?.assumptions ?? raw.attack_surface?.blindspots),
-    source_finding_ids: sourceFindings.slice(0, 32).map(item => item?.finding_id ?? item?.id).filter(Boolean),
+    source_finding_ids: [...new Set([...sourceFindings.map(item => item?.finding_id ?? item?.id), ...(raw.source_finding_ids ?? [])].filter(Boolean))],
+    strategy_ids: [...new Set(details.flatMap(item => item.strategy_ids ?? (item.strategy_id ? [item.strategy_id] : [])))],
+    ...(details.find(item => Array.isArray(item.source_occurrences)) ? { source_occurrences: details.find(item => Array.isArray(item.source_occurrences)).source_occurrences } : {}),
+    ...(details.find(item => Array.isArray(item.creed_analyses)) ? { creed_analyses: details.find(item => Array.isArray(item.creed_analyses)).creed_analyses } : {}),
+    ...(details.find(item => item.creed_analysis)?.creed_analysis ? { creed_analysis: details.find(item => item.creed_analysis).creed_analysis } : {}),
     contradiction_count: Array.isArray(raw.contradictions) ? raw.contradictions.length : 0,
     source_path: sourcePath,
     detail_source_path: reportDetail?.path ?? null,
@@ -557,6 +561,7 @@ export function auditsFromArtifacts(artifacts, validationRuns = [], runnerAudits
       progress_source: board ? "task-board" : todoEnforced ? "local-audit-todo" : useMaterialized ? "stage-delivery-manifest" : "legacy-artifact-heuristic",
       task_protocol: runner?.task_protocol ?? null,
       mining_strategy: runner?.mining_strategy ?? null,
+      ...(runner?.mining_strategies ? { mining_contract: runner.mining_contract, mining_strategies: runner.mining_strategies } : {}),
       task_board: runner?.task_board ?? null,
       completion_source: runner?.completion_source ?? null,
       finding_count: findings.filter(finding => finding.audit_id === auditId).length,

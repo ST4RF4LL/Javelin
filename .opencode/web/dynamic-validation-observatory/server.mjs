@@ -15,6 +15,8 @@ import { FindingWorkflowStore } from "./finding-workflow.mjs";
 import { createProvenanceIndex, matchesProvenance } from "./provenance.mjs";
 import { listValidationRequests, listValidationRunDetails, listValidationRuns } from "./model.mjs";
 import { DEFAULT_MODEL_SELECTION, normalizeOpenCodeModel, OpenCodeModelCatalog, OpenCodeModelSettingsStore } from "./opencode-model-settings.mjs";
+import { DecisionModelSettingsStore } from "../../lib/decision-model/settings.mjs";
+import { testDecisionModel } from "../../lib/decision-model/client.mjs";
 import { auditsFromArtifacts, buildWorkspaceSnapshot } from "./workspace-model.mjs";
 import { applyAuditProgress, mergeAuditPresentation } from "./audit-progress.mjs";
 import { paginateAudits, compactWorkspaceAudits } from "./audit-list.mjs";
@@ -67,6 +69,7 @@ const STATIC_FILES = new Map([
   ["/app.js", ["app.js", "text/javascript; charset=utf-8"]],
   ["/product-memory-ui.js", ["product-memory-ui.js", "text/javascript; charset=utf-8"]],
   ["/agent-settings-ui.js", ["agent-settings-ui.js", "text/javascript; charset=utf-8"]],
+  ["/decision-model-settings-ui.js", ["decision-model-settings-ui.js", "text/javascript; charset=utf-8"]],
   ["/styles.css", ["styles.css", "text/css; charset=utf-8"]],
   ["/logo_DJ.png", ["logo_DJ.png", "image/png"]],
 ]);
@@ -351,6 +354,8 @@ export function createAuditWorkbenchServer({
   modelSettingsStore: suppliedModelSettingsStore = null,
   modelCatalog: suppliedModelCatalog = null,
   modelConfigPaths = null,
+  decisionModelSettingsPath = null,
+  decisionModelSettingsStore: suppliedDecisionModelSettingsStore = null,
   agentSettingsPath = null,
   agentSettingsStore: suppliedAgentSettingsStore = null,
   growModelConfigPaths = null,
@@ -368,6 +373,9 @@ export function createAuditWorkbenchServer({
     path: queueSettingsPath ?? join(dirname(resolve(stateRoot)), "workbench-settings.json"),
   });
   const queueScheduler = suppliedQueueScheduler ?? new AuditQueueScheduler({ runner, settingsStore: queueSettingsStore });
+  const decisionModelSettingsStore = suppliedDecisionModelSettingsStore ?? new DecisionModelSettingsStore({
+    path: decisionModelSettingsPath ?? join(dirname(resolve(stateRoot)), "decision-model-settings.json"),
+  });
   runner.setQueueScheduler(queueScheduler);
   const xdgConfigHome = resolve(process.env.XDG_CONFIG_HOME || join(homedir(), ".config"));
   const modelCatalog = suppliedModelCatalog ?? new OpenCodeModelCatalog({
@@ -786,7 +794,7 @@ export function createAuditWorkbenchServer({
       const previous = audits.get(current.id);
       const audit = { ...previous };
       const fields = ["id", "name", "repository_id", "repository_name", "commit", "status", "version", "event_sequence", "created_at", "updated_at", "terminal", "queue", "paths", "provider_session_id", "task_context", "todo", "model", "error", "exit_code", "recovery_count", "last_recovered_at", "interrupted_at", "interruption_reason", "todo_completion", "stage_delivery", "context_window_recovery", "completion_source"];
-      fields.push("task_protocol", "task_board", "mining_strategy", "runtime_testing", "runtime_testing_state", "bac_analysis", "execution", "audit_mode", "report_validation");
+      fields.push("task_protocol", "task_board", "mining_strategy", "mining_strategies", "mining_contract", "creed_options", "runtime_testing", "runtime_testing_state", "bac_analysis", "execution", "audit_mode", "report_validation");
       for (const field of fields) audit[field] = current[field] ?? null;
       if (!previous) Object.assign(audit, { stages: [], progress: 0, stage: "等待调度", finding_count: 0, artifact_count: 0, runtime_validation_count: 0 });
       if (current.stage_delivery_enforcement === "TODO_ENFORCED" && current.todo?.total > 0) {
@@ -1161,6 +1169,31 @@ export function createAuditWorkbenchServer({
       }
       if (request.method === "GET" && url.pathname === "/api/v1/settings/queue") {
         json(response, 200, { queue: await queueScheduler.snapshot() });
+        return;
+      }
+      if (request.method === "GET" && url.pathname === "/api/v1/settings/decision-model") {
+        json(response, 200, { decision_model: await decisionModelSettingsStore.snapshot() });
+        return;
+      }
+      if (request.method === "PUT" && url.pathname === "/api/v1/settings/decision-model") {
+        assertSafeMutation(request);
+        await decisionModelSettingsStore.update(await requestJson(request));
+        json(response, 200, { decision_model: await decisionModelSettingsStore.snapshot() });
+        return;
+      }
+      if (request.method === "POST" && url.pathname === "/api/v1/settings/decision-model/test") {
+        assertSafeMutation(request);
+        const config = await decisionModelSettingsStore.prepare(await requestJson(request));
+        const controller = new AbortController();
+        const disconnect = () => { if (!response.writableEnded) controller.abort(); };
+        response.once("close", disconnect);
+        try {
+          if (response.destroyed) controller.abort();
+          const result = await testDecisionModel(config, { signal: controller.signal });
+          if (!controller.signal.aborted) json(response, 200, { test: result });
+        } catch (error) {
+          if (!controller.signal.aborted) throw error;
+        } finally { response.removeListener("close", disconnect); }
         return;
       }
       if (request.method === "GET" && url.pathname === "/api/v1/settings/timeout-recovery") {

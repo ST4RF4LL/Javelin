@@ -39,7 +39,7 @@ export async function prepareTaskBacPlan({ board, task, attempt, reportsRoot, so
 export async function summarizeTaskBac(board, reportsRoot) {
   if (!taskBacEnabled(board)) return null;
   const rows = [];
-  for (const task of board.tasks.filter(row => BAC_AGENTS.has(row.agent_name))) {
+  for (const task of board.tasks.filter(row => row.strategy_id !== "creed" && BAC_AGENTS.has(row.agent_name))) {
     const attempt = board.attempts.find(row => row.attempt_id === task.attempt_id);
     const row = { task_id: task.task_id, attempt_id: task.attempt_id ?? "unexecuted" };
     const gap = reason => ({ ...row, status: "GAP", reason, candidates: 0, accepted: 0, paths: 0, policies: 0, gaps: [reason] });

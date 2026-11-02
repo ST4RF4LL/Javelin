@@ -4,7 +4,8 @@ import { readFileSync } from 'node:fs';
 // 在模块加载时固定摘要；健康检查不能把磁盘上的新代码冒充已加载版本。
 const sources = [
   './server.mjs', './audit-runner.mjs', './audit-progress.mjs', './product-store.mjs', './workspace-model.mjs',
-  './opencode-model-settings.mjs', './audit-queue-scheduler.mjs', './snapshot-cache.mjs',
+  './opencode-model-settings.mjs', './audit-queue-scheduler.mjs', './snapshot-cache.mjs', './audit-list.mjs',
+  '../../lib/decision-model/settings.mjs', '../../lib/decision-model/client.mjs',
   '../../lib/runtime-exploration/contract.mjs', '../../lib/runtime-exploration/service.mjs', '../../lib/runtime-exploration/agent.mjs', '../../lib/runtime-exploration/agent-mcp.mjs', '../../lib/runtime-exploration/planner.md',
   '../../lib/source-followup/service.mjs', '../../lib/runtime-testing/evidence.mjs', './runtime-testing-activity.mjs',
   './runtime-build.mjs', './file-focus-coverage.mjs', '../../lib/runtime-testing/contract.mjs', '../../lib/task-board/contract.mjs',
@@ -15,7 +16,8 @@ const sources = [
   './environment-health.mjs', './opencode-process-monitor.mjs', './opencode-process-launcher.mjs',
   './tmux-monitor.mjs', './tmux-launcher.mjs', './opencode-shared-run.mjs', './opencode-runtime-config.mjs',
   '../../lib/task-board/store.mjs', '../../lib/task-board/service.mjs', '../../lib/task-board/review.mjs', '../../lib/task-board/incremental.mjs', '../../lib/task-board/worker.md',
-  '../../lib/task-board/file-sweep.mjs', '../../lib/task-board/workflow.md', '../../lib/task-board/report.mjs',
+  '../../lib/task-board/file-sweep.mjs', '../../lib/task-board/file-batches.mjs', '../../lib/task-board/workflow.md', '../../lib/task-board/report.mjs', '../../lib/task-board/finding-groups.mjs', '../../lib/task-board/review-batches.mjs',
+  '../../lib/creed/index.mjs', '../../lib/creed/common.mjs', '../../lib/creed/inventory.mjs', '../../lib/creed/contract.mjs', '../../lib/creed/worker.mjs', '../../package.json',
   '../../scripts/task-board.mjs', '../../skills/common-subagent/audit-coverage-accounting/scripts/build-scope-manifest.mjs',
   '../../lib/task-board/report-integrity.mjs', '../../lib/task-board/report-correction.mjs', '../../lib/bac/contract.mjs',
   '../../scripts/audit-service.mjs', '../../lib/audit-runtime/service-process.mjs', '../../lib/audit-runtime/local-service-transport.mjs', '../../lib/audit-runtime/state-lease.mjs',

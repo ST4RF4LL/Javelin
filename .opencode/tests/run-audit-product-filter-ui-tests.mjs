@@ -9,7 +9,7 @@ const source = await readFile(new URL('../web/dynamic-validation-observatory/pub
 // Execute the real controller functions with fixture I/O; no browser, port,
 // Agent, or production task is started by these regression checks.
 const functionNames = ['renderAudits', 'renderAuditSelection', 'selectAuditPage', 'openBatchDeleteAudits', 'renderBatchDeleteAudits', 'closeBatchDeleteAudits', 'submitBatchDeleteAudits', 'loadAuditsPage', 'findAudit', 'auditProductId', 'selectAudit', 'requestAuditAction', 'retryAudit', 'selectAuditProductFilter', 'loadProductTargets', 'openAuditDialog', 'auditDeleteButton', 'openDeleteAuditDialog', 'closeDeleteAuditDialog', 'submitDeleteAudit'];
-functionNames.push('renderTaskBoard');
+functionNames.push('renderTaskBoard', 'miningStrategyLabel', 'selectedMiningStrategies');
 const functions = functionNames.map(name => {
   const match = source.match(new RegExp(`^(?:async )?function ${name}\\([^]*?^}`, 'm'));
   assert.ok(match, name); return match[0];
@@ -22,13 +22,14 @@ class Element {
   replaceChildren(...nodes) { this.children = nodes; }
   addEventListener(name, listener) { this.listeners[name] = listener; }
   setAttribute() {}
+  querySelectorAll() { return []; }
   showModal() { this.open = true; }
   close() { this.open = false; }
   get options() { return this.children; }
 }
 const audit = (id, productId, status = 'queued') => ({ id, name: id, repository_id: `${productId}-target`, repository_name: productId, status, version: 4, progress: 0, stage: '等待调度', stages: [], provenance: { audit_product_id: productId, product_id: productId, audit_managed: true } });
 
-test('任务面板增量按钮使用后台完整范围，点击同任务动作并带版本；成功后禁用重复提交', async () => {
+test('工作项看板按后台失败范围启用增量，点击同审计动作并带版本；成功后禁用重复提交', async () => {
   const f = fixture(), item = audit('audit-incremental', 'p2', 'completed');
   item.mining_strategy = 'focus_area';
   item.task_board = { total: 5, reported: 2, running: 0, pending: 0, gap: 3, failed: 0, publication: 'SEALED', validation: { status: 'REVIEWED' }, tracks: { focus_area: { total: 5, reported: 2 } } };
@@ -36,13 +37,13 @@ test('任务面板增量按钮使用后台完整范围，点击同任务动作�
   f.context.respond = async (url, options) => {
     if (options.method === 'POST') { submitted = true; return { ...item, status: 'queued' }; }
     if (url.includes('/task-board?')) return { total: 1, items: [{ task_id: 'one', title: '当前页缺口', kind: 'focus_area', domain: 'web', status: 'GAP', attempt_count: 1, prompt: '补查授权路径' }], next_offset: null,
-      incremental: { available: !submitted, task_count: 3, file_count: 0, round: submitted ? 1 : 0, reason: submitted ? '增量审计已入队' : '补做未完成项' } };
+      incremental: { available: !submitted, task_count: 3, file_count: 0, round: submitted ? 1 : 0, reason: submitted ? '增量审计已入队' : '重试执行失败工作项' } };
     return item;
   };
   const panel = f.context.renderTaskBoard(item); await panel.taskBoardReady;
   const nodes = node => [node, ...node.children.flatMap(nodes)];
   const button = nodes(panel).find(node => node.tagName === 'button' && node.textContent.startsWith('增量审计'));
-  assert.equal(button.textContent, '增量审计（3 项）'); assert.equal(button.disabled, false);
+  assert.equal(button.textContent, '增量审计 · 重试失败工作项（3）'); assert.equal(button.disabled, false);
   await button.listeners.click();
   const writes = f.calls.filter(call => call.options.method === 'POST'); assert.equal(writes.length, 1);
   assert.equal(writes[0].url, '/api/v2/products/p2/audits/audit-incremental/actions');

@@ -52,3 +52,12 @@ test('仅用同一审计、唯一匹配 ID 的最终报告补充详情，支持 
   const deduped = findingsFromArtifacts([artifact([{ finding_id: 'finding-a', evidence: [fact] }]), matching])[0];
   assert.equal(deduped.evidence.length, 1); assert.equal(deduped.locations.length, 1);
 });
+
+test('CREED 假设链、标准源码证据和跨策略发现来源均到达单漏洞详情', () => {
+  const analysis = { method_version: 'creed-assumptions.v1', function: { path: 'src/entry.js', start_line: 9 },
+    actions: [{ id: 'a1', description: '处理当前对象', source_lines: [9] }],
+    beliefs: [{ id: 'b1', statement: '对象已获授权', action_ids: ['a1'], source_lines: [9], sanity: { reasonable: true, explanation: '对象权限须校验' }, violation: { conditions: ['调用方未校验对象权限'], explanation: '需核对入口守卫' } }] };
+  const row = detail({ evidence: [fact], creed_analysis: analysis, strategy_ids: ['focus_area', 'creed'], source_finding_ids: ['focus-original', 'creed-original'] });
+  assert.deepEqual(row.creed_analysis, analysis); assert.equal(row.location.line, 9); assert.equal(row.evidence.length, 1);
+  assert.deepEqual(row.strategy_ids, ['focus_area', 'creed']); assert.deepEqual(row.source_finding_ids, ['focus-original', 'creed-original']);
+});

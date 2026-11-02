@@ -8,6 +8,7 @@ import { interfaceOrigin } from './listen-options.js';
 const assets: Record<string, string> = {
   'index.html': 'text/html; charset=utf-8', 'app.js': 'text/javascript; charset=utf-8',
   'product-memory-ui.js': 'text/javascript; charset=utf-8', 'agent-settings-ui.js': 'text/javascript; charset=utf-8', 'styles.css': 'text/css; charset=utf-8', 'logo_DJ.png': 'image/png',
+  'decision-model-settings-ui.js': 'text/javascript; charset=utf-8',
 };
 const publicRoot = new URL('../../../../../.opencode/web/dynamic-validation-observatory/public/', import.meta.url);
 

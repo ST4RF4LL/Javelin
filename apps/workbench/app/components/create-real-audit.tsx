@@ -9,6 +9,7 @@ import { api, ApiError } from '../lib/api';
 import { batchAuditName, prepareBatchAudits, resolveBatchTargets, submitBatchAudits, type BatchAuditItem } from '../lib/batch-audit';
 import { useWorkspace } from '../lib/workspace';
 import type { CodingEngine, RealAuditInput } from '../../shared/contracts';
+import { draftMiningStrategies, MINING_STRATEGIES } from '../../shared/mining-strategies';
 
 const initializationPolicy = { retry: false, staleTime: 30000, refetchOnWindowFocus: false, refetchOnReconnect: false, networkMode: 'always' as const };
 function InitializationError({ label, error, retry }: { label: string; error: Error; retry: () => void }) {
@@ -20,16 +21,24 @@ export function CreateRealAudit() {
   const [requestKey] = useState(() => crypto.randomUUID());
   const [draft, setDraft] = useState<RealAuditInput>(() => ({
     productId: batchSelection?.productId || '', targetId: '', auditId: `audit-${Date.now()}-${crypto.randomUUID().slice(0, 8)}`,
-    auditMode: retryDraft?.auditMode ?? (retryDraft?.testEnvironmentEnabled ? 'joint' : 'static'), name: '', model: '', miningStrategy: 'focus_area', apiInventory: '', memoryMode: 'full', bacAnalysis: 'auto',
+    auditMode: retryDraft?.auditMode ?? (retryDraft?.testEnvironmentEnabled ? 'joint' : 'static'), name: '', model: '', apiInventory: '', memoryMode: 'full', bacAnalysis: 'auto',
     additionalInstructionsEnabled: false, additionalInstructions: '', testEnvironmentEnabled: false, testEnvironmentContext: '',
     runtimeTesting: { mode: 'INTEGRATED_TESTING', budgetMinutes: 60, identityMode: 'auto', testInput: false, testMutation: false },
     ...retryDraft,
+    miningStrategies: draftMiningStrategies(retryDraft || {}), miningStrategy: undefined,
   }));
   const edit = <K extends keyof RealAuditInput>(key: K, value: RealAuditInput[K]) => setDraft(old => ({ ...old, [key]: value, ...(key === 'auditMode' && value === 'dynamic' && old.runtimeTesting?.mode === 'TARGETED_CONFIRMATION' ? { runtimeTesting: { ...old.runtimeTesting, mode: 'INTEGRATED_TESTING' as const } } : {}) }));
   const [addingTarget, setAddingTarget] = useState(false);
   const [targetName, setTargetName] = useState(''); const [targetPath, setTargetPath] = useState('');
   const batchMode = batchSelection !== null;
   const dynamicOnly = draft.auditMode === 'dynamic';
+  const miningStrategies = draftMiningStrategies(draft);
+  const [creedPaths, setCreedPaths] = useState(() => retryDraft?.creedOptions?.paths?.join('\n') || '');
+  const [creedSymbols, setCreedSymbols] = useState(() => retryDraft?.creedOptions?.symbols?.join('\n') || '');
+  const editCreed = (key: 'paths' | 'symbols', value: string) => {
+    (key === 'paths' ? setCreedPaths : setCreedSymbols)(value);
+    edit('creedOptions', { ...draft.creedOptions, [key]: value.split(/\r?\n/).map(line => line.trim()).filter(Boolean) });
+  };
   const reportValidation = !!draft.sourceReport;
   const findingValidation = !!draft.sourceReport?.finding_ids;
   const [batchItems, setBatchItems] = useState<BatchAuditItem[]>([]);
@@ -68,7 +77,7 @@ export function CreateRealAudit() {
   const batchTargets = resolveBatchTargets(batchSelection?.targetIds || [], targets.data?.items || []);
   const batchReady = batchTargets.length > 0 && batchTargets.every(target => target.runnable) && !targets.isFetching && products.data?.items.some(product => product.id === productId && product.status === 'active');
   const busy = creation.isPending || registration.isPending || batchBusy;
-  const ready = agents.isSuccess && profile?.available === true && products.isSuccess && models.isSuccess && modelAvailable && runner.isSuccess && runner.data.runnerEnabled && (dynamicOnly ? draft.testEnvironmentEnabled && !!draft.testEnvironmentContext.trim() : targets.isSuccess && (batchMode ? batchReady : selectedTarget?.runnable));
+  const ready = agents.isSuccess && profile?.available === true && products.isSuccess && models.isSuccess && modelAvailable && runner.isSuccess && runner.data.runnerEnabled && (dynamicOnly ? draft.testEnvironmentEnabled && !!draft.testEnvironmentContext.trim() : miningStrategies.length > 0 && (!miningStrategies.includes('api') || !!draft.apiInventory.trim()) && targets.isSuccess && (batchMode ? batchReady : selectedTarget?.runnable));
   const batchStarted = batchItems.length > 0;
   const batchCreated = batchItems.filter(item => item.status === 'created').length;
   const initialLoading = products.isPending || agents.isPending || models.isFetching || runner.isPending || (!dynamicOnly && !!productId && targets.isPending);
@@ -102,7 +111,7 @@ export function CreateRealAudit() {
     creation.mutate({ ...draft, productId, targetId: dynamicOnly ? '' : targetId, engine, model });
   };
   return <Dialog open onOpenChange={open => { if (!open) close(); }}><DialogContent className="create-dialog real-create-dialog" onInteractOutside={event => { if (busy) event.preventDefault(); }} onEscapeKeyDown={event => { if (busy) event.preventDefault(); }}>
-    <DialogHeader><div className="dialog-symbol"><ShieldCheck size={22} /></div><DialogTitle>{findingValidation ? '单漏洞动态验证' : reportValidation ? '基于最终报告动态验证' : batchMode ? '批量创建审计任务' : retryDraft ? '新建重试任务' : '创建真实审计任务'}</DialogTitle><DialogDescription>{findingValidation ? `仅验证所选 ${draft.sourceReport!.finding_ids!.length} 项：${draft.sourceFindingTitle || draft.sourceReport!.finding_ids!.join('、')}。结果独立保存。` : reportValidation ? `已冻结报告中的 ${draft.sourceFindingCount ?? '全部'} 项漏洞与未确定候选。仅做必要登录后逐项验证，结果另行封存。` : batchMode ? '已带入列表中勾选的项目。填写一份配置，为每个项目分别创建审计任务。' : retryDraft ? '已回填原任务配置。确认后将使用新的任务编号运行，原任务与报告保留。' : '选择审计模式和所属产品，配置源码或授权测试环境后提交执行。'}</DialogDescription></DialogHeader>
+    <DialogHeader><div className="dialog-symbol"><ShieldCheck size={22} /></div><DialogTitle>{findingValidation ? '单漏洞动态验证' : reportValidation ? '基于最终报告动态验证' : batchMode ? '批量创建审计任务' : retryDraft ? '重新审计' : '创建真实审计任务'}</DialogTitle><DialogDescription>{findingValidation ? `仅验证所选 ${draft.sourceReport!.finding_ids!.length} 项：${draft.sourceFindingTitle || draft.sourceReport!.finding_ids!.join('、')}。结果独立保存。` : reportValidation ? `已冻结报告中的 ${draft.sourceFindingCount ?? '全部'} 项漏洞与未确定候选。仅做必要登录后逐项验证，结果另行封存。` : batchMode ? '已带入列表中勾选的项目。填写一份配置，为每个项目分别创建审计任务。' : retryDraft ? '已回填原任务配置。确认后将使用新的任务编号运行，原任务与报告保留。' : '选择审计模式和所属产品，配置源码或授权测试环境后提交执行。'}</DialogDescription></DialogHeader>
     <form className="create-form real-create-form" onSubmit={event => { event.preventDefault(); submit(); }}>
       {runner.isPending && <p className="initialization-status" role="status"><LoaderCircle size={14} className="animate-spin" />正在检查执行器，可先填写任务信息…</p>}
       {runner.error && <InitializationError label="执行器状态" error={runner.error} retry={() => void runner.refetch()} />}
@@ -132,10 +141,10 @@ export function CreateRealAudit() {
         {!dynamicOnly && targets.error && <InitializationError label="源码目录" error={targets.error} retry={() => void targets.refetch()} />}
         {!dynamicOnly && !batchMode && <div className="target-tools"><Button type="button" size="sm" variant="outline" disabled={!productId || !!products.error} onClick={() => setAddingTarget(!addingTarget)}><Plus size={14} />登记本机源码目录</Button><a className="legacy-link" href="/products" target="_blank" rel="noreferrer">管理产品</a></div>}
         {!dynamicOnly && addingTarget && <section className="target-registration"><div className="task-form-grid"><label>源码名称<input maxLength={160} value={targetName} placeholder="order-service" onChange={e => setTargetName(e.target.value)} /></label><label>本机绝对路径<input maxLength={4096} value={targetPath} placeholder="/Users/…/order-service" onChange={e => setTargetPath(e.target.value)} /></label></div><p className="field-hint">目录须位于运行平台的这台电脑。登记成功后即可选择，不会立即启动审计。</p><Button type="button" size="sm" disabled={!targetName.trim() || !targetPath.trim()} onClick={() => registration.mutate()}>登记目录</Button>{registration.error && <p role="alert" className="task-error">{registration.error.message} 请先检查源码列表再重试登记。</p>}</section>}
-        {!dynamicOnly && <><div className="task-form-grid"><label>审计策略<select value={draft.miningStrategy} onChange={e => edit('miningStrategy', e.target.value as 'focus_area' | 'api' | 'file_sweep')}><option value="focus_area">Focus Area（风险优先）</option><option value="api">逐接口 API 审查</option><option value="file_sweep">逐文件地毯式审计</option></select></label><label>历史记忆<select value={draft.memoryMode} onChange={e => edit('memoryMode', e.target.value)}><option value="full">完整记忆</option><option value="facts_only">仅代码事实</option><option value="off">关闭记忆</option><option value="blind">盲审</option></select></label></div>
-        {draft.miningStrategy === 'focus_area' && <p className="field-hint">围绕源码疑点和安全边界定向审计，高风险优先；保留待核查的不确定区域，不代表逐文件覆盖。</p>}
-        {draft.miningStrategy === 'api' && <label>API 清单<textarea required rows={5} maxLength={120000} placeholder="填写本次需要审查的接口、路由和相关说明" value={draft.apiInventory} onChange={e => edit('apiInventory', e.target.value)} /></label>}
-        {draft.miningStrategy === 'file_sweep' && <p className="field-hint">威胁分析 Agent 逐个浏览范围内的文本文件，将疑似风险发布为 Focus Area，由专业 Agent 领取并深入审计。浏览进度与 Area 报告交付分别统计；文件已浏览不代表已完成深入审计。</p>}
+        {!dynamicOnly && <><fieldset className="mining-options" aria-describedby="mining-options-hint"><legend>漏洞挖掘方式 · 可多选</legend><div className="mining-options-list">{MINING_STRATEGIES.map(strategy => <label key={strategy.id} className="checkbox-field mining-option"><input type="checkbox" checked={miningStrategies.includes(strategy.id)} onChange={e => edit('miningStrategies', e.target.checked ? [...miningStrategies, strategy.id] : miningStrategies.filter(value => value !== strategy.id))} /><span><strong>{strategy.label}</strong><small>{strategy.description}</small></span></label>)}</div><p id="mining-options-hint" className="field-hint">至少选择一种。所选方式在同一审计任务内共用并发预算，分别统计覆盖范围。</p>{!miningStrategies.length && <p className="task-error" role="alert">请选择至少一种漏洞挖掘方式。</p>}</fieldset>
+        <label>历史记忆<select value={draft.memoryMode} onChange={e => edit('memoryMode', e.target.value)}><option value="full">完整记忆</option><option value="facts_only">仅代码事实</option><option value="off">关闭记忆</option><option value="blind">盲审</option></select></label>
+        {miningStrategies.includes('api') && <label>API 清单<textarea required rows={5} maxLength={120000} placeholder="填写本次需要审查的接口、路由和相关说明" value={draft.apiInventory} onChange={e => edit('apiInventory', e.target.value)} /></label>}
+        {miningStrategies.includes('creed') && <details className="task-options"><summary>CREED 分析范围（可选）</summary><div className="task-option-body"><label>相对目录或文件<textarea rows={3} maxLength={24000} placeholder={'每行一项，例如：\nsrc/services\nsrc/auth.ts'} value={creedPaths} onChange={e => editCreed('paths', e.target.value)} /></label><label>函数名称<textarea rows={3} maxLength={24000} placeholder={'每行一个函数名或限定符号，精确匹配\nPaymentService.cancel'} value={creedSymbols} onChange={e => editCreed('symbols', e.target.value)} /></label><p className="field-hint">留空使用本次冻结的源码范围。路径按目录或文件匹配，不支持通配符；同时填写路径和函数时取交集。未支持或无法解析的函数范围会明确记录缺口。</p></div></details>}
         </>}<details className="task-options"><summary>审计专项与补充说明</summary><div className="task-option-body">{!dynamicOnly && <label>越权专项<select value={draft.bacAnalysis} onChange={e => edit('bacAnalysis', e.target.value)}><option value="auto">自动分析（推荐）</option><option value="off">关闭专项</option></select></label>}<label className="checkbox-field"><input type="checkbox" checked={draft.additionalInstructionsEnabled} onChange={e => edit('additionalInstructionsEnabled', e.target.checked)} />附加审计说明</label>{draft.additionalInstructionsEnabled && <label>补充说明<textarea required rows={4} maxLength={12000} value={draft.additionalInstructions} onChange={e => edit('additionalInstructions', e.target.value)} placeholder="关注的业务范围、排除项和交付要求" /></label>}</div></details>
         {draft.auditMode !== 'static' && <details open className="task-options"><summary>动态测试授权 <span>{draft.testEnvironmentEnabled && draft.testEnvironmentContext.trim() ? '已启用' : dynamicOnly ? '待授权' : '默认跳过'}</span></summary><div className="task-option-body"><label className="checkbox-field"><input type="checkbox" checked={draft.testEnvironmentEnabled} onChange={e => edit('testEnvironmentEnabled', e.target.checked)} />我授权在下方指定的测试环境执行所选操作</label><p className="field-hint">{dynamicOnly ? '请启用授权并填写测试环境后再创建动态验证任务。' : '未启用或未填写环境时，动态测试记为 SKIPPED。'}环境说明会作为私有上下文交给执行 Agent。</p>
           {draft.testEnvironmentEnabled && <><label>授权测试环境<textarea rows={5} maxLength={24000} autoComplete="off" spellCheck={false} placeholder="描述 Web 或 SSH 目标、测试账号及口令/私钥等登录方式、允许操作的服务或目录、范围及限制。可用自然语言完整填写。" value={draft.testEnvironmentContext} onChange={e => edit('testEnvironmentContext', e.target.value)} /></label>

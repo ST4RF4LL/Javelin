@@ -119,11 +119,12 @@ test('逐文件策略从新版创建接口转交后台，保持静态默认与�
   const response = await request('audits', post({ ...input, miningStrategy: 'file_sweep' }));
   assert.equal(response.statusCode, 201);
   assert.equal(calls.length, 1);
-  assert.equal(calls[0].body.mining_strategy, 'file_sweep');
+  assert.deepEqual(calls[0].body.mining_strategies, ['file_sweep']);
+  assert.equal(calls[0].body.mining_strategy, undefined);
   assert.equal(calls[0].body.api_inventory, '');
   assert.equal(calls[0].body.memory_mode, 'full');
   assert.equal(calls[0].body.test_environment_enabled, false);
-  assert.equal(normalizeAudit({ ...audit, mining_strategy: 'file_sweep' }).strategy, '逐文件地毯式审计');
+  assert.equal(normalizeAudit({ ...audit, mining_strategy: 'file_sweep' }).strategy, '逐文件 · 全面浏览');
 });
 
 test('三种审计入口独立建模：动态无需源码，联合使用 v2，静态忽略残留授权字段', async () => {

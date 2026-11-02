@@ -7,6 +7,8 @@ import { estimateTokens } from "./review-batches.mjs";
 export const FILE_BATCH_PROTOCOL = "file-screening-batches.v1";
 const compactTask = task => ({ task_id: task.task_id, title: task.title, domain: task.domain, code_refs: task.code_refs.slice(0, 8),
   code_refs_total: task.code_refs.length, root_cause: task.root_cause });
+const assertBrowsingOpen = board => check(!board.active_round && board.file_sweep && board.publication.state === "OPEN"
+  && (!board.strategy_runs || board.strategy_runs.find(run => run.strategy_id === "file_sweep")?.state === "OPEN"), "文件浏览阶段不存在、已经封存或本轮仅重试失败工作项。");
 const configFile = path => /(?:^|\/)(?:[^/]*\.(?:json|jsonc|toml|ya?ml|lock)|[^/]*config[^/]*|\.env[^/]*|requirements[^/]*\.txt|[^/]*settings\.py)$/i.test(path);
 
 // Reuse source facts only. Every file is still read in the current audit; cached
@@ -49,7 +51,7 @@ export async function nextFileBatch(store, sourceRoot, { target_tokens = 12_000,
   check(Number.isInteger(target_tokens) && target_tokens >= 1000 && target_tokens <= 24_000, "文件批次输入预算须为 1000 至 24000 个估算 token。");
   check(Number.isInteger(max_files) && max_files >= 1 && max_files <= 20, "每批最多领取 20 个文件。");
   return store.mutate(async board => {
-    check(board.file_sweep && board.publication.state === "OPEN", "文件浏览阶段不存在或已经封存。");
+    assertBrowsingOpen(board);
     const selected = board.file_sweep.files.filter(row => row.status === "PENDING");
     const files = []; let used = 0;
     for (const candidate of selected) {
@@ -98,6 +100,7 @@ export async function completeFileBatch(store, sourceRoot, { results } = {}, cac
   check(Array.isArray(results) && results.length > 0 && results.length <= 20 && new Set(results.map(row => row.file_id)).size === results.length, "批次提交须包含 1 至 20 个不同文件。");
   const cached = [];
   const result = await store.mutate(async board => {
+    assertBrowsingOpen(board);
     const recorded = [];
     for (const input of results) {
       const file = board.file_sweep?.files.find(row => row.file_id === input.file_id);

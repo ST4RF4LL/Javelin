@@ -20,7 +20,7 @@
 
 ## 执行与交付
 
-1. 完整读取附件。只执行其中的 task；任务可能为高风险 Focus Area 或清单中的单个 API，两者并列。task.prompt 是当前审计目标，code_refs 是初步定位，按需要继续追踪真实实现。定位不全时尽力分析并在报告中保留缺口，不伪造代码位置。
+1. 完整读取附件。只执行其中的 task；工作项可能为 Focus Area 或清单中的单个 API；strategy_id 表示风险优先、逐接口或逐文件来源，三者可以同时存在。CREED 函数由专用单响应执行器处理，不适用本通用 worker 流程。task.prompt 是当前审计目标，code_refs 是初步定位，按需要继续追踪真实实现。定位不全时尽力分析并在报告中保留缺口，不伪造代码位置。
 2. 源码根 source_root 只读；不得修改源码、在其中构建或运行目标，也不得使用容器。只在附件 output_root 及受控 AUDIT_TMP_ROOT 写临时产物；专项 CLI 可在 reports_root/bac/<audit_id>/ 写入并封存专项制品。不得启动嵌套 Agent、浏览器或联系测试目标。运行测试需要的假设写入报告 runtime_requests，由 Orchestrator 使用已有独立授权控制器处理；描述任务不授予动态执行权限。不得读取环境私有凭证。
 3. 使用对应专业技能：web 使用 web-source-security-review；java 使用 java-web-comprehensive-review；python 按 python-subagent/collection.json 选择适用技能；c-cpp 使用 c-cpp-memory-safety-review、c-cpp-native-boundary-review 和 c-cpp-file-privilege-review；platform 使用 platform-security-review；ai 使用 ai-system-security-review。先按 skill 工具发现实际名称，不存在时使用对应技能分组的 collection.json 找到相关原子技能，不猜测加载成功。复用 secure-code-review-common、只读知识检索和 finding-evidence-contract 中适用的分析规范。技能中的旧调度、报告门禁及必需 Focus ID 要求不适用于本协议。按任务适用性结合 sink、control、config 三种视角分析，在一份报告中交付。
 4. bac_mode=auto 且提供 bac_plan 时，读取 `.opencode/lib/bac/workflow.md` 的新版任务分支和 detect-bac-risks。使用附件 bac_plan.path，不使用 threat/focus-areas.json 或旧 Coverage Plan。读取 session_path 中平台从运行器事件登记的 agent_session_id，原样用于 --session、路径 producer 和报告顶层 agent_session_id；不得用 attempt_id、自拟名称代替，不得写 session_path。用 --task task.task_id --attempt attempt_id 执行 prepare → compare → prepare-review → review；策略和目录已由计划绑定，prepare 自动加载，不能修改。补全实际路径、入口相关性和 coverage 证据，逐候选复查；将 review 返回 attachment 原样放到报告 bac_analysis、findings 原样并入报告 findings。Finding v2 的 routing 使用 prepare-review 返回的 task/attempt/domain，保留 threat_ids 和详细证据，不补造旧 check 或 Focus ID。只有源码证明不适用时，交付 NOT_APPLICABLE、plan_path=bac_plan.path、source_root 和非空结构化 evidence。bac_gap、缺少独立策略、缺少真实会话登记等条件如实交付 {contract_version:"bac-analysis.v1",status:"GAP",reason:"具体中文原因"}，继续其他静态审计，不询问、不等待其他 Agent。没有 bac_plan 的非适用领域继续常规权限审计，不能伪造完整差分。
@@ -33,7 +33,7 @@
 
 ## 增量审计
 
-附件 `task.incremental` 存在时，本次只补充该任务的缺口。先阅读 `reasons`、`previous_validation`，并按 `reports_root` 下的 `previous_report` 路径和 SHA-256 读取原交付；保留原来有效的发现及证据，重点解决不足部分。新报告仍须是该任务完整的替代报告，绑定本次 attempt/session；不能只写补丁而丢失旧发现。撤回或改变旧结论须在摘要写明具体证据和原因，交给独立复核。不修改旧文件，不复用旧回执；缺少环境或业务信息时如实保留缺口，不能为了完成而伪造补证。增量审计不新增动态测试授权。
+附件 `task.incremental` 存在时，本次只重试已冻结失败集合中的当前工作项。不得扩展到其他待执行工作项或重新规划文件浏览。先阅读 `reasons`、`previous_validation`，并按 `reports_root` 下的 `previous_report` 路径和 SHA-256 读取原交付；保留原来有效的发现及证据，重点解决不足部分。新报告仍须是该任务完整的替代报告，绑定本次 attempt/session；不能只写补丁而丢失旧发现。撤回或改变旧结论须在摘要写明具体证据和原因，交给独立复核。不修改旧文件，不复用旧回执；缺少环境或业务信息时如实保留缺口，不能为了完成而伪造补证。增量审计不新增动态测试授权。
 
 若修改或撤回原报告中的某条 finding，报告必须追加 `incremental_changes:[{previous_finding_sha256,reason,evidence_refs}]`，每条变更使用 `task.incremental.previous_findings` 中的 SHA-256（原 finding 按原字段顺序 JSON.stringify 的摘要）、具体中文原因及非空证据引用。未变更的 finding 原样保留；专项 finding 重新绑定本次 attempt 时也要记录变更。复核输入会同时包含原报告引用和这些变更，不能静默丢弃旧发现。
 

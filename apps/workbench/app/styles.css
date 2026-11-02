@@ -121,6 +121,13 @@ code, .log-row, .metric-value, .pipeline-progress { font-family: "SFMono-Regular
 .task-form-grid { display: grid; grid-template-columns: 1fr 1fr; gap: 16px; }
 .real-create-form .checkbox-field { flex-direction: row; align-items: flex-start; line-height: 1.6; }
 .checkbox-field input[type=checkbox] { width: 15px; height: 15px; margin-top: 3px; flex-shrink: 0; accent-color: #8d64b7; }
+.real-create-form .mining-options { border: 1px solid #e8e1f0; border-radius: 9px; padding: 14px; min-width: 0; }
+.mining-options legend { font-size: 13px; font-weight: 600; color: #68567e; padding: 0 5px; }
+.mining-options-list { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 10px; margin-bottom: 10px; }
+.real-create-form .mining-option { border: 1px solid #e8e1f0; border-radius: 7px; padding: 10px; gap: 8px; cursor: pointer; }
+.mining-option:has(input:checked) { background: #f8f5fc; border-color: #b79cd5; }
+.mining-option span { min-width: 0; }.mining-option strong, .mining-option small { display: block; }.mining-option strong { font-size: 12px; }.mining-option small { font-size: 11px; color: #80728f; font-weight: 400; line-height: 1.65; margin-top: 4px; }
+@media (max-width: 600px) { .mining-options-list { grid-template-columns: 1fr; } }
 .field-hint { font-size: 12px; line-height: 1.7; color: #80728f; margin: 0; }
 .source-path { overflow-wrap: anywhere; margin-top: -6px; font-family: var(--font-mono, monospace); }
 .target-tools { display: flex; justify-content: space-between; align-items: center; gap: 10px; }

@@ -27,8 +27,115 @@ async function save(root, path, value) {
 function evidenceGroup(candidate) {
   const finding = candidate.finding ?? {}, locations = finding.locations;
   const primary = Array.isArray(locations) ? locations[0] : locations?.primary;
-  return `${candidate.claim_scope}:${primary?.file ?? primary?.path ?? finding.location?.file ?? candidate.task_id ?? candidate.candidate_id}`;
+  return `${candidate.claim_scope}:${primary?.file ?? primary?.path ?? finding.location?.file ?? finding.location?.path ?? candidate.task_id ?? candidate.candidate_id}`;
 }
+const comparablePacket = ({ input_sha256, batch_id, ...packet }) => packet;
+function sourcePath(value) {
+  if (typeof value !== "string") return null;
+  const clean = value.trim().replace(/^`|`$/g, "").replace(/(?::\d+(?:-\d+)?|#L\d+(?:-L?\d+)?)$/, "").replaceAll("\\", "/");
+  if (!clean || clean.startsWith("/") || /^[a-z]:/i.test(clean) || clean.includes("://") || clean.split("/").some(part => ["", ".", ".."].includes(part))) return null;
+  return clean;
+}
+function collectEvidencePaths(value, paths, artifacts = new Set()) {
+  if (!value || typeof value !== "object") return true;
+  if (Array.isArray(value)) return value.every(row => collectEvidencePaths(row, paths, artifacts));
+  for (const [key, child] of Object.entries(value)) {
+    if (["path", "file"].includes(key) && typeof child === "string") {
+      const path = sourcePath(child); if (!path) return false; if (!artifacts.has(path)) paths.add(path);
+    } else if (["evidence_refs", "locations", "code_refs"].includes(key)) {
+      const refs = Array.isArray(child) ? child : [child];
+      for (const ref of refs) {
+        if (typeof ref === "string") { const path = sourcePath(ref); if (!path) return false; if (!artifacts.has(path)) paths.add(path); }
+        else {
+          if (!collectEvidencePaths(ref, paths, artifacts)) return false;
+          if (!ref || typeof ref !== "object" || !Object.keys(ref).some(name => ["path", "file", "primary", "locator"].includes(name))) return false;
+        }
+      }
+    } else if (child && typeof child === "object" && !collectEvidencePaths(child, paths, artifacts)) return false;
+  }
+  return true;
+}
+async function inputPaths(root, input, taskIds) {
+  const paths = new Set(), tasks = input.tasks.filter(task => taskIds.has(task.task_id));
+  const artifacts = new Set(input.tasks.flatMap(task => task.report?.path ? [task.report.path] : []));
+  for (const task of tasks) {
+    if (!task.code_refs?.length || !collectEvidencePaths({ code_refs: task.code_refs }, paths, artifacts)) return null;
+    if (task.report && !collectEvidencePaths(await readBound(root, task.report), paths, artifacts)) return null;
+  }
+  if (!collectEvidencePaths(input.candidates.filter(candidate => taskIds.has(candidate.task_id)), paths, artifacts)) return null;
+  return paths;
+}
+async function declaredDependencies(root, previous, input, batch) {
+  const result = previous.validation.bundle.batches.find(row => row.batch_id === batch.batch_id), declared = new Set();
+  if (!result) return null;
+  const artifacts = new Set(input.tasks.flatMap(task => task.report?.path ? [task.report.path] : []));
+  for (const role of REVIEW_ROLES) {
+    const doc = await readBound(root, result[role.toLowerCase()]), scope = doc.dependency_scope;
+    if (scope?.complete !== true || !Array.isArray(scope.source_paths) || !scope.source_paths.length
+      || scope.source_paths.some(path => sourcePath(path) !== path) || new Set(scope.source_paths).size !== scope.source_paths.length) return null;
+    const observed = new Set();
+    if (!collectEvidencePaths(doc.findings, observed, artifacts) || [...observed].some(path => !scope.source_paths.includes(path))) return null;
+    for (const path of scope.source_paths) declared.add(path);
+  }
+  const candidates = input.candidates.filter(row => batch.candidate_ids.includes(row.candidate_id));
+  if (candidates.some(row => row.claim_scope !== "SOURCE")) return null;
+  const observed = await inputPaths(root, input, new Set(candidates.map(row => row.task_id)));
+  if (!observed || [...observed].some(path => !declared.has(path))) return null;
+  return declared;
+}
+async function relatedInputsUnchanged(root, before, after, candidates, dependencies) {
+  if (!dependencies || before.scope_digest !== after.scope_digest || digest(before.runtime ?? null) !== digest(after.runtime ?? null)) return false;
+  const keys = new Set(candidates.map(evidenceGroup));
+  for (const key of keys) {
+    const matching = input => input.candidates.filter(candidate => evidenceGroup(candidate) === key).sort((a, b) => a.candidate_id.localeCompare(b.candidate_id));
+    if (digest(matching(before)) !== digest(matching(after))) return false;
+  }
+  if (before.tasks.some(task => !after.tasks.some(row => row.task_id === task.task_id))) return false;
+  const changed = after.tasks.filter(task => digest(before.tasks.find(previous => previous.task_id === task.task_id) ?? null) !== digest(task));
+  const changedIds = new Set(changed.map(task => task.task_id));
+  const beforePaths = await inputPaths(root, before, changedIds), afterPaths = await inputPaths(root, after, changedIds);
+  // Locality is only useful after all three reviewers explicitly established complete dependencies.
+  if (!beforePaths || !afterPaths || [...beforePaths, ...afterPaths].some(path => dependencies.has(path))) return false;
+  return true;
+}
+
+async function reusableHistory(board, root) {
+  const ref = board.incremental_rounds?.at(-1)?.previous?.board;
+  if (!ref) return null;
+  const previous = await readBound(root, ref);
+  if (!previous.final_report || previous.validation?.status !== "REVIEWED" || !previous.validation.batch_plan || previous.scope_digest !== board.scope_digest) return null;
+  const { validateReviewBundle } = await import("./review.mjs");
+  await validateReviewBundle(previous, root, previous.validation.bundle);
+  return { ref, board: previous, input: await readBound(root, previous.validation.input), plan: await readBound(root, previous.validation.batch_plan) };
+}
+
+async function reuseBatch(board, root, input, batch, sessions) {
+  const priorRef = batch.reused_from?.board;
+  check(priorRef && board.incremental_rounds?.some(round => digest(round.previous.board) === digest(priorRef)), "复核复用来源不属于本审计的历史轮次。");
+  const previous = await readBound(root, priorRef);
+  check(previous.final_report && previous.validation?.status === "REVIEWED" && previous.scope_digest === board.scope_digest, "复核复用缺少已封存的同范围历史。");
+  const { validateReviewBundle } = await import("./review.mjs");
+  const checked = await validateReviewBundle(previous, root, previous.validation.bundle);
+  const plan = await readBound(root, previous.validation.batch_plan);
+  const oldBatch = plan.batches.find(row => row.batch_id === batch.reused_from.batch_id);
+  check(oldBatch, "历史复核批次不存在。");
+  const oldPacket = await readBound(root, oldBatch.input), packet = await readBound(root, batch.input);
+  const dependencies = await declaredDependencies(root, previous, checked.input, oldBatch);
+  check(digest(comparablePacket(oldPacket)) === digest(comparablePacket(packet))
+    && await relatedInputsUnchanged(root, checked.input, input, input.candidates.filter(row => batch.candidate_ids.includes(row.candidate_id)), dependencies), "复核证据或关联输入发生变化，不能复用旧裁决。");
+  const result = previous.validation.bundle.batches.find(row => row.batch_id === oldBatch.batch_id);
+  const docs = {};
+  for (const role of REVIEW_ROLES) {
+    const key = role.toLowerCase();
+    const document = await readBound(root, result[key]);
+    check(nonempty(document.agent_session_id) && !sessions.has(document.agent_session_id), "复用复核会话与当前轮次角色冲突。");
+    sessions.add(document.agent_session_id);
+    docs[key] = { ...document, findings: checked.roles[key].findings.filter(row => batch.candidate_ids.includes(row.candidate_id)) };
+    exactIds(docs[key].findings, batch.candidate_ids, "candidate_id");
+  }
+  return { docs, result };
+}
+
 function exactIds(rows, ids, field) {
   check(Array.isArray(rows) && rows.length === ids.length && new Set(rows.map(row => row?.[field])).size === ids.length
     && rows.every(row => ids.includes(row?.[field])), "分批复核必须逐项覆盖本批标识，不能遗漏、重复或新增。");
@@ -80,6 +187,23 @@ export async function prepareReviewBatches(store) {
     rows.push(candidate);
   }
   await flush();
+  const history = await reusableHistory(board, root);
+  const reusedResults = [];
+  if (history) for (const batch of batches) {
+    const packet = await readBound(root, batch.input);
+    const candidates = input.candidates.filter(row => batch.candidate_ids.includes(row.candidate_id));
+    for (const oldBatch of history.plan.batches) {
+      const oldPacket = await readBound(root, oldBatch.input);
+      if (digest(comparablePacket(oldPacket)) !== digest(comparablePacket(packet))) continue;
+      const dependencies = await declaredDependencies(root, history.board, history.input, oldBatch);
+      if (!await relatedInputsUnchanged(root, history.input, input, candidates, dependencies)) continue;
+      batch.reused_from = { board: history.ref, batch_id: oldBatch.batch_id };
+      const { docs, result } = await reuseBatch(board, root, input, batch, new Set());
+      reusedResults.push({ ...result, batch_id: batch.batch_id, reused: true,
+        sessions: Object.fromEntries(REVIEW_ROLES.map(role => [role, docs[role.toLowerCase()].agent_session_id])) });
+      break;
+    }
+  }
   const plan = { protocol: REVIEW_BATCH_PROTOCOL, audit_id: board.audit_id, input: ref, max_candidates: 6, target_input_tokens: 16_000, batches };
   const planRef = await save(root, `${prefix}/plan.json`, plan);
   await store.mutate(next => {
@@ -88,6 +212,8 @@ export async function prepareReviewBatches(store) {
     next.validation.status = "IN_PROGRESS";
     next.validation.batch_count = batches.length;
     next.validation.batch_results ??= [];
+    next.validation.batch_results.push(...reusedResults);
+    if (reusedResults.length) next.validation.reused_batch_count = reusedResults.length;
   });
   return { ...planRef, batch_count: batches.length };
 }
@@ -151,8 +277,10 @@ export async function validateBatchBundle(board, root, input, bundle, sessions) 
   const roles = Object.fromEntries(REVIEW_ROLES.map(role => [role.toLowerCase(), { role, agent_session_ids: [], findings: [] }]));
   for (const batch of plan.batches) {
     const row = bundle.batches.find(row => row.batch_id === batch.batch_id);
+    const reused = batch.reused_from ? await reuseBatch(board, root, input, batch, sessions) : null;
+    if (reused) for (const role of REVIEW_ROLES) check(digest(row[role.toLowerCase()]) === digest(reused.result[role.toLowerCase()]), "复用复核引用发生变化。");
     for (const role of REVIEW_ROLES) {
-      const doc = await checkBatchResult(root, plan.input, batch, role, row[role.toLowerCase()], row, sessions);
+      const doc = reused ? reused.docs[role.toLowerCase()] : await checkBatchResult(root, plan.input, batch, role, row[role.toLowerCase()], row, sessions);
       roles[role.toLowerCase()].agent_session_ids.push(doc.agent_session_id);
       roles[role.toLowerCase()].findings.push(...doc.findings);
     }

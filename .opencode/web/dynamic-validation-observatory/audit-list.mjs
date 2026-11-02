@@ -5,7 +5,7 @@ export function isRunningAudit(audit) {
 }
 
 export function auditListItem(audit) {
-  const fields = ["id", "name", "repository_name", "repository_id", "commit", "stage", "progress", "progress_text", "progress_source", "task_protocol", "task_board", "mining_strategy", "execution_incomplete", "finding_count", "status", "updated_at", "event_sequence", "version"];
+  const fields = ["id", "name", "repository_name", "repository_id", "commit", "stage", "progress", "progress_text", "progress_source", "task_protocol", "task_board", "mining_strategy", "mining_contract", "mining_strategies", "execution_incomplete", "finding_count", "status", "updated_at", "event_sequence", "version"];
   const item = Object.fromEntries(fields.map(key => [key, audit[key]]));
   if (audit.provenance) item.provenance = audit.provenance;
   if (audit.todo) item.todo = { total: audit.todo.total, done: audit.todo.done, gap: audit.todo.gap };

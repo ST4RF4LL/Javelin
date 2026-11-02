@@ -9,6 +9,7 @@ ${s.body||""}${s.detail?`
 /* END GENERATED AUDIT MONITOR */
 import { initProductMemoryUI } from "./product-memory-ui.js";
 import { syncAgentSettingsForm, readAgentSettingsForm } from "./agent-settings-ui.js";
+import { initDecisionModelSettingsUI } from "./decision-model-settings-ui.js";
 
 export function filterValidationActivity(items, { query = "", scope = "all" } = {}) {
   const needle = query.trim().toLowerCase();
@@ -843,7 +844,7 @@ function renderAuditDetail() {
   for (const [label, value] of [["任务入口", externalSession ? "Agent 当前会话" : "Web · 后台执行会话"], ["主执行引擎", agentLabels[audit.engine ?? audit.execution?.engine ?? "opencode"] ?? audit.engine ?? audit.execution?.engine], ["执行会话", audit.execution?.session_id ?? audit.provider_session_id ?? "创建中"], ...(externalSession ? [["会话连接", audit.execution.connected ? "已连接" : "已断开"]] : [])]) {
     const row = element("div"); row.append(element("dt", "", label), element("dd", "", value)); facts.append(row);
   }
-  [["测试对象", audit.repository_name], [audit.source_kind === "directory" ? "目录范围快照" : "提交", audit.source_kind === "directory" ? short(audit.execution_spec_digest, 18) : short(audit.commit, 18)], [audit.status === "queued" ? "执行模型（下次启动）" : "执行模型（本次启动）", modelForDisplay ?? "默认（不传 --model）"], ["制品", `${audit.artifact_count ?? 0} 个`], ["队列状态", audit.status === "queued" ? (audit.queue?.mode === "recover" ? "断点恢复等待调度；可立即调度" : "等待定时调度；可立即调度") : "未排队"], ["本地调度任务", todoStatusText(audit.todo)], ["上下文 watchdog", contextRecoveryText(audit.context_window_recovery)], ["人工完整验证", `${audit.runtime_validation_count ?? 0} 次`], ["补充说明", audit.task_context?.additional_instructions_enabled ? `已启用 · ${audit.task_context.additional_instructions_length} 字符` : "未启用"], ["动态参与", audit.runtime_testing ? "贯穿式流程（详见下方）" : audit.task_context?.dynamic_validation_enabled ? "旧版快速动态（240/180秒）" : "未授权（静态三方）"], ["交付进度来源", audit.progress_source === "task-board" ? "通用任务面板（报告交付）" : audit.progress_source === "local-audit-todo" ? "本地调度队列" : audit.progress_source === "stage-delivery-manifest" ? "八环节物化清单" : "历史制品推断"], ["断点恢复", audit.recovery_count ? `${audit.recovery_count} 次 · ${formatDate(audit.last_recovered_at)}` : "尚未恢复"], ["更新时间", formatDate(audit.updated_at)], ["覆盖状态", audit.coverage?.status ?? "未生成"], ["工作台制品目录", audit.paths?.reports_root ?? "启动后生成"]].forEach(([label, value]) => {
+  [["测试对象", audit.repository_name], [audit.source_kind === "directory" ? "目录范围快照" : "提交", audit.source_kind === "directory" ? short(audit.execution_spec_digest, 18) : short(audit.commit, 18)], [audit.status === "queued" ? "执行模型（下次启动）" : "执行模型（本次启动）", modelForDisplay ?? "默认（不传 --model）"], ["制品", `${audit.artifact_count ?? 0} 个`], ["队列状态", audit.status === "queued" ? (audit.queue?.mode === "recover" ? "断点恢复等待调度；可立即调度" : "等待定时调度；可立即调度") : "未排队"], ["本地调度任务", todoStatusText(audit.todo)], ["上下文 watchdog", contextRecoveryText(audit.context_window_recovery)], ["人工完整验证", `${audit.runtime_validation_count ?? 0} 次`], ["补充说明", audit.task_context?.additional_instructions_enabled ? `已启用 · ${audit.task_context.additional_instructions_length} 字符` : "未启用"], ["动态参与", audit.runtime_testing ? "贯穿式流程（详见下方）" : audit.task_context?.dynamic_validation_enabled ? "旧版快速动态（240/180秒）" : "未授权（静态三方）"], ["交付进度来源", audit.progress_source === "task-board" ? "工作项看板（报告交付）" : audit.progress_source === "local-audit-todo" ? "本地调度队列" : audit.progress_source === "stage-delivery-manifest" ? "八环节物化清单" : "历史制品推断"], ["断点恢复", audit.recovery_count ? `${audit.recovery_count} 次 · ${formatDate(audit.last_recovered_at)}` : "尚未恢复"], ["更新时间", formatDate(audit.updated_at)], ["覆盖状态", audit.coverage?.status ?? "未生成"], ["工作台制品目录", audit.paths?.reports_root ?? "启动后生成"]].forEach(([label, value]) => {
     const wrapper = element("div"); wrapper.append(element("dt", "", label), element("dd", "", value ?? "—")); facts.append(wrapper);
   });
   const stages = element("ol", "stage-list");
@@ -908,7 +909,7 @@ function renderAuditDetail() {
     actions.append(recover);
   }
   if (["queued", "failed", "interrupted", "cancelled", "completed", "artifact_only"].includes(audit.status) && audit.repository_id) {
-    const retry = element("button", "button secondary", audit.status === "completed" && !audit.execution_incomplete ? "再次审计" : "新建重试");
+    const retry = element("button", "button secondary", "重新审计");
     retry.addEventListener("click", async () => {
       retry.disabled = true;
       try { await retryAudit(audit); }
@@ -931,7 +932,7 @@ function renderAuditDetail() {
   configuration.append(element("summary", "", "任务配置与制品信息"), facts);
   const sources = sourceContext(audit, { includeReports: true }); sources.id = "audit-sources";
   const navigation = element("nav", "audit-detail-nav"); navigation.setAttribute("aria-label", "任务详情章节");
-  const sections = [[head, "audit-overview", "概览"], [taskBoardPanel, "audit-board-section", "任务面板"], [fileCoverageSummary, "audit-file-coverage-summary", "文件覆盖率"], [runtimePanel, "audit-runtime-section", "动态执行"], [logs, "audit-logs-section", "运行监控"], [sources, "audit-sources", "来源与报告"]];
+  const sections = [[head, "audit-overview", "概览"], [taskBoardPanel, "audit-board-section", "工作项看板"], [fileCoverageSummary, "audit-file-coverage-summary", "文件覆盖率"], [runtimePanel, "audit-runtime-section", "动态执行"], [logs, "audit-logs-section", "运行监控"], [sources, "audit-sources", "来源与报告"]];
   for (const [section, id, label] of sections) if (section) {
     section.id = id;
     const button = element("button", "text-button", label); button.type = "button";
@@ -986,23 +987,38 @@ function renderFileCoverageSummary(audit) {
   return row;
 }
 
+function miningStrategyLabel(value) {
+  return ({ focus_area: "Focus Area · 风险优先", api: "逐 API · 接口审查", file_sweep: "逐文件 · 全面浏览", creed: "CREED · 假设驱动" })[value] ?? value;
+}
+
+function selectedMiningStrategies(value, fallback = []) {
+  return Array.isArray(value?.mining_strategies) ? value.mining_strategies : value?.mining_strategy ? [value.mining_strategy] : fallback;
+}
+
+function formMiningStrategies(form) {
+  return [...form.querySelectorAll('input[name="mining_strategies"]:checked')].map(option => option.value);
+}
+
 function renderTaskBoard(audit) {
   const viewKey = `${auditProductId(audit.id)}/${audit.id}`;
-  if (!state.taskBoardViews.has(viewKey)) state.taskBoardViews.set(viewKey, { kind: "", status: "", offset: 0, expanded: new Set(), requestSequence: 0 });
+  if (!state.taskBoardViews.has(viewKey)) state.taskBoardViews.set(viewKey, { kind: "", strategy: "", status: "", offset: 0, expanded: new Set(), requestSequence: 0 });
   const view = state.taskBoardViews.get(viewKey);
   const panel = element("section", "task-board-panel");
-  panel.append(element("p", "eyebrow", "TASK BOARD"), element("h3", "", "审计任务面板"));
+  panel.append(element("p", "eyebrow", "WORK ITEMS"), element("h3", "", "工作项看板"));
   const summary = audit.task_board;
-  if (audit.execution_incomplete) panel.append(element("p", "notice error", "本轮未收到任何源码审计报告，无法据此判断目标是否存在漏洞。失败与缺口记录已封存，修复执行问题后可点击增量审计补做。"));
-  const strategy = audit.mining_strategy ?? summary.mining_strategy;
-  const strategyLabel = strategy === "file_sweep" ? "逐文件地毯式审计" : strategy === "api" ? "逐接口 API 审查" : strategy === "focus_area" ? "高风险 Focus Area" : "原有并列任务范围";
-  panel.append(element("p", "", `漏洞挖掘策略：${strategyLabel}`));
+  if (audit.execution_incomplete) panel.append(element("p", "notice error", "本轮未收到任何源码审计报告，无法据此判断目标是否存在漏洞。存在执行失败的工作项时，可通过增量审计重试；证据缺口和未执行项分别保留。"));
+  const strategies = selectedMiningStrategies(audit, selectedMiningStrategies(summary));
+  panel.append(element("p", "", `漏洞挖掘方式：${strategies.length ? strategies.map(miningStrategyLabel).join("、") : "历史工作项范围"}`));
   const metrics = element("p", "", `共 ${summary.total} 项 · 已交报告 ${summary.reported} · 执行中 ${summary.running} · 待执行 ${summary.pending} · 缺口 ${summary.gap} · 失败 ${summary.failed}`);
-  if (strategy !== "api") panel.append(element("p", "", `Focus Area 报告交付 ${summary.tracks.focus_area.reported}/${summary.tracks.focus_area.total}。`));
-  if (!["focus_area", "file_sweep"].includes(strategy)) panel.append(element("p", "", `API 任务报告交付 ${summary.tracks.api.reported}/${summary.tracks.api.total}；用户 API 清单 ${summary.api_inventory.reported}/${summary.api_inventory.submitted} 项已收齐报告。`));
-  if (summary.file_sweep) { const files = summary.file_sweep; panel.append(element("p", "", `任务发布：文件已浏览 ${files.browsed_files}/${files.eligible_files} · 浏览中 ${files.reading_files} · 待浏览 ${files.pending_files} · 缺口 ${files.gap_files} · 已发布 Focus Area ${files.published_areas}`), element("p", "muted", "已浏览表示完成威胁发现初筛，深入分析以 Focus Area 领取与报告交付为准。")); }
+  if (summary.strategy_coverage) for (const [id, coverage] of Object.entries(summary.strategy_coverage)) {
+    const run = summary.strategy_runs?.find(item => item.strategy_id === id);
+    panel.append(element("p", "strategy-coverage", `${miningStrategyLabel(id)}：工作项已交付 ${coverage.reported}/${coverage.total} · 执行失败 ${coverage.failed} · 证据或范围缺口 ${coverage.gap}${run ? ` · 规划${run.state === "SEALED" ? "已结束" : "进行中"}` : ""}${run?.empty_reason ? `；${run.empty_reason}` : ""}`));
+    if (id === "creed") panel.append(element("p", "", `CREED 当前函数清单交付 ${coverage.reported}/${coverage.eligible_functions ?? coverage.total} · 已知未纳入函数 ${coverage.omitted_functions ?? 0} · 函数提取缺口 ${coverage.inventory_gaps ?? 0} 项${coverage.inventory_complete === false ? "；清单存在缺口，不代表全部函数覆盖" : ""}。`));
+  } else for (const [id, track] of Object.entries(summary.tracks ?? {})) if (track.total) panel.append(element("p", "", `${id === "api" ? "API" : "Focus Area"} 工作项报告交付 ${track.reported}/${track.total}。`));
+  if (summary.api_inventory?.submitted) panel.append(element("p", "", `用户 API 清单 ${summary.api_inventory.reported}/${summary.api_inventory.submitted} 项已收齐报告。`));
+  if (summary.file_sweep) { const files = summary.file_sweep; panel.append(element("p", "", `文件已浏览 ${files.browsed_files}/${files.eligible_files} · 浏览中 ${files.reading_files} · 待浏览 ${files.pending_files} · 浏览缺口 ${files.gap_files} · 已发布审查工作项 ${files.published_areas}`), element("p", "muted", "文件浏览属于威胁发现初筛；深入分析与报告交付另行统计，不代表全项目安全覆盖率。")); }
   panel.append(metrics, element("p", "muted", `发布${summary.publication === "SEALED" ? "已结束" : "进行中"}；内容复核${summary.validation?.status === "REVIEWED" ? "已完成" : "未完成"}。报告交付进度与内容复核分别统计。`));
-  const incrementalActions = element("div", "action-row"), incrementalButton = element("button", "button primary", "增量审计"), incrementalNote = element("p", "muted", "正在检查可增补范围…");
+  const incrementalActions = element("div", "action-row"), incrementalButton = element("button", "button primary", "增量审计 · 重试失败工作项"), incrementalNote = element("p", "muted", "正在检查执行失败的工作项…");
   incrementalButton.disabled = true;
   incrementalActions.append(incrementalButton); panel.append(incrementalActions, incrementalNote);
   incrementalButton.addEventListener("click", async () => {
@@ -1010,15 +1026,16 @@ function renderTaskBoard(audit) {
     await requestAuditAction(audit, "incremental");
     await refresh();
   });
-  const controls = element("div", "action-row"), kind = element("select"), status = element("select");
-  kind.setAttribute("aria-label", "任务类型"); status.setAttribute("aria-label", "任务执行状态");
-  for (const [value, label] of [["", "全部类型"], ["focus_area", "Focus Area"], ["api", "API"]]) { const option = element("option", "", label); option.value = value; kind.append(option); }
+  const controls = element("div", "action-row"), strategy = element("select"), kind = element("select"), status = element("select");
+  strategy.setAttribute("aria-label", "挖掘方式"); kind.setAttribute("aria-label", "工作项类型"); status.setAttribute("aria-label", "工作项执行状态");
+  for (const [value, label] of [["", "全部挖掘方式"], ...strategies.map(id => [id, miningStrategyLabel(id)])]) { const option = element("option", "", label); option.value = value; strategy.append(option); }
+  for (const [value, label] of [["", "全部工作项类型"], ["focus_area", "风险区域"], ["api", "API"], ["function", "函数"]]) { const option = element("option", "", label); option.value = value; kind.append(option); }
   const labels = { PENDING: "待执行", RUNNING: "执行中", REPORTED: "已交报告", GAP: "存在缺口", FAILED: "执行失败" };
   for (const [value, label] of [["", "全部状态"], ...Object.entries(labels)]) { const option = element("option", "", label); option.value = value; status.append(option); }
-  kind.value = view.kind; status.value = view.status;
-  if (strategy) { view.kind = strategy === "file_sweep" ? "focus_area" : strategy; kind.value = view.kind; kind.hidden = true; }
+  kind.value = view.kind; status.value = view.status; strategy.value = view.strategy ?? "";
+  strategy.hidden = strategies.length < 2;
   const previous = element("button", "button secondary", "上一页"), next = element("button", "button secondary", "下一页"), page = element("span", "muted");
-  controls.append(kind, status, previous, next, page); panel.append(controls);
+  controls.append(strategy, kind, status, previous, next, page); panel.append(controls);
   const list = element("div", "task-board-items"); panel.append(list);
   let nextOffset = null;
   const productId = auditProductId(audit.id);
@@ -1026,13 +1043,13 @@ function renderTaskBoard(audit) {
     const sequence = ++view.requestSequence;
     previous.disabled = true; next.disabled = true;
     try {
-      const params = new URLSearchParams({ offset: view.offset, limit: 25, kind: view.kind, status: view.status });
+      const params = new URLSearchParams({ offset: view.offset, limit: 25, kind: view.kind, strategy_id: view.strategy ?? "", status: view.status });
       const data = await api(`/api/v2/products/${encodeURIComponent(productId)}/audits/${encodeURIComponent(audit.id)}/task-board?${params}`);
       if (sequence !== view.requestSequence) return;
       const incremental = data.incremental;
       incrementalButton.disabled = !incremental?.available;
-      incrementalButton.textContent = incremental?.task_count ? `增量审计（${incremental.task_count} 项）` : "增量审计";
-      incrementalNote.textContent = `${incremental?.round ? `已启动 ${incremental.round} 轮增量审计。` : ""}${incremental?.reason ?? "当前服务尚未支持增量审计，请更新后台。"}${incremental?.file_count ? `另含 ${incremental.file_count} 个未完成浏览的文件。` : ""}旧报告保留，补做结束后更新当前报告。`;
+      incrementalButton.textContent = `增量审计 · 重试失败工作项${incremental?.task_count ? `（${incremental.task_count}）` : ""}`;
+      incrementalNote.textContent = `${incremental?.round ? `已启动 ${incremental.round} 轮增量审计。` : ""}${incremental?.reason ?? "当前服务尚未支持增量审计，请更新后台。"}仅重新执行失败工作项，已有成功交付与旧报告保留。`;
       if (view.offset > 0 && view.offset >= data.total) {
         view.offset = Math.max(0, Math.ceil(data.total / 25) - 1) * 25;
         return refresh();
@@ -1045,8 +1062,10 @@ function renderTaskBoard(audit) {
           if (!detail.isConnected) return;
           if (detail.open) view.expanded.add(task.task_id); else view.expanded.delete(task.task_id);
         });
-        heading.append(element("strong", "", task.title), element("span", "", `${task.kind === "api" ? "API" : "Focus Area"} · ${task.domain} · ${labels[task.status] ?? task.status}`));
-        detail.append(heading, element("p", "muted", `任务 ${task.task_id} · 执行 ${task.attempt_count} 次 · 内容复核：${task.validation ? task.validation.status === "REVIEWED" ? "已复核" : "待补充或有缺口" : "尚未复核"}`), element("pre", "task-board-prompt", task.prompt));
+        const origins = [...new Set([task.strategy_id, ...(task.source_refs ?? []).map(ref => ref.strategy_id)].filter(Boolean))];
+        const executionLabel = task.status === "GAP" && task.execution_failure ? "执行失败（已封存缺口）" : labels[task.status] ?? task.status;
+        heading.append(element("strong", "", task.title), element("span", "", `${origins.length ? origins.map(miningStrategyLabel).join("、") : task.kind === "api" ? "API" : task.kind === "function" ? "函数" : "Focus Area"} · ${task.domain} · ${executionLabel}`));
+        detail.append(heading, element("p", "muted", `工作项 ${task.task_id} · 执行 ${task.attempt_count} 次 · 内容复核：${task.validation ? task.validation.status === "REVIEWED" ? "已复核" : "待补充或有缺口" : "尚未复核"}`), element("pre", "task-board-prompt", task.prompt));
         if (task.code_refs?.length) detail.append(element("p", "", `初步定位：${task.code_refs.map(ref => `${ref.path}${ref.line ? `:${ref.line}` : ""}`).join("；")}`));
         if (task.report) detail.append(element("p", "", `报告：${task.report.path}`));
         if (task.reason) detail.append(element("p", "", `执行缺口：${task.reason}`));
@@ -1054,7 +1073,7 @@ function renderTaskBoard(audit) {
         if (task.incremental) detail.append(element("p", "muted", `增量审计第 ${task.incremental.round} 轮：${task.incremental.reasons.join("；")}`));
         list.append(detail);
       }
-      if (!data.items.length) list.append(element("p", "muted", "暂无符合条件的任务；规划中的任务会在发布后出现。"));
+      if (!data.items.length) list.append(element("p", "muted", "暂无符合条件的工作项；规划中的工作项会在发布后出现。"));
       nextOffset = data.next_offset; previous.disabled = view.offset === 0; next.disabled = nextOffset == null;
       page.textContent = `${data.total} 项 · 第 ${Math.floor(view.offset / 25) + 1} 页`;
     } catch (error) { if (sequence === view.requestSequence) {
@@ -1062,6 +1081,7 @@ function renderTaskBoard(audit) {
       list.replaceChildren(element("p", "", error.message));
     } }
   }
+  strategy.addEventListener("change", () => { view.strategy = strategy.value; view.offset = 0; refresh(); });
   kind.addEventListener("change", () => { view.kind = kind.value; view.offset = 0; refresh(); });
   status.addEventListener("change", () => { view.status = status.value; view.offset = 0; refresh(); });
   previous.addEventListener("click", () => { view.offset = Math.max(0, view.offset - 25); refresh(); });
@@ -1126,13 +1146,13 @@ function renderRuntimeTesting(audit) {
     const blocked = element("div", "notice");
     const lease = value.environment_lease;
     blocked.append(element("p", "", lease ? `占用来源：${lease.audit_name}（${lease.audit_id}） · ${lease.origin}` : "旧任务的环境占用阻止了本次启动。"));
-    if (value.browser_allocated === false && !value.ssh_allocated) blocked.append(element("p", "", "本次动态测试尚未通过 Web 或 SSH 访问目标。请查看环境占用，核对原任务后解除，再新建重试。"));
+    if (value.browser_allocated === false && !value.ssh_allocated) blocked.append(element("p", "", "本次动态测试尚未通过 Web 或 SSH 访问目标。请查看环境占用，核对原任务后解除，再重新审计。"));
     const manage = element("button", "button secondary", "查看环境占用");
     manage.addEventListener("click", () => { $("audit-drawer").close(); setView("runtime"); });
     blocked.append(manage); panel.append(blocked);
   }
   if (["RUNTIME_HOST_UNSUPPORTED", "runtime-host-unsupported"].includes(value.reason)) {
-    panel.append(element("p", "", "这是旧任务保存的结果。更新并重启工作台后，点击“新建重试”沿用原环境说明；Web 测试可在 macOS 上通过 Chrome DevTools MCP 执行。"));
+    panel.append(element("p", "", "这是旧任务保存的结果。更新并重启工作台后，点击“重新审计”沿用原环境说明；Web 测试可在 macOS 上通过 Chrome DevTools MCP 执行。"));
   }
   if (value.environment_ready === false && !["SKIPPED", "CLOSED", "BLOCKED", "QUARANTINED"].includes(value.status)) panel.append(element("p", "", "Agent 将先理解完整环境说明，再登记执行配置并访问目标。"));
   const list = element("ol", "stage-list runtime-stage-list");
@@ -1802,6 +1822,40 @@ function findingEvidenceSection(finding) {
   return section;
 }
 
+function findingCreedSection(finding) {
+  const analyses = [...(finding.creed_analyses ?? []).map(row => row.analysis), finding.creed_analysis, ...(finding.source_occurrences ?? []).map(row => row.creed_analysis)].filter(Boolean);
+  if (!analyses.length) return null;
+  const section = element("section", "finding-section creed-evidence");
+  section.append(element("h3", "", "开发者假设与失效条件"));
+  const seen = new Set();
+  for (const analysis of analyses) {
+    const fingerprint = JSON.stringify(analysis);
+    if (seen.has(fingerprint)) continue;
+    seen.add(fingerprint);
+    const source = analysis.function ?? {};
+    section.append(element("p", "mono", `${source.path ?? ""}${source.start_line ? `:${source.start_line}${source.end_line ? `-${source.end_line}` : ""}` : ""}${source.symbol ? ` · ${source.symbol}` : ""}`));
+    const actions = new Map((analysis.actions ?? []).map(action => [action.id, action]));
+    for (const belief of analysis.beliefs ?? []) {
+      const detail = element("details", "creed-belief"), heading = element("summary", "", `${belief.id} · ${belief.statement}`);
+      detail.append(heading);
+      for (const id of belief.action_ids ?? []) {
+        const action = actions.get(id);
+        if (action) detail.append(element("p", "", `代码行为：${action.description}${action.source_lines?.length ? `（源码行 ${action.source_lines.join("、")}）` : ""}`));
+      }
+      if (belief.sanity) detail.append(element("p", "", `合理性检查：${belief.sanity.reasonable ? "合理" : "不合理"}；${belief.sanity.explanation}`));
+      if (belief.violation) {
+        const conditions = Array.isArray(belief.violation.conditions) ? belief.violation.conditions.join("；") : belief.violation.conditions;
+        detail.append(element("p", "", `失效条件：${conditions || "未提出有证据支撑的具体失效条件"}`), element("p", "", belief.violation.explanation));
+      }
+      if (belief.source_lines?.length) detail.append(element("small", "mono", `源码证据行：${belief.source_lines.join("、")}`));
+      section.append(detail);
+    }
+    if (analysis.external_conditions?.length) section.append(element("p", "", `待核查的外部条件：${analysis.external_conditions.join("；")}`));
+  }
+  section.append(element("p", "muted", "以上为源码假设分析摘要；假设和外部条件须结合实际证据复核，不代表已经动态验证。"));
+  return section;
+}
+
 function openFinding(finding) {
   state.selectedFinding = finding;
   state.selectedFindingResourceId = finding.resource_id;
@@ -1815,16 +1869,19 @@ function openFinding(finding) {
   [["关联 Repo", finding.repository_name], ["Repository ID", finding.repository_id], ["审计 ID", finding.audit_id], ["等级", finding.severity], ["CVSS", finding.cvss_score], ["维度", finding.dimension], ["漏洞类型", finding.vulnerability_type_id], ["主定位", sourceLocationText(finding.location)], ["处理状态", statusText(finding.workflow?.status)], ["验证状态", statusText(finding.status)], ["来源制品", finding.source_path]].forEach(([label, value]) => {
     const wrapper = element("div"); wrapper.append(element("dt", "", label), element("dd", "", value ?? "—")); facts.append(wrapper);
   });
+  if (finding.strategy_ids?.length) { const methods = element("div"); methods.append(element("dt", "", "挖掘方式"), element("dd", "", finding.strategy_ids.map(miningStrategyLabel).join("、"))); facts.append(methods); }
   const sourceNote = finding.source_finding_ids?.length
     ? `关联来源：${finding.source_finding_ids.join("、")}。${finding.contradiction_count ? `存在 ${finding.contradiction_count} 条矛盾记录。` : "未记录矛盾。"}`
     : finding.contradiction_count ? `存在 ${finding.contradiction_count} 条矛盾记录。` : "未记录来源 finding 关联。";
   if (finding.detail_source_path) facts.append(element("p", "source-artifact mono", `最终报告详情来源：${finding.detail_source_path}`));
   const impact = [finding.impact, finding.severity_rationale].filter(Boolean).join("\n") || null;
   const analysis = [finding.reachability && `可达性：${finding.reachability}`, finding.attacker_influence && `攻击者影响：${finding.attacker_influence}`, finding.guards && `已检查防护：${finding.guards}`].filter(Boolean).join("\n") || null;
+  const creed = findingCreedSection(finding);
   $("finding-detail-body").replaceChildren(
     findingSection("漏洞说明", finding.description),
     findingLocationsSection(finding),
     findingEvidenceSection(finding),
+    ...(creed ? [creed] : []),
     findingSection("影响与严重性依据", impact),
     findingSection("可达性与防护", analysis),
     findingSection("修复建议", finding.remediation),
@@ -2818,7 +2875,7 @@ function showValidationActivityWhenReady(promise, current) {
 }
 
 async function loadViewResources(view) {
-  if (view === "settings") { await loadTimeoutRecoverySettings(); return; }
+  if (view === "settings") { await Promise.all([loadTimeoutRecoverySettings(), decisionModelUI.refresh()]); return; }
   if (view === "validation") {
     const sequence = ++state.validationRequestSequence;
     const sourceSequence = ++state.sourceOptionsRequestSequence;
@@ -2925,15 +2982,19 @@ function syncAuditContextControls(form) {
   form.querySelector(".mining-strategy").hidden = dynamicOnly;
   form.elements.test_environment_enabled.closest("[data-context-option]").hidden = staticOnly;
   $("audit-mode-description").textContent = dynamicOnly ? "仅需授权测试环境：观察 Web / SSH 实际操作、规划有界实验、独立三方复核；不要求源码或静态漏洞。" : staticOnly ? "分析冻结源码并存档报告。动态测试记为跳过。" : "源码审计与独立动态探索并行，自动交接静态候选与运行证据，汇合后统一复核。";
-  const apiStrategy = !dynamicOnly && form.elements.mining_strategy.value === "api";
+  const strategies = formMiningStrategies(form);
+  const apiStrategy = !dynamicOnly && strategies.includes("api");
   const apiInventory = form.elements.api_inventory;
   $("api-inventory-panel").hidden = !apiStrategy;
   apiInventory.disabled = !apiStrategy;
   apiInventory.required = apiStrategy;
-  $("mining-strategy-description").textContent = apiStrategy
-    ? "按你提供的 API 清单逐项定位实现代码并审查，涵盖每个条目的适用安全问题。"
-    : form.elements.mining_strategy.value === "file_sweep" ? "威胁分析 Agent 逐个浏览冻结范围中的文件，边发现边发布 Focus Area，由专业 Agent 领取深入分析。浏览进度和任务交付分别统计。"
-    : "由威胁建模提炼高风险主题，按 Focus Area 定向深入分析。";
+  const creedEnabled = !dynamicOnly && strategies.includes("creed");
+  $("creed-options-panel").hidden = !creedEnabled;
+  for (const name of ["creed_paths", "creed_symbols"]) form.elements[name].disabled = !creedEnabled;
+  const descriptions = { focus_area: "Focus Area 围绕风险区域和安全边界深入分析。", api: "逐 API 根据你提供的清单定位接口及关联实现。", file_sweep: "逐文件先浏览冻结范围，再将疑点发布为审查工作项，浏览与交付分别统计。", creed: "CREED 对完整函数分析行为、开发者假设、合理性和失效条件，保留代码证据与待核查条件。" };
+  $("mining-strategy-description").textContent = strategies.length ? `${strategies.map(id => descriptions[id]).join(" ")} 所选方式共用并发预算。` : "请至少选择一种漏洞挖掘方式。";
+  const firstStrategy = form.querySelector('input[name="mining_strategies"]');
+  firstStrategy?.setCustomValidity(!dynamicOnly && !strategies.length ? "请至少选择一种漏洞挖掘方式。" : "");
   for (const [enabledName, textareaName] of [
     ["additional_instructions_enabled", "additional_instructions"],
     ["test_environment_enabled", "test_environment_context"],
@@ -2962,7 +3023,7 @@ async function openAuditDialog(repositoryId = null, templateAudit = null) {
         method: "POST", headers: { "Content-Type": "application/json" }, body: "{}", cache: "no-store",
       });
     } catch (error) {
-      if (requestId === state.auditDialogRequest && productId === state.selectedProductId) toast(`无法恢复重试内容：${error.message}`);
+      if (requestId === state.auditDialogRequest && productId === state.selectedProductId) toast(`无法读取重新审计配置：${error.message}`);
       return;
     }
     if (requestId !== state.auditDialogRequest || productId !== state.selectedProductId) return;
@@ -2979,7 +3040,7 @@ async function openAuditDialog(repositoryId = null, templateAudit = null) {
   form.elements.audit_mode.value = templateAudit?.audit_mode ?? (templateAudit?.runtime_testing ? "joint" : "static");
   if (!select.options.length && !templateAudit) form.elements.audit_mode.value = "dynamic";
   if (repositoryId) select.value = repositoryId;
-  form.elements.name.value = templateAudit?.name ? `${templateAudit.name.replace(/（重试）$/u, "")}（重试）` : "";
+  form.elements.name.value = templateAudit?.name ? `${templateAudit.name.replace(/（重试|重新审计）$/u, "")}（重新审计）` : "";
   form.elements.audit_id.value = `audit-${new Date().toISOString().slice(0, 10).replaceAll("-", "")}-${Math.random().toString(36).slice(2, 7)}`;
   form.elements.ref.value = "当前目录快照";
   form.elements.bac_analysis.value = templateAudit?.bac_analysis?.mode ?? "auto";
@@ -2999,7 +3060,11 @@ async function openAuditDialog(repositoryId = null, templateAudit = null) {
     form.elements.test_environment_context.value = draft.test_environment_context;
   }
   form.elements.memory_mode.value = draft?.memory_mode ?? templateAudit?.memory_mode ?? "full";
-  form.elements.mining_strategy.value = draft?.mining_strategy ?? templateAudit?.mining_strategy ?? (draft?.api_inventory?.trim() ? "api" : "focus_area");
+  const strategies = selectedMiningStrategies(draft, selectedMiningStrategies(templateAudit, [draft?.api_inventory?.trim() ? "api" : "focus_area"]));
+  for (const option of form.querySelectorAll('input[name="mining_strategies"]')) option.checked = strategies.includes(option.value);
+  const creedOptions = draft?.creed_options ?? templateAudit?.creed_options;
+  form.elements.creed_paths.value = creedOptions?.paths?.join("\n") ?? "";
+  form.elements.creed_symbols.value = creedOptions?.symbols?.join("\n") ?? "";
   if (templateAudit?.runtime_testing) {
     const runtime = templateAudit.runtime_testing;
     form.elements.runtime_mode.value = runtime.mode;
@@ -3222,13 +3287,18 @@ async function submitAudit(event) {
   if (auditMode === "dynamic" && (!testEnvironmentEnabled || !form.elements.test_environment_context.value.trim())) {
     $("audit-form-error").textContent = "独立动态测试需要勾选授权开关并填写环境说明。"; $("audit-form-error").hidden = false; return;
   }
+  const miningStrategies = auditMode === "dynamic" ? [] : formMiningStrategies(form);
+  if (auditMode !== "dynamic" && !miningStrategies.length) {
+    $("audit-form-error").textContent = "请至少选择一种漏洞挖掘方式。"; $("audit-form-error").hidden = false; return;
+  }
   const input = { audit_mode: auditMode, task_protocol: "task-board.v1",
     name: data.get("name"), target_id: auditMode === "dynamic" ? null : data.get("target_id"), audit_id: data.get("audit_id"),
     engine: data.get("engine"), model: data.get("model"),
     bac_analysis: data.get("bac_analysis") ?? "auto",
     memory_mode: data.get("memory_mode") ?? "full",
-    mining_strategy: data.get("mining_strategy") ?? "focus_area",
-    api_inventory: data.get("mining_strategy") === "api" ? String(data.get("api_inventory") ?? "") : "",
+    ...(auditMode === "dynamic" ? {} : { mining_contract: "mining-strategies.v1", mining_strategies: miningStrategies }),
+    api_inventory: miningStrategies.includes("api") ? String(data.get("api_inventory") ?? "") : "",
+    ...(miningStrategies.includes("creed") ? { creed_options: { paths: form.elements.creed_paths.value.split(/\r?\n/).map(line => line.trim()).filter(Boolean), symbols: form.elements.creed_symbols.value.split(/\r?\n/).map(line => line.trim()).filter(Boolean) } } : {}),
     additional_instructions_enabled: additionalInstructionsEnabled,
     additional_instructions: additionalInstructionsEnabled ? form.elements.additional_instructions.value : "",
     test_environment_enabled: testEnvironmentEnabled,
@@ -3560,7 +3630,7 @@ $("toggle-queue").addEventListener("click", () => toggleQueue().catch(showError)
 for (const checkbox of $("audit-form").querySelectorAll(".enable-switch input[type=checkbox]")) {
   checkbox.addEventListener("change", () => syncAuditContextControls($("audit-form")));
 }
-for (const option of $("audit-form").querySelectorAll('input[name="mining_strategy"]')) {
+for (const option of $("audit-form").querySelectorAll('input[name="mining_strategies"]')) {
   option.addEventListener("change", () => syncAuditContextControls($("audit-form")));
 }
 $("project-form").addEventListener("submit", submitProject);
@@ -3596,6 +3666,7 @@ $("refresh-terminal").addEventListener("click", () => state.terminalAuditId && r
 window.addEventListener("resize", scheduleTerminalResize);
 
 const memoryUI = initProductMemoryUI({ state, api, element, table, status, toast, loadProducts, loadFindingsPage, openAuditDialog, document, window });
+const decisionModelUI = initDecisionModelSettingsUI({ api, toast, document, window });
 document.querySelectorAll(".view").forEach(item => item.classList.toggle("active", item.id === `view-${state.view}`));
 for (const area of ['finding', 'validation', 'report']) for (const key of ['product_id', 'audit_id', 'report_id']) if (initialFilters[key]) state.sourceFilters[area][key] = initialFilters[key];
 if (initialFilters.q) $(state.view === "findings" ? "finding-query" : "audit-query").value = initialFilters.q;
@@ -3637,6 +3708,7 @@ return { ready, setView, refresh: load, openAudit, async navigate(view, filters 
   state.terminalObserver?.disconnect();
   window.removeEventListener("resize", scheduleTerminalResize);
   memoryUI.destroy();
+  decisionModelUI.destroy();
   document.querySelectorAll("dialog[open]").forEach(dialog => dialog.close());
 } };
 }

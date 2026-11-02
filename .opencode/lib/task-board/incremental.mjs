@@ -27,47 +27,30 @@ async function boundJson(root, ref) {
   return JSON.parse(bytes.toString("utf8"));
 }
 
-// The plan is derived from durable evidence, never from the current UI filter.
-export async function incrementalPlan(board, root) {
-  const reasons = new Map();
-  const taskIds = new Set(board.tasks.map(task => task.task_id));
-  const add = (id, reason) => {
-    if (!taskIds.has(id)) return;
-    if (!reasons.has(id)) reasons.set(id, []);
-    reasons.get(id).push(reason);
-  };
-  for (const task of board.tasks) {
-    if (task.status !== "REPORTED") add(task.task_id, task.reason || `任务尚未完成（${task.status}）。`);
-    if (task.status === "REPORTED" && !task.report) add(task.task_id, "缺少已接收报告。");
-    if (task.report) {
-      let report, parsed = false;
-      try { report = await boundJson(root, task.report); parsed = true; }
-      catch (error) { if (!(error instanceof SyntaxError)) throw error; add(task.task_id, "原报告无法解析，需要重新交付结构化报告。"); }
-      if (parsed) {
-        if (!Array.isArray(report?.findings) || !Array.isArray(report?.gaps) || typeof report?.summary !== "string" || !report.summary.trim()) add(task.task_id, "原报告缺少摘要、发现或缺口列表。");
-        for (const gap of Array.isArray(report?.gaps) ? report.gaps : []) add(task.task_id, typeof gap === "string" ? gap : JSON.stringify(gap));
-      }
-    }
+// Execution failures are distinct from incomplete evidence or unfinished planning.
+export function retryableFailure(task, board) {
+  if (!["FAILED", "GAP"].includes(task.status)) return null;
+  const attempt = board.attempts?.find(row => row.attempt_id === task.attempt_id && row.task_id === task.task_id);
+  const failure = task.execution_failure;
+  if (failure?.retryable === false) return null;
+  if (failure && failure.attempt_id === task.attempt_id && attempt?.status === "FAILED") return failure;
+  // Legacy skip() retained the last failed attempt even after changing FAILED to GAP.
+  if (attempt?.status === "FAILED" && (task.status === "FAILED" || task.failure_count > 0 || task.timeout_recovery?.exhausted === true)) {
+    return { attempt_id: attempt.attempt_id, kind: "EXECUTION_FAILED", retryable: true };
   }
-  for (const row of board.validation?.assessments ?? []) {
-    if (row.status !== "REVIEWED") add(row.task_id, row.reason || "内容复核要求补充分析。");
-    for (const gap of row.gaps ?? []) add(row.task_id, typeof gap === "string" ? gap : JSON.stringify(gap));
-  }
-  if (board.validation?.input) {
-    const input = await boundJson(root, board.validation.input);
-    for (const task of input.tasks ?? []) for (const key of ["parse_gap", "bac_gap"]) if (task[key]) add(task.task_id, task[key]);
-  }
-  if (board.final_report) {
-    const model = await boundJson(root, { path: board.final_report.model, sha256: board.final_report.model_sha256 });
-    for (const row of model.excluded_findings ?? []) if (row.review?.verdict === "INCONCLUSIVE") add(row.task_id, row.review.reason || "漏洞候选证据尚不充分。");
-  }
-  const files = (board.file_sweep?.files ?? []).filter(file => ["GAP", "PENDING", "READING"].includes(file.status)).map(file => file.file_id);
-  return { tasks: [...reasons].map(([task_id, items]) => ({ task_id, reasons: [...new Set(items)] })), files,
-    publication_pending: board.publication.state !== "SEALED",
-    review_pending: board.tasks.length > 0 && (!board.final_report || board.validation?.status !== "REVIEWED") };
+  return null;
 }
 
-export const hasIncrementalWork = plan => Boolean(plan.tasks.length || plan.files.length || plan.publication_pending || plan.review_pending);
+export async function incrementalPlan(board, _root) {
+  const tasks = board.tasks.flatMap(task => {
+    const failure = retryableFailure(task, board);
+    return failure ? [{ task_id: task.task_id, source_attempt_id: failure.attempt_id,
+      failure_kind: failure.kind, reasons: [task.reason || "工作项执行失败，需要重新执行。"] }] : [];
+  });
+  return { mode: "FAILED_ITEMS_ONLY", tasks, files: [], publication_pending: false, review_pending: false };
+}
+
+export const hasIncrementalWork = plan => Boolean(plan.tasks.length);
 
 // The caller holds the store's exclusive lock and has checked the frozen source.
 export async function reopenIncremental(store, requestDigest) {
@@ -75,7 +58,7 @@ export async function reopenIncremental(store, requestDigest) {
     const duplicate = board.incremental_rounds?.find(round => round.request_digest === requestDigest);
     if (duplicate) return duplicate;
     const plan = await incrementalPlan(board, store.reportsRoot);
-    check(hasIncrementalWork(plan), "没有需要增补的任务、文件或报告复核。");
+    check(hasIncrementalWork(plan), "没有执行失败的工作项，无需增量审计。");
     const number = (board.incremental_rounds?.length ?? 0) + 1;
     const prefix = `task-board/${board.audit_id}/.incremental/${number}-${requestDigest.slice(0, 16)}`;
     async function archive(name, bytes, expected) {
@@ -95,12 +78,14 @@ export async function reopenIncremental(store, requestDigest) {
       previous.model = await archive("model.json", await controlledBytes(store.reportsRoot, board.final_report.model), board.final_report.model_sha256);
     }
     previous.board = await archive("board.json", Buffer.from(`${JSON.stringify(board, null, 2)}\n`));
-    const round = { number, request_digest: requestDigest, started_at: timestamp(), task_ids: plan.tasks.map(task => task.task_id),
-      file_ids: plan.files, previous, publication_pending: plan.publication_pending };
+    const round = { number, mode: "FAILED_ITEMS_ONLY", request_digest: requestDigest, started_at: timestamp(),
+      board_revision: board.revision, scope_digest: board.scope_digest, task_ids: plan.tasks.map(task => task.task_id),
+      source_attempt_ids: plan.tasks.map(task => task.source_attempt_id), file_ids: [], previous, publication_pending: false };
+    board.active_round = { number, mode: round.mode, work_item_ids: [...round.task_ids], source_attempt_ids: [...round.source_attempt_ids] };
     for (const item of plan.tasks) {
       const task = board.tasks.find(task => task.task_id === item.task_id);
       task.incremental = { round: number, reasons: item.reasons, previous_report: task.report ?? task.incremental?.previous_report ?? null,
-        previous_attempt_id: task.attempt_id, previous_validation: board.validation.assessments?.find(row => row.task_id === task.task_id) ?? null };
+        previous_attempt_id: task.attempt_id, previous_failure: task.execution_failure ?? { kind: item.failure_kind, attempt_id: item.source_attempt_id }, previous_validation: board.validation.assessments?.find(row => row.task_id === task.task_id) ?? null };
       if (task.incremental.previous_report) {
         try {
           const old = await boundJson(store.reportsRoot, task.incremental.previous_report);
@@ -110,14 +95,8 @@ export async function reopenIncremental(store, requestDigest) {
       const attempt = board.attempts.find(row => row.attempt_id === task.attempt_id);
       if (attempt?.status === "RUNNING") { attempt.status = "INTERRUPTED"; attempt.reason = "增量审计替换未完成尝试。"; }
       Object.assign(task, { status: "PENDING", attempt_id: null, report: null, reason: null, failure_count: 0 });
-      delete task.completed_at; delete task.timeout_recovery;
+      delete task.completed_at; delete task.timeout_recovery; delete task.execution_failure;
     }
-    for (const file of board.file_sweep?.files ?? []) if (plan.files.includes(file.file_id)) {
-      file.incremental = { round: number, reason: file.reason };
-      Object.assign(file, { status: "PENDING", attempt_id: null, reason: null });
-      delete file.read_error;
-    }
-    if (plan.files.length) board.publication = { state: "OPEN", empty_reason: null };
     delete board.suspension;
     board.final_report = null;
     board.validation = { status: "NOT_STARTED" };

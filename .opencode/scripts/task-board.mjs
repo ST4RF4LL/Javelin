@@ -18,7 +18,7 @@ try {
     || command === "file-batch" && argument) body = JSON.parse(await readFile(argument, "utf8"));
   if (command === "files") body = { status: argument || "all", offset: Number(value) || 0 };
   if (command === "file-claim") body = argument ? { file_id: argument } : {};
-  if (command === "seal" && argument) body = { empty_reason: argument };
+  if (command === "seal" && argument) body = argument === "--strategy" ? { strategy_id: value, ...(process.argv[5] ? { empty_reason: process.argv[5] } : {}) } : { empty_reason: argument };
   if (command === "list") body = argument === "api" ? { source: "api", offset: Number(value) || 0 } : { status: argument || null, offset: Number(value) || 0 };
   const call = async route => {
     const response = await fetch(`${connection.endpoint}/${route}`, { method: "POST", headers: { Authorization: `Bearer ${connection.token}`, "Content-Type": "application/json" }, body: JSON.stringify(body), signal: AbortSignal.timeout(55_000) });
