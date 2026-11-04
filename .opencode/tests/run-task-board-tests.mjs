@@ -146,6 +146,37 @@ async function writeWorkerDelivery({ input, job }, report = { summary: "截止�
     attempt_id: input.attempt_id, outcome: "REPORTED", report_path: "report.json", ...overrides });
 }
 
+test("worker 正常结束却未交回执时明确失败原因，三次封顶且不替 Agent 补造交付", async t => {
+  for (const hasReport of [false, true]) await t.test(hasReport ? "仅写报告" : "未写制品", async t => {
+    const inputs = [];
+    const { store, start } = await timeoutFixture(t, async ({ input }) => {
+      inputs.push(input);
+      if (hasReport) await atomicJson(input.report_path, { summary: "未正式交付的报告", findings: [], gaps: [] });
+      return { session_id: "ses_missing_receipt" };
+    }, 1000);
+    for (let count = 1; count <= 3; count++) {
+      await (await start()).promise;
+      const board = store.snapshot(), task = board.tasks[0];
+      assert.equal(task.status, count < 3 ? "PENDING" : "FAILED"); assert.equal(task.failure_count, count);
+      assert.equal(task.execution_failure.kind, "RECEIPT_MISSING");
+      assert.match(task.reason, /未提交.*receipt\.json/); assert.doesNotMatch(task.reason, /ENOENT|基础设施错误/);
+      assert.equal(board.attempts.at(-1).session_id, "ses_missing_receipt"); assert.equal(task.report, null);
+      await assert.rejects(readFile(inputs.at(-1).receipt_path), { code: "ENOENT" });
+    }
+    assert.equal(await store.claim("java", 1000), null);
+    assert.equal(new Set(inputs.map(input => input.output_root)).size, 3);
+  });
+});
+
+test("worker 启动错误的 ENOENT 仍保留，不误改成回执缺失", async t => {
+  const { store, start } = await timeoutFixture(t, async () => {
+    throw Object.assign(new Error("spawn fixture-agent ENOENT"), { code: "ENOENT" });
+  }, 1000);
+  await (await start()).promise;
+  const task = store.snapshot().tasks[0];
+  assert.equal(task.execution_failure.kind, "ENOENT"); assert.equal(task.reason, "spawn fixture-agent ENOENT");
+});
+
 test("硬截止回收截止前完整快照，worker非零退出和迟到改写不丢失或替换报告", async t => {
   const originalReport = { summary: "截止前完整交付", findings: [], gaps: [] };
   const { store, start, reportsRoot } = await timeoutFixture(t, async args => {

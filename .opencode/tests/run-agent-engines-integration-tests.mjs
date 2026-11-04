@@ -24,7 +24,7 @@ function child() {
   process.kill = signal => { if (!closed) { closed = true; process.exitCode = 0; queueMicrotask(() => process.emit('close', 0, signal)); } return true; };
   return process;
 }
-async function fixture(t, engine) {
+async function fixture(t, engine, { workerError = false } = {}) {
   const root = await mkdtemp(join(tmpdir(), 'javelin-engine-')), configPath = join(root, '.opencode', 'opencode.json');
   const source = join(root, 'source'), growHome = join(root, 'user-grow');
   await mkdir(source); await mkdir(growHome); await writeFile(join(source, 'app.py'), 'def public(): return 1\n');
@@ -54,6 +54,12 @@ async function fixture(t, engine) {
           } else {
             input = JSON.parse(await readFile(args[args.indexOf('--file') + 1], 'utf8'));
             process.stdout.write(JSON.stringify({ type: 'text', sessionID: 'ses_worker_' + engine, part: { text: '核对当前代码' } }) + '\n');
+          }
+          if (workerError) {
+            const message = 'fixture provider rejected request';
+            const event = engine === 'grow' ? { type: 'error', message }
+              : { type: 'error', error: engine === 'opencode-v2' ? { type: 'api', message } : { name: 'APIError', data: { message } } };
+            process.stderr.write(JSON.stringify(event) + '\r\n'); process.kill('done'); return;
           }
           await atomicJson(input.report_path, { summary: '已核对源码与权限控制。', findings: [], gaps: [] });
           await atomicJson(input.receipt_path, { protocol: PROTOCOL, audit_id: input.audit_id, task_id: input.task.task_id,
@@ -116,6 +122,23 @@ for (const engine of ['opencode', 'opencode-v2', 'grow']) test(`${engine}: 主�
   mains.at(-1).kill('done');
   await eventually(() => runner.getAudit(audit.id).status === 'completed');
   assert.equal(runner.taskBoardServices.size, 0);
+});
+
+for (const engine of ['opencode', 'opencode-v2', 'grow']) test(`${engine}: 执行器错误与零退出码不会退化为 receipt.json 缺失，三次失败仍封顶`, async t => {
+  const { runner, audit, calls } = await fixture(t, engine, { workerError: true });
+  const service = runner.taskBoardServices.get(audit.id);
+  await service.store.publish({ tasks: [{ task_id: 'failed-worker', kind: 'focus_area', domain: 'python', title: '失败夹具',
+    prompt: '核对当前代码', source_ref: 'threat:fixture', code_refs: [] }] });
+  service.pump();
+  await eventually(() => service.store.snapshot().tasks[0].status === 'FAILED');
+  const board = service.store.snapshot(), task = board.tasks[0];
+  assert.equal(calls.filter(call => !call.main).length, 3); assert.equal(task.failure_count, 3);
+  assert.equal(task.execution_failure.kind, 'AGENT_EXECUTION_ERROR');
+  for (const attempt of board.attempts) {
+    assert.equal(attempt.status, 'FAILED'); assert.ok(attempt.session_id);
+    assert.match(attempt.reason, /fixture provider rejected request/); assert.doesNotMatch(attempt.reason, /ENOENT/);
+  }
+  assert.equal(task.report, null); assert.equal(runner.getAudit(audit.id).runtime_testing_state.status, 'SKIPPED');
 });
 
 test('Grow暂停保存会话并关闭进程，继续任务继承历史并绑定新分支UUID', async t => {

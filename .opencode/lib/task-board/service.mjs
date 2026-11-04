@@ -23,6 +23,26 @@ import { buildCreedInventory, creedTasks, runCreedWorker } from "../creed/index.
 const guardian = fileURLToPath(new URL("./worker-host.mjs", import.meta.url));
 const instructionPath = fileURLToPath(new URL("./worker.md", import.meta.url));
 
+async function readWorkerReceipt(workRoot) {
+  try { return JSON.parse((await controlledBytes(workRoot, "receipt.json", 64 * 1024)).toString("utf8")); }
+  catch (cause) {
+    if (cause.code !== "ENOENT") throw cause;
+    throw Object.assign(new Error(`专业 Agent 已结束，但未提交交付回执 receipt.json；本次执行未完成。请检查本次执行日志及输出目录中的报告、校验结果和会话记录：${workRoot}`, { cause }),
+      { code: "RECEIPT_MISSING" });
+  }
+}
+
+// Only execution error envelopes are failures; quoted errors and failed tools
+// are evidence within a session, not proof that the session itself failed.
+function workerExecutionError(event) {
+  if (event?.type !== "error" && event?.type !== "session.error") return null;
+  const error = event.type === "session.error" ? event.properties?.error : event.error;
+  const name = typeof error?.name === "string" ? error.name.slice(0, 120) : "AgentError";
+  const message = typeof error === "string" ? error : error?.data?.message ?? error?.message ?? event.message;
+  const detail = typeof message === "string" && message.trim() ? message.trim().slice(0, 1200) : "执行器未提供错误详情，请检查本次执行日志。";
+  return Object.assign(new Error(`专业 Agent 执行错误（${name}）：${detail}`), { code: "AGENT_EXECUTION_ERROR" });
+}
+
 export async function workerConfiguration(environment, task, startupScope = null) {
   const inherited = JSON.parse(environment.OPENCODE_CONFIG_CONTENT ?? "{}");
   const instructions = await readFile(instructionPath, "utf8");
@@ -256,7 +276,7 @@ export class TaskBoardService {
       const result = await pending;
       if (!canReceive()) throw new Error(timedOut ? "任务执行超时。" : "任务调度已暂停或停止。");
       if (result?.session_id) await this.store.mutate(board => { board.attempts.find(row => row.attempt_id === job.attempt.attempt_id).session_id = result.session_id; });
-      const receipt = JSON.parse((await controlledBytes(workRoot, "receipt.json", 64 * 1024)).toString("utf8"));
+      const receipt = await readWorkerReceipt(workRoot);
       await this.store.receive({ taskId: job.task.task_id, attemptId: job.attempt.attempt_id, receipt, inputRoot: workRoot }, { canReceive });
     } catch (error) {
       // A report fully written before a worker crash is still a valid delivery.
@@ -274,9 +294,13 @@ export class TaskBoardService {
         } catch {}
       }
       const interrupted = active.deliveryRevoked || this.paused || this.closed || controller.signal.aborted && !timedOut;
-      if (!received) await this.store.fail(job.task.task_id, job.attempt.attempt_id,
-        timedOut && !interrupted ? "任务执行超时。" : error.message, { interrupted, terminal: !interrupted && (isCreed || error.recovery_exhausted === true),
-          kind: timedOut ? "EXECUTION_TIMEOUT" : error.code === "opencode-operation-timeout" ? "MODEL_TIMEOUT" : error.code ?? "EXECUTION_FAILED" });
+      if (!received) {
+        const reason = timedOut && !interrupted ? "任务执行超时。" : error.message;
+        const kind = timedOut ? "EXECUTION_TIMEOUT" : error.code === "opencode-operation-timeout" ? "MODEL_TIMEOUT" : error.code ?? "EXECUTION_FAILED";
+        await this.store.fail(job.task.task_id, job.attempt.attempt_id, reason,
+          { interrupted, terminal: !interrupted && (isCreed || error.recovery_exhausted === true), kind });
+        if (!interrupted) await this.log("stderr", `[${job.task.domain}/${job.task.task_id}] 任务执行失败（${kind}）：${reason}`);
+      }
     } finally {
       clearTimeout(timer); stopCapture(); controller.signal.removeEventListener("abort", stopCapture);
       if (memoryToken) this.memoryTokens.delete(memoryToken);
@@ -348,7 +372,7 @@ export class TaskBoardService {
     return new Promise((resolve, reject) => {
       if (signal.aborted) return reject(new Error("任务已停止。"));
       const child = this.spawnProcess(process.execPath, [guardian, launch.command, ...launch.args], { cwd: this.workspaceRoot, env: launch.environment, shell: false, windowsHide: true, stdio: ["ignore", "pipe", "pipe", "ipc"] });
-      let sessionId = launch.resumedFromSessionId ? null : previousSessionId, stopping = null, sessionWrite = Promise.resolve(), sessionWriteError = null, providerTimeout = false;
+      let sessionId = launch.resumedFromSessionId ? null : previousSessionId, stopping = null, sessionWrite = Promise.resolve(), sessionWriteError = null, providerTimeout = false, executionError = null;
       const stop = () => {
         if (stopping) return;
         if (child.connected) child.send({ type: "stop" }, () => {});
@@ -359,7 +383,8 @@ export class TaskBoardService {
         line = normalizeAgentLine(line, launch);
         if (line == null) return;
         try {
-          const event = JSON.parse(line), id = event.sessionID ?? event.session_id ?? event.session?.id;
+          const event = JSON.parse(line), id = event.sessionID ?? event.session_id ?? event.session?.id ?? event.properties?.sessionID ?? event.properties?.session_id;
+          executionError ??= workerExecutionError(event);
           if (!sessionId && typeof id === "string" && id) {
             sessionId = id;
             for (const principal of this.memoryTokens.values()) if (principal.attemptId === job.attempt.attempt_id) principal.sessionId = id;
@@ -384,7 +409,7 @@ export class TaskBoardService {
       child.once("close", async code => {
         signal.removeEventListener("abort", stop); clearTimeout(stopping); await sessionWrite;
         if (providerTimeout) reject(Object.assign(new Error("The operation timed out."), { code: "opencode-operation-timeout", session_id: sessionId }));
-        else if (sessionWriteError || code !== 0) reject(Object.assign(sessionWriteError ?? new Error(`专业 Agent 退出码：${code}。`), { session_id: sessionId }));
+        else if (sessionWriteError || executionError || code !== 0) reject(Object.assign(sessionWriteError ?? executionError ?? new Error(`专业 Agent 退出码：${code}。`), { session_id: sessionId }));
         else resolve({ session_id: sessionId });
       });
     });

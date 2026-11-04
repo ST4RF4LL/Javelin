@@ -97,6 +97,10 @@ OpenCode 的 `--file/-f` 是数组选项。启动参数必须将任务指令放�
 
 日志若出现 `File not found: <任务指令>`，说明失败发生在 Agent 会话启动之前；重复重试或将任务改成 GAP 不会产生源码审计结果。原有替身测试没有覆盖真实 CLI 参数解析，不能作为实际 OpenCode 启动成功的证明。
 
+`ENOENT ... receipt.json` 只说明收件时找不到交付回执，不能单凭它认定是后台基础设施故障。此前 worker 对非超时错误只检查进程退出码，执行器发出 `error` / `session.error` 后若以 0 退出，其原始错误就会被随后读取回执的 ENOENT 掩盖。现在这类事件记录为 `AGENT_EXECUTION_ERROR`，保留错误名称、消息和真实会话；确实未提交回执则记录为 `RECEIPT_MISSING`，同时提示检查对应输出目录。两者仍遵守现有三次失败上限；已完整交付的有效回执优先接收，正文或工具输出中引用的报错不会被当作执行器故障。
+
+Windows 排查时，先在任务执行日志中找到失败工作项的 `[domain/task_id]`，查看回执缺失之前的首个执行器错误，再核对该次 `attempt` 目录中的 `input.json`、`session.json`、`report.json` 与 `receipt.json`。`report.json` 存在但没有回执，仍可能是校验失败或未完成交付；不要手工补写回执。若日志是 `spawn ... ENOENT`，再检查工作台 Agent 设置中的原生可执行文件路径及后台进程环境；它与 `receipt.json` 缺失不是同一种错误。只重启网页不能更新独立审计服务，更新代码后需按[后台管理说明](../apps/workbench/README.md)正常重启后台，再重试失败项。
+
 ## 越权专项的原生计划
 
 启用专项的新任务通过 `bac-task-plan.v1` 绑定 task_id、spec_digest、attempt_id 和冻结源码。发布条目中的 bac_analysis 传递独立策略分片、资源角色目录的 SHA-256 引用及入口线索，monitor 自动生成执行计划与真实会话记录；专业 worker 不需要旧 Coverage Plan/check。Focus Area 与 API 两种粒度均适用。

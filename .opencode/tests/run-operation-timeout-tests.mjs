@@ -79,6 +79,59 @@ async function deliver(call) {
 }
 const eventually = async predicate => { for (let n = 0; n < 300 && !predicate(); n++) await new Promise(resolve => setTimeout(resolve, 5)); assert.ok(predicate()); };
 
+test('worker 错误事件即使退出码为 0 也保留原始原因与会话，不被缺失回执掩盖', async t => {
+  const sessionId = 'ses_failed_worker';
+  const providerError = { name: 'APIError', data: { message: 'Unauthorized: fixture provider' } };
+  const cases = [
+    { stream: 'stdout', ending: '\r\n', event: { type: 'error', sessionID: sessionId, error: providerError } },
+    { stream: 'stderr', ending: '', event: { type: 'session.error', properties: { sessionID: sessionId, error: providerError } } },
+    { stream: 'stdout', ending: '\n', event: { type: 'error', sessionID: sessionId, error: { name: 'APIError', message: providerError.data.message } } },
+  ];
+  for (const example of cases) await t.test(`${example.event.type}/${example.stream}/${JSON.stringify(example.ending)}`, async t => {
+    const f = await workerFixture(t, async call => {
+      call.child[example.stream].end(JSON.stringify(example.event) + example.ending);
+      await new Promise(resolve => setImmediate(resolve)); call.child.emit('close', 0);
+    });
+    await f.run();
+    const board = f.service.store.snapshot(), task = board.tasks[0];
+    assert.equal(f.calls.length, 1); assert.equal(task.status, 'PENDING'); assert.equal(task.failure_count, 1);
+    assert.equal(task.execution_failure.kind, 'AGENT_EXECUTION_ERROR');
+    assert.match(task.reason, /APIError.*Unauthorized: fixture provider/); assert.doesNotMatch(task.reason, /ENOENT/);
+    assert.equal(board.attempts[0].session_id, sessionId);
+    const saved = JSON.parse(await readFile(join(f.calls[0].input.output_root, 'session.json'), 'utf8'));
+    assert.equal(saved.agent_session_id, sessionId);
+  });
+});
+
+test('worker 正文与工具输出中的错误不是执行器错误，已交付报告也不因后续错误丢失', async t => {
+  const failure = { type: 'error', sessionID: 'ses_delivery', error: { name: 'APIError', data: { message: 'fixture provider error' } } };
+  for (const actualError of [false, true]) await t.test(actualError ? '完整交付后报错' : '正文和工具引用错误', async t => {
+    const f = await workerFixture(t, async call => {
+      await deliver(call);
+      const events = actualError ? [failure] : [
+        { type: 'text', part: { text: JSON.stringify(failure) } },
+        { type: 'tool_use', part: { state: { status: 'error', output: JSON.stringify(failure) } } },
+      ];
+      for (const event of events) call.child.stdout.write(JSON.stringify(event) + '\r\n');
+      call.child.emit('close', 0);
+    });
+    await f.run(); assert.equal(f.calls.length, 1); assert.equal(f.service.store.summary().reported, 1);
+    assert.equal(f.service.store.snapshot().tasks[0].failure_count ?? 0, 0);
+  });
+});
+
+test('worker 引用错误后未交付，原因应为回执缺失而非被引用的执行器错误', async t => {
+  const f = await workerFixture(t, async call => {
+    call.child.stdout.write(JSON.stringify({ type: 'text', part: { text: JSON.stringify({ type: 'error', error: { message: '示例错误' } }) } }) + '\n');
+    call.child.stdout.write(JSON.stringify({ type: 'tool_use', part: { state: { status: 'error', output: '示例错误' } } }) + '\n');
+    call.child.emit('close', 0);
+  });
+  await f.run();
+  const task = f.service.store.snapshot().tasks[0];
+  assert.equal(task.execution_failure.kind, 'RECEIPT_MISSING');
+  assert.doesNotMatch(task.reason, /示例错误/);
+});
+
 test('worker 超时恢复同一 session、attempt、输出路径，正确接收后续报告', async t => {
   const f = await workerFixture(t, async (call, count) => {
     if (count === 1) {
